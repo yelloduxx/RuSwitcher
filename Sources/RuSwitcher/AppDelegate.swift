@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsController = SettingsWindowController()
     private let perAppLayoutManager = PerAppLayoutManager()
     private var permissionCheckTimer: Timer?
+    private var monitoringActive = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -69,7 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Permission Wizard
 
-    private func runPermissionWizard() {
+    private func runPermissionWizard(interactive: Bool = false) {
         let acc = AXIsProcessTrusted()
         let inp = CGPreflightListenEventAccess()
         rslog("Permissions: accessibility=\(acc) inputMonitoring=\(inp)")
@@ -77,7 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if acc && inp {
             // Запоминаем что разрешения были даны
             SettingsManager.shared.permissionsWereGranted = true
-            startMonitoring()
+            if !monitoringActive { startMonitoring() }
+            // Ручная проверка из меню должна давать видимый отклик.
+            if interactive { showPermissionsOKAlert() }
             return
         }
 
@@ -96,6 +99,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         showStep_Accessibility()
+    }
+
+    /// Подтверждение при ручной проверке, когда все разрешения уже выданы
+    private func showPermissionsOKAlert() {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = L10n.permissionsOkTitle
+        alert.informativeText = L10n.permissionsOkText
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     /// Уведомление о сбросе разрешений после обновления
@@ -222,6 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        monitoringActive = true
         updateStatusIcon()
         rslog("Monitoring started successfully")
 
@@ -317,7 +331,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func recheckPermissions() {
-        runPermissionWizard()
+        runPermissionWizard(interactive: true)
     }
 
     @objc private func openSettings() {

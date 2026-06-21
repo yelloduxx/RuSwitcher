@@ -1,12 +1,18 @@
 cask "ruswitcher" do
-  version "2.1.1"
-  sha256 "30c486b96e06656d815e891843a1c5f231c8b061b728e05cef01a0fc5f80c52b"
+  version "2.2.0"
+  sha256 "e370899e6c5a6a70da26b22fa5aa1a8cb898a0521a8aa1ea988f74f39c623e06"
 
   url "https://github.com/rashn/RuSwitcher/releases/download/v#{version}/RuSwitcher-#{version}.dmg"
   name "RuSwitcher"
   desc "Lightweight keyboard layout switcher, free alternative to PuntoSwitcher"
   homepage "https://github.com/rashn/RuSwitcher"
 
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  auto_updates true
   depends_on macos: :ventura
 
   app "RuSwitcher.app"
