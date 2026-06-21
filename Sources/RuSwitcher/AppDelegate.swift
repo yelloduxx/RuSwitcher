@@ -34,6 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.perAppLayoutManager.stop()
             }
         }
+        settingsController.onLanguageChanged = { [weak self] in
+            self?.rebuildMenu()
+        }
     }
 
     private func startPerAppLayout() {
@@ -273,7 +276,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        rebuildMenu()
+    }
 
+    /// Собирает меню статус-бара. Вызывается заново при смене языка интерфейса,
+    /// иначе пункты меню остаются на старом языке.
+    private func rebuildMenu() {
         let menu = NSMenu()
 
         let autoItem = NSMenuItem(title: L10n.menuAutoSwitch, action: #selector(toggleAutoSwitch), keyEquivalent: "")
@@ -312,7 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
 
         statusItem.menu = menu
-        rslog("Menu created with \(menu.items.count) items")
+        rslog("Menu (re)built with \(menu.items.count) items")
     }
 
     func updateStatusIcon() {

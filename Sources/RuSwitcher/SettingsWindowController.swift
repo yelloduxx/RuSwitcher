@@ -16,6 +16,7 @@ final class SettingsWindowController {
     /// Callback для обновления меню
     var onAutoSwitchChanged: ((Bool) -> Void)?
     var onPerAppLayoutChanged: ((Bool) -> Void)?
+    var onLanguageChanged: (() -> Void)?
 
     func showWindow() {
         if let window {
@@ -319,7 +320,8 @@ final class SettingsWindowController {
 
     @objc private func languageChanged(_ sender: NSPopUpButton) {
         let langCode = (sender.selectedItem?.representedObject as? String) ?? ""
-        SettingsManager.shared.interfaceLanguage = langCode
+        SettingsManager.shared.interfaceLanguage = langCode  // вызывает L10n.reloadLanguage()
+        onLanguageChanged?()  // пересобрать меню статус-бара под новый язык
         // Пересоздаём окно для применения нового языка
         window?.close()
         window = nil

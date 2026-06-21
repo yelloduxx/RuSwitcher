@@ -1,6 +1,6 @@
 {
-  "version": "2.2.1",
-  "build": "9",
+  "version": "2.2.2",
+  "build": "10",
   "url": "https://github.com/rashn/RuSwitcher/releases/latest",
-  "sha256": "194af4fc9b6f62d880c55ee0be6eb7803e7be6a0256a3e1453395610c32c930f"
+  "sha256": "80d463d2a46976acb609cf7f70480415c796f6f599df4acea54ee6e0a17abbf0"
 }
