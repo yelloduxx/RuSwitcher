@@ -210,17 +210,34 @@ enum UpdateChecker {
             return
         }
 
-        // 6. Атомарно заменить .app
+        // 6. Скопировать .app с read-only тома DMG на тот же том, что и текущее
+        //    приложение. replaceItemAt НЕ умеет переносить элемент напрямую с
+        //    read-only тома DMG — именно это давало «Ошибку установки».
+        let stagingDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("RuSwitcher-update-staging", isDirectory: true)
+        try? fm.removeItem(at: stagingDir)
+        let stagedApp = stagingDir.appendingPathComponent(appName)
         do {
-            _ = try fm.replaceItemAt(currentApp, withItemAt: sourceApp)
+            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+            try fm.copyItem(at: sourceApp, to: stagedApp)
+        } catch {
+            rslog("Update: staging copy failed — \(error)")
+            await showInstallError(error.localizedDescription)
+            return
+        }
+        defer { try? fm.removeItem(at: stagingDir) }
+
+        // 7. Атомарно заменить .app из staging-копии (на одном томе — работает)
+        do {
+            _ = try fm.replaceItemAt(currentApp, withItemAt: stagedApp)
             rslog("Update: app replaced successfully")
         } catch {
             rslog("Update: replace failed — \(error)")
-            await showInstallError(L10n.updateInstallFailed)
+            await showInstallError(error.localizedDescription)
             return
         }
 
-        // 7. Перезапуск
+        // 8. Перезапуск
         rslog("Update: restarting...")
         AppRelauncher.relaunch(bundlePath: currentApp.path)
     }
