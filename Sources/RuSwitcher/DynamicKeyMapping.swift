@@ -108,7 +108,7 @@ enum DynamicKeyMapping {
     /// Конвертирует набранные keycodes в строки исходной и целевой раскладок —
     /// для движка перепечатки (не читаем поле, не трогаем буфер обмена).
     /// nil — если раскладки не определились (тогда вызывающий падает на clipboard).
-    static func convertKeys(_ keys: [(keyCode: UInt16, shift: Bool)]) -> (original: String, converted: String)? {
+    static func convertKeys(_ keys: [(keyCode: UInt16, shift: Bool, caps: Bool)]) -> (original: String, converted: String)? {
         guard !keys.isEmpty else { return nil }
         let settings = SettingsManager.shared
         let layouts = LayoutSwitcher.installedLayouts()
@@ -126,8 +126,8 @@ enum DynamicKeyMapping {
 
         var original = "", converted = ""
         for k in keys {
-            guard let sc = translateKeycode(k.keyCode, layoutData: sourceData, shift: k.shift),
-                  let tc = translateKeycode(k.keyCode, layoutData: targetData, shift: k.shift) else {
+            guard let sc = translateKeycode(k.keyCode, layoutData: sourceData, shift: k.shift, caps: k.caps),
+                  let tc = translateKeycode(k.keyCode, layoutData: targetData, shift: k.shift, caps: k.caps) else {
                 return nil
             }
             original.append(sc)
@@ -148,12 +148,13 @@ enum DynamicKeyMapping {
         return data
     }
 
-    private static func translateKeycode(_ keycode: UInt16, layoutData: Data, shift: Bool) -> Character? {
+    private static func translateKeycode(_ keycode: UInt16, layoutData: Data, shift: Bool, caps: Bool = false) -> Character? {
         var deadKeyState: UInt32 = 0
         var chars = [UniChar](repeating: 0, count: 4)
         var length: Int = 0
 
-        let modifierKeyState: UInt32 = shift ? (UInt32(shiftKey >> 8) & 0xFF) : 0
+        var modifierKeyState: UInt32 = shift ? (UInt32(shiftKey >> 8) & 0xFF) : 0
+        if caps { modifierKeyState |= UInt32(alphaLock >> 8) & 0xFF }
 
         let result = layoutData.withUnsafeBytes { rawBuffer -> OSStatus in
             guard let ptr = rawBuffer.baseAddress?.assumingMemoryBound(to: UCKeyboardLayout.self) else {

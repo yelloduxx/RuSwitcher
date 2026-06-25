@@ -10,6 +10,9 @@ final class TextConverter {
     private var savedClipboardItems: [NSPasteboardItem]?
     private var clipboardRestoreWork: DispatchWorkItem?
     private var isConverting = false
+    /// Очередь для инжекта нажатий буферного движка — чтобы usleep не блокировал
+    /// main-поток, на котором висит event tap (иначе тап голодает → лаги/потери нажатий).
+    nonisolated private let injectQueue = DispatchQueue(label: "com.ruswitcher.inject", qos: .userInteractive)
 
     // Состояние движка перепечатки (буфер нажатий → юникод-вставка)
     private var lastOriginal = ""
@@ -17,7 +20,7 @@ final class TextConverter {
     private var lastWasBuffer = false
 
     /// Создаёт CGEventSource с маркером, чтобы KeyboardMonitor игнорировал наши события
-    private func makeSource() -> CGEventSource? {
+    nonisolated private func makeSource() -> CGEventSource? {
         let source = CGEventSource(stateID: .hidSystemState)
         source?.userData = kRuSwitcherEventMarker
         return source
@@ -67,8 +70,8 @@ final class TextConverter {
     /// юникод-вставку — без буфера обмена и без выделения (работает в Atom/Electron).
     /// Падает на clipboard-движок, если буфера нет (текст выделен мышью) или
     /// раскладки не определились.
-    func convert(wordKeys: [(keyCode: UInt16, shift: Bool)], prevWordKeys: [(keyCode: UInt16, shift: Bool)], boundaryCount: Int) -> Bool {
-        let keys: [(keyCode: UInt16, shift: Bool)]
+    func convert(wordKeys: [(keyCode: UInt16, shift: Bool, caps: Bool)], prevWordKeys: [(keyCode: UInt16, shift: Bool, caps: Bool)], boundaryCount: Int) -> Bool {
+        let keys: [(keyCode: UInt16, shift: Bool, caps: Bool)]
         let trailingSpaces: Int
         if !wordKeys.isEmpty {
             keys = wordKeys; trailingSpaces = 0
@@ -86,17 +89,23 @@ final class TextConverter {
 
         guard !isConverting else { return false }
         isConverting = true
-        defer { isConverting = false }
 
         let spaces = String(repeating: " ", count: trailingSpaces)
-        rslog("buffer convert: \(keys.count) keys (+\(trailingSpaces) sp)")
-        backspace(keys.count + trailingSpaces)
-        usleep(20_000)
-        insertText(pair.converted + spaces)
-
+        let bsCount = keys.count + trailingSpaces
+        let insert = pair.converted + spaces
         lastOriginal = pair.original + spaces
         lastConverted = pair.converted + spaces
         lastWasBuffer = true
+        rslog("buffer convert: \(keys.count) keys (+\(trailingSpaces) sp)")
+
+        // Инжект — вне main, чтобы usleep не голодал event tap.
+        injectQueue.async { [weak self] in
+            guard let self else { return }
+            self.backspace(bsCount)
+            usleep(20_000)
+            self.insertText(insert)
+            Task { @MainActor in self.isConverting = false }
+        }
         return true
     }
 
@@ -106,12 +115,17 @@ final class TextConverter {
         if lastWasBuffer {
             guard !lastConverted.isEmpty else { return false }
             isConverting = true
-            defer { isConverting = false }
             rslog("buffer reconvert")
-            backspace(lastConverted.count)
-            usleep(20_000)
-            insertText(lastOriginal)
+            let bsCount = lastConverted.count
+            let insert = lastOriginal
             let tmp = lastOriginal; lastOriginal = lastConverted; lastConverted = tmp
+            injectQueue.async { [weak self] in
+                guard let self else { return }
+                self.backspace(bsCount)
+                usleep(20_000)
+                self.insertText(insert)
+                Task { @MainActor in self.isConverting = false }
+            }
             return true
         }
         return reconvertViaClipboard()
@@ -248,7 +262,7 @@ final class TextConverter {
     // MARK: - Private
 
     /// Стирает n символов (Backspace × n) — для движка перепечатки.
-    private func backspace(_ n: Int) {
+    nonisolated private func backspace(_ n: Int) {
         for _ in 0..<n {
             simKey(keyCode: KC.backspace, flags: [])
             usleep(3_000)
@@ -256,7 +270,7 @@ final class TextConverter {
     }
 
     /// Впечатывает строку напрямую (юникод-вставка), без буфера обмена.
-    private func insertText(_ text: String) {
+    nonisolated private func insertText(_ text: String) {
         guard !text.isEmpty, let source = makeSource() else { return }
         let utf16 = Array(text.utf16)
         guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
@@ -356,7 +370,7 @@ final class TextConverter {
     }
 
     /// Выделяет N символов влево (Shift+Left × N)
-    private func selectBack(_ count: Int) {
+    nonisolated private func selectBack(_ count: Int) {
         for _ in 0..<count {
             simKey(keyCode: KC.left, flags: .maskShift)
             usleep(3_000)
@@ -364,7 +378,7 @@ final class TextConverter {
     }
 
     /// Сдвигает курсор влево на N символов
-    private func moveLeft(_ count: Int) {
+    nonisolated private func moveLeft(_ count: Int) {
         for _ in 0..<count {
             simKey(keyCode: KC.left, flags: [])
             usleep(3_000)
@@ -372,7 +386,7 @@ final class TextConverter {
     }
 
     /// Сдвигает курсор вправо на N символов (восстановление границ-пробелов)
-    private func moveRight(_ count: Int) {
+    nonisolated private func moveRight(_ count: Int) {
         for _ in 0..<count {
             simKey(keyCode: KC.right, flags: [])
             usleep(3_000)
@@ -380,7 +394,7 @@ final class TextConverter {
     }
 
     /// Симулирует нажатие клавиши с маркером (чтобы наш monitor игнорировал)
-    private func simKey(keyCode: UInt16, flags: CGEventFlags) {
+    nonisolated private func simKey(keyCode: UInt16, flags: CGEventFlags) {
         guard let source = makeSource() else { return }
 
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),

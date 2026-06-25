@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -80,12 +81,17 @@ final class KeyboardMonitor: @unchecked Sendable {
     private(set) var keysTypedSinceConversion = true
 
     /// Keycodes набираемого слова — для движка перепечатки (без буфера обмена)
-    private(set) var currentWordKeys: [(keyCode: UInt16, shift: Bool)] = []
+    private(set) var currentWordKeys: [(keyCode: UInt16, shift: Bool, caps: Bool)] = []
     /// Keycodes слова перед последней границей-пробелом
-    private(set) var prevWordKeys: [(keyCode: UInt16, shift: Bool)] = []
+    private(set) var prevWordKeys: [(keyCode: UInt16, shift: Bool, caps: Bool)] = []
+    /// Фронтмост-приложение на момент границы слова — чтобы авто-путь не перепечатал
+    /// в другое поле, если фокус уехал (Cmd-Tab/Spotlight) без клика/Tab.
+    private(set) var prevWordBundleID: String?
 
     private var onAltTap: (() -> Void)?
     private var onAltReconvert: (() -> Void)?
+    /// Авто-конвертация: вызывается (async) на границе слова, когда включён autoConvert.
+    var onWordBoundary: (() -> Void)?
 
     // Конфиг триггера (кэш; обновляется в start/reconfigure)
     private var triggerConfig = TriggerConfig.current()
@@ -123,8 +129,14 @@ final class KeyboardMonitor: @unchecked Sendable {
         // регистра. Для модификаторов оставляем listenOnly — не вмешиваемся в ввод.
         let options: CGEventTapOptions = triggerConfig.isCapsLock ? .defaultTap : .listenOnly
 
+        // Режим удалённого стола: session-уровень видит проброшенные Screen Sharing
+        // нажатия (они инжектятся через CGEventPost, а HID-tap их не видит).
+        let tapLocation: CGEventTapLocation =
+            SettingsManager.shared.remoteDesktopMode ? .cgSessionEventTap : .cghidEventTap
+        rslog("Tap location: \(SettingsManager.shared.remoteDesktopMode ? "session (remote desktop)" : "hid")")
+
         guard let tap = CGEvent.tapCreate(
-            tap: .cghidEventTap,
+            tap: tapLocation,
             place: .tailAppendEventTap,
             options: options,
             eventsOfInterest: mask,
@@ -157,11 +169,12 @@ final class KeyboardMonitor: @unchecked Sendable {
 
     /// Перезапускает tap с актуальным конфигом триггера. Нужен при смене настройки —
     /// особенно при переключении на/с Caps Lock, т.к. меняется режим tap (consume).
-    func reconfigure() {
-        guard let t = onAltTap, let r = onAltReconvert else { return }
+    @discardableResult
+    func reconfigure() -> Bool {
+        guard let t = onAltTap, let r = onAltReconvert else { return false }
         rslog("Reconfiguring trigger…")
         stop()
-        _ = start(onAltTap: t, onAltReconvert: r)
+        return start(onAltTap: t, onAltReconvert: r)
     }
 
     func markConverted() {
@@ -179,6 +192,14 @@ final class KeyboardMonitor: @unchecked Sendable {
         boundaryCount = 0
         currentWordKeys = []
         prevWordKeys = []
+    }
+
+    /// Завершилось слово на пробеле — если включён autoConvert, дёргаем авто-путь
+    /// (async, чтобы не блокировать доставку текущего события).
+    private func fireWordBoundary() {
+        guard SettingsManager.shared.autoConvert else { return }
+        let cb = onWordBoundary
+        DispatchQueue.main.async { cb?() }
     }
 
     /// Сброс буфера при клике мышью — иначе backspace перепечатки сотрёт не то
@@ -207,6 +228,8 @@ final class KeyboardMonitor: @unchecked Sendable {
                 wordBeforeBoundaryLength = currentWordLength
                 boundaryCount = 1
                 prevWordKeys = currentWordKeys
+                prevWordBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                fireWordBoundary()
             } else {
                 boundaryCount += 1
             }
@@ -243,7 +266,7 @@ final class KeyboardMonitor: @unchecked Sendable {
         if !modifiers.isEmpty { return }
 
         if KeyMapping.keycodeToEN[keyCode] != nil {
-            currentWordKeys.append((keyCode: keyCode, shift: flags.contains(.maskShift)))
+            currentWordKeys.append((keyCode: keyCode, shift: flags.contains(.maskShift), caps: flags.contains(.maskAlphaShift)))
             currentWordLength += 1
             wordBeforeBoundaryLength = 0
             boundaryCount = 0

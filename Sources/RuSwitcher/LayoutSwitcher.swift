@@ -66,6 +66,31 @@ enum LayoutSwitcher {
         return Unmanaged<CFString>.fromOpaque(ptr).takeUnretainedValue() as String
     }
 
+    /// Код языка раскладки (BCP-47, например "ru", "en"), из kTISPropertyInputSourceLanguages
+    static func languageCode(_ source: TISInputSource) -> String? {
+        guard let ptr = TISGetInputSourceProperty(source, kTISPropertyInputSourceLanguages) else {
+            return nil
+        }
+        let langs = Unmanaged<CFArray>.fromOpaque(ptr).takeUnretainedValue() as? [String]
+        return langs?.first
+    }
+
+    /// Коды языков текущей и противоположной раскладок (для авто-детекта раскладки).
+    static func currentAndOppositeLanguage() -> (current: String, opposite: String)? {
+        let settings = SettingsManager.shared
+        let sources = installedLayouts()
+        let currentID = currentLayoutID()
+        let id1 = settings.layout1ID.isEmpty ? autoDetectID1(from: sources) : settings.layout1ID
+        let id2 = settings.layout2ID.isEmpty ? autoDetectID2(from: sources) : settings.layout2ID
+        let targetID = (currentID == id1) ? id2 : id1
+        guard let cur = sources.first(where: { sourceID($0) == currentID }),
+              let tgt = sources.first(where: { sourceID($0) == targetID }),
+              let curLang = languageCode(cur), let tgtLang = languageCode(tgt) else {
+            return nil
+        }
+        return (curLang, tgtLang)
+    }
+
     // MARK: - Auto-detect
 
     /// Авто-определение «английской» раскладки (используется и из DynamicKeyMapping).

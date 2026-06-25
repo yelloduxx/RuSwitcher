@@ -14,6 +14,8 @@
     <string>11</string>
     <key>CFBundleShortVersionString</key>
     <string>2.3.0</string>
+    <key>RSDevTag</key>
+    <string></string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>

@@ -36,10 +36,24 @@ Typed `ghbdtn` when you meant `привет`? Just tap **Option ⌥** and RuSwit
 
 The trigger is configurable — **Option**, **Command**, **Control** or **Shift**, left or right side, single or double-tap.
 
+### Automatic conversion (beta — new in 2.4)
+
+RuSwitcher can also fix the layout **automatically as you type**, with no key press. Turn it on in **Settings → Auto-conversion** (off by default). When you finish a word (space), it checks the word against the macOS system dictionary and — only when confident — converts it and switches the layout for you.
+
+Precision-first: to avoid false fixes it deliberately **skips** short words (< 3 letters), words with digits / punctuation / URLs, ALL-CAPS acronyms typed with Shift, camelCase / mixed-script code identifiers, terminals / IDEs / password managers, and password fields. It targets layout pairs that have a macOS system dictionary (English ↔ Russian / Ukrainian / German / French… are reliable); languages without one (Belarusian, Armenian, Georgian) keep using the manual trigger.
+
+**Three exception lists** let you tune it (Settings → Auto-conversion):
+- **Apps** — where auto-conversion stays off (terminals, IDEs and password managers are pre-filled; password managers can't be removed).
+- **Never convert** — words it must never touch (nicknames, logins, brands). After a wrong fix, tap the trigger to undo and RuSwitcher offers to add the word here.
+- **Always convert** — words to always fix even if they aren't in the dictionary (compound words, slang). Add the **target** word — the result you want.
+
 ### Features
 
 - **Any two layouts** — configure any pair from your installed system layouts. No hardcoded tables.
 - **Configurable trigger** — pick Option, Command, Control or Shift; left or right side; single or double-tap.
+- **Automatic conversion (beta)** — optionally fix the layout as you type, with a precision-first system-dictionary check. Off by default.
+- **Exception lists** — a per-app exclusion list plus never-convert and always-convert word lists.
+- **Universal binary** — runs natively on both Apple Silicon and Intel Macs.
 - **Clipboard-free** — the converted word is typed directly via synthesized Unicode, so it works even in Electron / VS Code / Atom-class editors. Your clipboard is never touched (it's only a fallback for unusual apps).
 - **Smart word detection** — converts the last typed word, including punctuation.
 - **Selected text** — select any text and tap the trigger to convert it in place.
@@ -100,6 +114,7 @@ The app adds itself to the permission lists automatically — you only need to f
 Access via the menu bar icon → **Settings** (⌘,).
 
 - **General** — conversion trigger, per-app layout memory, launch at login, interface language, layout pair.
+- **Auto-conversion** — automatic conversion toggle and the three exception lists (apps, never-convert, always-convert).
 - **About** — version, donate, contact, check updates.
 - **Advanced** — debug logging, log management.
 
@@ -130,10 +145,24 @@ If you find RuSwitcher useful:
 
 Триггер настраивается — **Option**, **Command**, **Control** или **Shift**, левый или правый, одиночный или двойной тап.
 
+### Автоматическая конверсия (бета — новое в 2.4)
+
+RuSwitcher умеет исправлять раскладку **автоматически по ходу набора**, без нажатий. Включается в **Настройки → Автоконверсия** (по умолчанию выключено). Когда вы заканчиваете слово (пробел), приложение сверяет его с системным словарём macOS и — только при уверенности — конвертирует и само переключает раскладку.
+
+Точность важнее полноты: чтобы не сработать зря, авто-конверсия намеренно **пропускает** короткие слова (< 3 букв), слова с цифрами / пунктуацией / URL, акронимы капсом через Shift, camelCase / смешанные алфавиты (идентификаторы кода), терминалы / IDE / менеджеры паролей и поля паролей. Работает для пар раскладок, у которых есть системный словарь macOS (английский ↔ русский / украинский / немецкий / французский… — надёжно); для языков без словаря (белорусский, армянский, грузинский) остаётся ручной триггер.
+
+**Три списка исключений** для тонкой настройки (Настройки → Автоконверсия):
+- **Приложения** — где авто-конверсия выключена (терминалы, IDE, менеджеры паролей уже в списке; менеджеры паролей удалить нельзя).
+- **Никогда не конвертировать** — слова, которые трогать нельзя (ники, логины, бренды). После ошибочной замены нажмите триггер для отмены — RuSwitcher предложит добавить слово сюда.
+- **Всегда конвертировать** — слова, которые исправлять всегда, даже если их нет в словаре (составные слова, сленг). Добавляйте **целевое** слово — то, что должно получиться.
+
 ### Возможности
 
 - **Любая пара раскладок** — настраивается любая пара из установленных в системе. Без захардкоженных таблиц.
 - **Настраиваемый триггер** — Option, Command, Control или Shift; левый или правый; одиночный или двойной тап.
+- **Автоматическая конверсия (бета)** — опционально исправляет раскладку по ходу набора, с проверкой по системному словарю. По умолчанию выключено.
+- **Списки исключений** — список приложений плюс словари never-convert и always-convert.
+- **Universal-сборка** — нативно на Apple Silicon и Intel.
 - **Без буфера обмена** — конвертированное слово печатается напрямую через синтез Unicode, поэтому работает даже в Electron / VS Code / Atom. Буфер обмена не трогается (только как запасной вариант для нестандартных приложений).
 - **Умное определение слова** — конвертирует последнее набранное слово, включая знаки препинания.
 - **Выделенный текст** — выделите любой текст и нажмите триггер для конвертации на месте.
@@ -194,6 +223,7 @@ cp -R RuSwitcher.app /Applications/
 Доступ через иконку в строке меню → **Настройки** (⌘,).
 
 - **Общие** — триггер конвертации, память раскладки по приложению, автозапуск, язык интерфейса, пара раскладок.
+- **Автоконверсия** — тумблер автоматической конверсии и три списка исключений (приложения, never-convert, always-convert).
 - **О программе** — версия, донат, контакт, проверка обновлений.
 - **Дополнительно** — режим отладки, управление логами.
 

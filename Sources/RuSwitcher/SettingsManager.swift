@@ -24,6 +24,13 @@ final class SettingsManager: @unchecked Sendable {
         static let triggerKey = "com.ruswitcher.triggerKey"
         static let triggerRightOnly = "com.ruswitcher.triggerRightOnly"
         static let triggerDoubleTap = "com.ruswitcher.triggerDoubleTap"
+        static let autoConvert = "com.ruswitcher.autoConvert"
+        static let remoteDesktopMode = "com.ruswitcher.remoteDesktopMode"
+        static let showRemoteDesktopBeta = "com.ruswitcher.showRemoteDesktopBeta"
+        static let deniedAppsAdded = "com.ruswitcher.deniedAppsAdded"
+        static let deniedAppsRemoved = "com.ruswitcher.deniedAppsRemoved"
+        static let deniedWords = "com.ruswitcher.deniedWords"
+        static let alwaysConvertWords = "com.ruswitcher.alwaysConvertWords"
     }
 
     private init() {}
@@ -128,6 +135,64 @@ final class SettingsManager: @unchecked Sendable {
 
     /// Caps Lock как триггер требует consume-tap (чтобы подавить переключение регистра).
     var triggerIsCapsLock: Bool { triggerKey == "capsLock" }
+
+    /// Автоматическая конвертация «на лету» (детект неправильной раскладки на границе
+    /// слова). Отдельный флаг от autoSwitchEnabled (тот гейтит РУЧНОЙ триггер).
+    /// По умолчанию ВЫКЛ — точность важнее, не делаем ничего без явного включения.
+    var autoConvert: Bool {
+        get { defaults.bool(forKey: Keys.autoConvert) }
+        set { defaults.set(newValue, forKey: Keys.autoConvert) }
+    }
+
+    /// Режим работы через удалённый рабочий стол (Apple Screen Sharing и т.п.).
+    /// При включении: tap поднимается на session-уровень (видит проброшенные
+    /// нажатия), и инстанс «уступает удалёнке», если в фокусе клиент удалёнки.
+    var remoteDesktopMode: Bool {
+        get { defaults.bool(forKey: Keys.remoteDesktopMode) }
+        set { defaults.set(newValue, forKey: Keys.remoteDesktopMode) }
+    }
+
+    /// Показывать ли тумблер «Режим удалённого стола» (бета, отложен в 2.5). По умолчанию
+    /// скрыт; тестировщик включает: `defaults write com.ruswitcher.app com.ruswitcher.showRemoteDesktopBeta -bool YES`.
+    var showRemoteDesktopBeta: Bool {
+        get { defaults.bool(forKey: Keys.showRemoteDesktopBeta) }
+        set { defaults.set(newValue, forKey: Keys.showRemoteDesktopBeta) }
+    }
+
+    /// Приложения, где авто-конверсия выключена. Эффективный список = дефолты минус
+    /// явно удалённые пользователем плюс явно добавленные. Так новые дефолты из будущих
+    /// версий подхватываются автоматически, а правки пользователя сохраняются.
+    var deniedApps: [String] {
+        get {
+            let removed = Set(defaults.stringArray(forKey: Keys.deniedAppsRemoved) ?? [])
+            let added = defaults.stringArray(forKey: Keys.deniedAppsAdded) ?? []
+            var result = AutoSwitchPolicy.defaultDeniedApps.filter { !removed.contains($0) }
+            for a in added where !result.contains(a) { result.append(a) }
+            return result
+        }
+        set {
+            let defaultsSet = Set(AutoSwitchPolicy.defaultDeniedApps)
+            let newSet = Set(newValue)
+            let removed = AutoSwitchPolicy.defaultDeniedApps.filter { !newSet.contains($0) }
+            let added = newValue.filter { !defaultsSet.contains($0) }
+            defaults.set(removed, forKey: Keys.deniedAppsRemoved)
+            defaults.set(added, forKey: Keys.deniedAppsAdded)
+        }
+    }
+
+    /// Слова, которые авто-конверсия никогда не трогает.
+    var deniedWords: [String] {
+        get { defaults.stringArray(forKey: Keys.deniedWords) ?? [] }
+        set { defaults.set(newValue, forKey: Keys.deniedWords) }
+    }
+    var deniedWordsSet: Set<String> { Set(deniedWords.map { $0.lowercased() }) }
+
+    /// Слова, которые авто-конверсия переключает всегда (даже если их нет в словаре).
+    var alwaysConvertWords: [String] {
+        get { defaults.stringArray(forKey: Keys.alwaysConvertWords) ?? [] }
+        set { defaults.set(newValue, forKey: Keys.alwaysConvertWords) }
+    }
+    var alwaysConvertWordsSet: Set<String> { Set(alwaysConvertWords.map { $0.lowercased() }) }
 
     var donateURL: String { "https://boosty.to/ruswitcher" }
     var contactEmail: String { "xrashid@gmail.com" }
