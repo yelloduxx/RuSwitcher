@@ -5,6 +5,17 @@ import Foundation
 /// Маркер для симулированных событий — KeyboardMonitor их игнорирует
 let kRuSwitcherEventMarker: Int64 = 0x52555300
 
+/// Одно нажатие в буфере конверсии. Для обычного локального ввода известен keyCode
+/// (char == nil). Для ввода, проброшенного через удалённый стол, Apple Screen Sharing
+/// шлёт keyCode 0 + сам символ — тогда char != nil, и конверсия идёт по символу,
+/// а не по бесполезному keyCode 0 (именно keyCode 0 рождал «фффффф»).
+struct TypedKey {
+    let keyCode: UInt16
+    let shift: Bool
+    let caps: Bool
+    var char: Character? = nil
+}
+
 /// Выделенная очередь для файлового I/O лога — чтобы запись на диск не блокировала
 /// поток обработки событий (event tap висит на главном run loop, а лог пишется
 /// для каждого нажатия при включённом debug).
@@ -43,6 +54,9 @@ func rslog(_ msg: String) {
 struct TriggerConfig {
     enum Kind {
         case modifier(mask: CGEventFlags, left: UInt16, right: UInt16)
+        /// Комбо из двух модификаторов (например ⌘+⇧). Детект по флагам: оба зажаты без
+        /// посторонних → отпущены все без клавиш между. Сторона (left/right) не важна.
+        case combo(CGEventFlags, CGEventFlags)
         case capsLock
     }
     let kind: Kind
@@ -58,6 +72,11 @@ struct TriggerConfig {
         case "command": kind = .modifier(mask: .maskCommand, left: KC.leftCommand, right: KC.rightCommand)
         case "control": kind = .modifier(mask: .maskControl, left: KC.leftControl, right: KC.rightControl)
         case "shift":   kind = .modifier(mask: .maskShift,   left: KC.leftShift,   right: KC.rightShift)
+        // Комбо двух модификаторов (issue #12: привычный по Windows стиль Alt+Shift и т.п.).
+        case "command+shift":  kind = .combo(.maskCommand, .maskShift)
+        case "control+shift":  kind = .combo(.maskControl, .maskShift)
+        case "command+option": kind = .combo(.maskCommand, .maskAlternate)
+        case "control+option": kind = .combo(.maskControl, .maskAlternate)
         // ТЕХДОЛГ: нативный Caps Lock убран из UI (нестабилен — HID-дебаунс/тоггл,
         // нужен HID-драйвер уровня Karabiner). Код consume-пути оставлен на будущее.
         case "capsLock": kind = .capsLock
@@ -80,13 +99,15 @@ final class KeyboardMonitor: @unchecked Sendable {
     /// Были ли реальные нажатия после последней конвертации?
     private(set) var keysTypedSinceConversion = true
 
-    /// Keycodes набираемого слова — для движка перепечатки (без буфера обмена)
-    private(set) var currentWordKeys: [(keyCode: UInt16, shift: Bool, caps: Bool)] = []
-    /// Keycodes слова перед последней границей-пробелом
-    private(set) var prevWordKeys: [(keyCode: UInt16, shift: Bool, caps: Bool)] = []
+    /// Нажатия набираемого слова — для движка перепечатки (без буфера обмена)
+    private(set) var currentWordKeys: [TypedKey] = []
+    /// Нажатия слова перед последней границей-пробелом
+    private(set) var prevWordKeys: [TypedKey] = []
     /// Фронтмост-приложение на момент границы слова — чтобы авто-путь не перепечатал
     /// в другое поле, если фокус уехал (Cmd-Tab/Spotlight) без клика/Tab.
     private(set) var prevWordBundleID: String?
+    /// issue #7: взводится при смене раскладки → на первой букве играем звук раскладки.
+    var soundArmed = false
 
     private var onAltTap: (() -> Void)?
     private var onAltReconvert: (() -> Void)?
@@ -213,10 +234,19 @@ final class KeyboardMonitor: @unchecked Sendable {
 
     // MARK: - Event Handling
 
-    fileprivate func handleKeyDown(keyCode: UInt16, flags: CGEventFlags) {
+    fileprivate func handleKeyDown(keyCode: UInt16, flags: CGEventFlags, char: Character? = nil) {
         triggerArmed = false
         lastTapTime = nil
         keysTypedSinceConversion = true
+
+        // Удалёнка: Screen Sharing шлёт проброшенные символы как keyCode 0 + юникод. Перехватываем
+        // ТОЛЬКО в режиме удалённого стола. КРИТИЧНО: локально keyCode 0 — это обычная клавиша
+        // 'a' (и 'ф' в ЙЦУКЕН), её нельзя глотать, иначе ломается локальная конверсия слов с
+        // этими буквами. В локальном режиме сюда не заходим — буква идёт обычным путём ниже.
+        if SettingsManager.shared.remoteDesktopMode, keyCode == 0 {
+            if let ch = char { handleForwardedChar(ch) }
+            return
+        }
 
         // Структурные клавиши обрабатываем ВСЕГДА, даже если в flags остался
         // «грязный» модификатор (stale .maskAlternate и т.п.) — иначе счётчик
@@ -266,15 +296,75 @@ final class KeyboardMonitor: @unchecked Sendable {
         if !modifiers.isEmpty { return }
 
         if KeyMapping.keycodeToEN[keyCode] != nil {
-            currentWordKeys.append((keyCode: keyCode, shift: flags.contains(.maskShift), caps: flags.contains(.maskAlphaShift)))
+            currentWordKeys.append(TypedKey(keyCode: keyCode, shift: flags.contains(.maskShift), caps: flags.contains(.maskAlphaShift)))
             currentWordLength += 1
             wordBeforeBoundaryLength = 0
             boundaryCount = 0
             prevWordKeys = []
+            playLayoutSoundIfArmed()
         } else {
             // Esc, F-клавиши, и т.д. — полный сброс
             fullReset()
         }
+    }
+
+    /// Обработка символа, проброшенного через удалённый стол (keyCode 0 + юникод).
+    /// Работаем по самому символу: пробел — граница слова, backspace — откат,
+    /// буква — кладём реальный символ в буфер (конверсия пойдёт по нему, см. convertKeys).
+    private func handleForwardedChar(_ ch: Character) {
+        // Пробел — граница слова (как локальный keyCode space)
+        if ch == " " {
+            if currentWordLength > 0 {
+                wordBeforeBoundaryLength = currentWordLength
+                boundaryCount = 1
+                prevWordKeys = currentWordKeys
+                prevWordBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                fireWordBoundary()
+            } else {
+                boundaryCount += 1
+            }
+            currentWordLength = 0
+            currentWordKeys = []
+            return
+        }
+        // Перенос строки / таб — полный сброс
+        if ch == "\n" || ch == "\r" || ch == "\t" {
+            fullReset()
+            return
+        }
+        // Backspace / Delete — откат одной буквы
+        if ch == "\u{8}" || ch == "\u{7f}" {
+            if currentWordLength > 0 {
+                currentWordLength -= 1
+                if !currentWordKeys.isEmpty { currentWordKeys.removeLast() }
+            } else {
+                fullReset()
+            }
+            return
+        }
+        // Буква — кладём реальный символ (keyCode 0 = «проброшено»). shift несём из регистра.
+        if ch.isLetter {
+            currentWordKeys.append(TypedKey(keyCode: 0, shift: ch.isUppercase, caps: false, char: ch))
+            currentWordLength += 1
+            wordBeforeBoundaryLength = 0
+            boundaryCount = 0
+            prevWordKeys = []
+            playLayoutSoundIfArmed()
+            return
+        }
+        // Цифры/пунктуация/прочее — границу слова не двигаем, в буфер не копим.
+    }
+
+    /// issue #7: на первой букве после смены раскладки даём короткий звук, зависящий от
+    /// раскладки — слышно, в какой раскладке начал печатать. Опц., по умолчанию выключено.
+    private func playLayoutSoundIfArmed() {
+        guard soundArmed, SettingsManager.shared.keySound else { return }
+        soundArmed = false
+        let sources = LayoutSwitcher.installedLayouts()
+        let id1 = SettingsManager.shared.layout1ID.isEmpty
+            ? LayoutSwitcher.autoDetectID1(from: sources) : SettingsManager.shared.layout1ID
+        let name = LayoutSwitcher.currentLayoutID() == id1 ? "Tink" : "Pop"
+        NSSound(named: name)?.play()
     }
 
     /// Возвращает true, если событие надо «съесть» (только Caps Lock в consume-режиме).
@@ -309,6 +399,26 @@ final class KeyboardMonitor: @unchecked Sendable {
                 triggerArmed = false
                 triggerPressTime = nil
             }
+            return false
+
+        case let .combo(maskA, maskB):
+            let both: CGEventFlags = [maskA, maskB]
+            let allMods: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
+            let others = allMods.subtracting(both)
+            if !flags.intersection(others).isEmpty {
+                triggerArmed = false                 // зажат посторонний модификатор — не наш триггер
+            } else if flags.contains(both) {
+                triggerArmed = true                  // ровно оба нужных, без посторонних → армим
+                triggerPressTime = Date()
+            } else if flags.intersection(allMods).isEmpty {
+                // всё отпущено: тап-комбо, если был армлен, быстро и без клавиш между
+                if triggerArmed, let t = triggerPressTime, Date().timeIntervalSince(t) < tapWindow {
+                    registerTap()
+                }
+                triggerArmed = false
+                triggerPressTime = nil
+            }
+            // частичное состояние (зажат один из двух) — ждём, ничего не трогаем
             return false
         }
     }
@@ -369,7 +479,27 @@ private func keyboardCallback(
 
     if type == .keyDown {
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        monitor.handleKeyDown(keyCode: keyCode, flags: event.flags)
+        let remote = SettingsManager.shared.remoteDesktopMode
+        // Удалёнка: игнорируем авто-повтор клавиш — латентность Screen Sharing рождает
+        // ложные повторы (тот самый «фффффф»), засоряющие буфер конверсии.
+        if event.getIntegerValueField(.keyboardEventAutorepeat) != 0, remote {
+            return Unmanaged.passRetained(event)
+        }
+        // Удалёнка: Screen Sharing пробрасывает символы как keyCode 0 + юникод-payload.
+        // Читаем сам символ — без него буфер забивается keyCode 0 (= один символ → «фффффф»).
+        var forwardedChar: Character? = nil
+        if remote, keyCode == 0 {
+            var buf = [UniChar](repeating: 0, count: 4)
+            var len = 0
+            event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &len, unicodeString: &buf)
+            if len >= 1, let scalar = UnicodeScalar(buf[0]) {
+                forwardedChar = Character(scalar)
+                if SettingsManager.shared.debugLogEnabled {
+                    rslog("remote: forwarded char U+\(String(buf[0], radix: 16))")
+                }
+            }
+        }
+        monitor.handleKeyDown(keyCode: keyCode, flags: event.flags, char: forwardedChar)
     } else if type == .flagsChanged {
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         if monitor.handleFlagsChanged(flags: event.flags, keyCode: keyCode) {

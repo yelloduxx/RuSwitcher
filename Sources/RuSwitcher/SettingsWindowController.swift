@@ -424,7 +424,19 @@ final class SettingsWindowController {
             ("shift", "Shift ⇧"),
             // Caps Lock убран: нативный перехват нестабилен (HID-дебаунс/тоггл) — см. техдолг.
         ]
+        // issue #12: комбо двух модификаторов (привычный по Windows стиль Alt+Shift).
+        let comboItems: [(key: String, title: String)] = [
+            ("command+shift", "⌘ + ⇧  (Command + Shift)"),
+            ("control+shift", "⌃ + ⇧  (Control + Shift)"),
+            ("command+option", "⌘ + ⌥  (Command + Option)"),
+            ("control+option", "⌃ + ⌥  (Control + Option)"),
+        ]
         for it in items {
+            popup.addItem(withTitle: it.title)
+            popup.menu?.items.last?.representedObject = it.key as NSString
+        }
+        popup.menu?.addItem(.separator())
+        for it in comboItems {
             popup.addItem(withTitle: it.title)
             popup.menu?.items.last?.representedObject = it.key as NSString
         }

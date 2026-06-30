@@ -70,8 +70,8 @@ final class TextConverter {
     /// юникод-вставку — без буфера обмена и без выделения (работает в Atom/Electron).
     /// Падает на clipboard-движок, если буфера нет (текст выделен мышью) или
     /// раскладки не определились.
-    func convert(wordKeys: [(keyCode: UInt16, shift: Bool, caps: Bool)], prevWordKeys: [(keyCode: UInt16, shift: Bool, caps: Bool)], boundaryCount: Int) -> Bool {
-        let keys: [(keyCode: UInt16, shift: Bool, caps: Bool)]
+    func convert(wordKeys: [TypedKey], prevWordKeys: [TypedKey], boundaryCount: Int) -> Bool {
+        let keys: [TypedKey]
         let trailingSpaces: Int
         if !wordKeys.isEmpty {
             keys = wordKeys; trailingSpaces = 0

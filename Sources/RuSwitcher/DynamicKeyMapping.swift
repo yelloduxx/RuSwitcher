@@ -108,8 +108,16 @@ enum DynamicKeyMapping {
     /// Конвертирует набранные keycodes в строки исходной и целевой раскладок —
     /// для движка перепечатки (не читаем поле, не трогаем буфер обмена).
     /// nil — если раскладки не определились (тогда вызывающий падает на clipboard).
-    static func convertKeys(_ keys: [(keyCode: UInt16, shift: Bool, caps: Bool)]) -> (original: String, converted: String)? {
+    static func convertKeys(_ keys: [TypedKey]) -> (original: String, converted: String)? {
         guard !keys.isEmpty else { return nil }
+        // Удалёнка: символы проброшены через Screen Sharing (keyCode 0 + char). Конвертируем
+        // по самому символу — направление RU↔EN определяет KeyMapping.convert по скрипту
+        // (Cyrillic↔Latin), а не по раскладке локальной машины. Так офисный инстанс правильно
+        // конвертит «руддщ»→«hello» независимо от того, какая раскладка активна на нём.
+        if keys.allSatisfy({ $0.char != nil }) {
+            let original = String(keys.compactMap { $0.char })
+            return (original, KeyMapping.convert(original))
+        }
         let settings = SettingsManager.shared
         let layouts = LayoutSwitcher.installedLayouts()
         let currentID = LayoutSwitcher.currentLayoutID()

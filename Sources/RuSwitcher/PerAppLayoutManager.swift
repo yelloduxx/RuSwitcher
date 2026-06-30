@@ -44,6 +44,15 @@ final class PerAppLayoutManager {
             layoutByApp[prevID] = currentLayout
         }
 
+        // Удалёнка: в окне клиента удалённого стола раскладкой управляет конверсия и сам
+        // пользователь, а не пер-приложенческая память. Иначе при входе в окно мы вернём
+        // раскладку на запомненную (например, всегда русский) и сломаем продолжение ввода.
+        if SettingsManager.shared.remoteDesktopMode,
+           AutoSwitchPolicy.isRemoteDesktopClient(newBundleID) {
+            previousBundleID = newBundleID
+            return
+        }
+
         // Восстанавливаем раскладку для нового приложения
         if let savedLayout = layoutByApp[newBundleID], savedLayout != currentLayout {
             rslog("PerAppLayout: \(newBundleID) → restore \(savedLayout)")

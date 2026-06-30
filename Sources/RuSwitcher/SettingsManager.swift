@@ -27,6 +27,8 @@ final class SettingsManager: @unchecked Sendable {
         static let autoConvert = "com.ruswitcher.autoConvert"
         static let remoteDesktopMode = "com.ruswitcher.remoteDesktopMode"
         static let showRemoteDesktopBeta = "com.ruswitcher.showRemoteDesktopBeta"
+        static let autoConvertOffered = "com.ruswitcher.autoConvertOffered"
+        static let keySound = "com.ruswitcher.keySound"
         static let deniedAppsAdded = "com.ruswitcher.deniedAppsAdded"
         static let deniedAppsRemoved = "com.ruswitcher.deniedAppsRemoved"
         static let deniedWords = "com.ruswitcher.deniedWords"
@@ -152,11 +154,27 @@ final class SettingsManager: @unchecked Sendable {
         set { defaults.set(newValue, forKey: Keys.remoteDesktopMode) }
     }
 
-    /// Показывать ли тумблер «Режим удалённого стола» (бета, отложен в 2.5). По умолчанию
-    /// скрыт; тестировщик включает: `defaults write com.ruswitcher.app com.ruswitcher.showRemoteDesktopBeta -bool YES`.
+    /// Показывать ли тумблер «Режим удалённого стола» (видимая бета в 2.5). По умолчанию
+    /// ВКЛючён; спрятать можно явно: `defaults write com.ruswitcher.app com.ruswitcher.showRemoteDesktopBeta -bool NO`.
     var showRemoteDesktopBeta: Bool {
-        get { defaults.bool(forKey: Keys.showRemoteDesktopBeta) }
+        get {
+            // Нет записи в defaults → считаем включённым (дефолт ON для 2.5).
+            if defaults.object(forKey: Keys.showRemoteDesktopBeta) == nil { return true }
+            return defaults.bool(forKey: Keys.showRemoteDesktopBeta)
+        }
         set { defaults.set(newValue, forKey: Keys.showRemoteDesktopBeta) }
+    }
+
+    /// Предлагали ли уже автозамену при первом запуске (онбординг показывается один раз).
+    var autoConvertOffered: Bool {
+        get { defaults.bool(forKey: Keys.autoConvertOffered) }
+        set { defaults.set(newValue, forKey: Keys.autoConvertOffered) }
+    }
+
+    /// issue #7: звук раскладки на первой букве после смены раскладки. По умолчанию OFF.
+    var keySound: Bool {
+        get { defaults.bool(forKey: Keys.keySound) }
+        set { defaults.set(newValue, forKey: Keys.keySound) }
     }
 
     /// Приложения, где авто-конверсия выключена. Эффективный список = дефолты минус

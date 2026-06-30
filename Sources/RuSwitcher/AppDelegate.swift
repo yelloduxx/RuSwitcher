@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsController = SettingsWindowController()
     private let perAppLayoutManager = PerAppLayoutManager()
     private var permissionCheckTimer: Timer?
+    private var iconRefreshTimer: Timer?
     private var monitoringActive = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -251,7 +252,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onAltTap: { [weak self] in
                 guard let self else { return }
                 guard SettingsManager.shared.autoSwitchEnabled else { return }
-                if AutoSwitchPolicy.shouldDeferToRemoteClient { rslog("trigger: defer to remote"); return }
+                if AutoSwitchPolicy.shouldDeferToRemoteClient {
+                    // Удалёнка: текст конвертит офисный инстанс по реальным проброшенным символам
+                    // (Fix №6). А здесь меняем СВОЮ раскладку — чтобы дальнейший ввод пошёл уже
+                    // в правильной раскладке и не пришлось конвертить каждое слово.
+                    LayoutSwitcher.switchToOpposite()
+                    self.updateStatusIcon()
+                    rslog("trigger: local layout switched, conversion handled by controlled instance")
+                    return
+                }
                 let keys = self.keyboardMonitor.currentWordKeys
                 let prevKeys = self.keyboardMonitor.prevWordKeys
                 let bc = self.keyboardMonitor.boundaryCount
@@ -265,7 +274,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             onAltReconvert: { [weak self] in
                 guard let self else { return }
                 guard SettingsManager.shared.autoSwitchEnabled else { return }
-                if AutoSwitchPolicy.shouldDeferToRemoteClient { rslog("trigger: defer to remote"); return }
+                if AutoSwitchPolicy.shouldDeferToRemoteClient {
+                    // Удалёнка: текст конвертит офисный инстанс по реальным проброшенным символам
+                    // (Fix №6). А здесь меняем СВОЮ раскладку — чтобы дальнейший ввод пошёл уже
+                    // в правильной раскладке и не пришлось конвертить каждое слово.
+                    LayoutSwitcher.switchToOpposite()
+                    self.updateStatusIcon()
+                    rslog("trigger: local layout switched, conversion handled by controlled instance")
+                    return
+                }
                 if self.textConverter.reconvert() {
                     self.keyboardMonitor.markConverted()
                     LayoutSwitcher.switchToOpposite()
@@ -286,14 +303,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.handleAutoConvert()
         }
         updateStatusIcon()
+        // Страховка к issue #9: системное уведомление о смене раскладки ненадёжно
+        // (особенно через удалённый стол — на той машине оно часто не доходит), поэтому
+        // флаг «застревает». Постоянный лёгкий опрос держит иконку в синхроне с системой.
+        iconRefreshTimer?.invalidate()
+        iconRefreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.updateStatusIcon() }
+        }
         rslog("Monitoring started successfully")
 
         if SettingsManager.shared.perAppLayout {
             startPerAppLayout()
         }
 
-        // Предлагаем автозагрузку при первом запуске
+        // Предлагаем автозагрузку и автозамену при первом запуске (по разу)
         offerLaunchAtLoginIfNeeded()
+        offerAutoConvertIfNeeded()
     }
 
     /// Авто-конвертация на границе слова: детект неправильной раскладки → конверт + смена.
@@ -304,9 +329,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard SettingsManager.shared.autoConvert else { rslog("auto: bail flag-off"); return }
         guard !AutoSwitchPolicy.secureInputActive else { rslog("auto: bail secure-input"); return }
         let frontID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        if SettingsManager.shared.remoteDesktopMode, AutoSwitchPolicy.isRemoteDesktopClient(frontID) {
-            rslog("auto: bail defer-remote"); return
-        }
+        // Удалёнка: НЕ выходим сразу — прогоняем детектор по своему (чистому) буферу, и при
+        // «не той раскладке» переключаем СВОЮ раскладку (конверсию делает инстанс на той стороне).
+        let deferToRemote = SettingsManager.shared.remoteDesktopMode && AutoSwitchPolicy.isRemoteDesktopClient(frontID)
         if AutoSwitchPolicy.isDeniedApp(frontID) { rslog("auto: bail denied-app \(frontID ?? "?")"); return }
         if let captured = keyboardMonitor.prevWordBundleID, captured != frontID {
             rslog("auto: bail focus-changed"); return  // фокус уехал между пробелом и сейчас
@@ -317,7 +342,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !keys.isEmpty else { rslog("auto: bail empty-keys"); return }  // курсор уехал — небезопасно
         guard let pair = DynamicKeyMapping.convertKeys(keys) else { rslog("auto: bail convertKeys-nil"); return }
         if AutoSwitchPolicy.isDeniedWord(pair.original, pair.converted) { rslog("auto: bail denied-word"); return }
-        guard let langs = LayoutSwitcher.currentAndOppositeLanguage() else { rslog("auto: bail langs-nil"); return }
+
+        // Язык для детектора. Для проброшенного через удалёнку текста (все символы — char)
+        // направление определяем по СКРИПТУ набранного, а не по раскладке офисной машины:
+        // на офисе раскладка может не соответствовать тому, что напечатали на контроллере,
+        // и тогда decide ошибочно даёт keep (это и есть «авто в удалёнке не работает»).
+        let langs: (current: String, opposite: String)
+        if keys.allSatisfy({ $0.char != nil }) {
+            let typedIsCyrillic = pair.original.unicodeScalars.contains { $0.value >= 0x0400 && $0.value <= 0x04FF }
+            langs = typedIsCyrillic ? ("ru", "en") : ("en", "ru")
+        } else if let l = LayoutSwitcher.currentAndOppositeLanguage() {
+            langs = l
+        } else {
+            rslog("auto: bail langs-nil"); return
+        }
 
         let capsLock = keys.contains { $0.caps }
         let verdict = LayoutDetector.decide(typed: pair.original, converted: pair.converted,
@@ -325,6 +363,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                             capsLock: capsLock)
         rslog("auto: len=\(pair.original.count) \(langs.current)/\(langs.opposite) verdict=\(verdict)")  // слова не логируем (приватность)
         guard verdict == .switchToConverted else { return }
+
+        if deferToRemote {
+            // Удалёнка: текст конвертит офисный инстанс по реальным проброшенным символам.
+            // Здесь меняем СВОЮ раскладку — чтобы дальнейший ввод пошёл уже в правильной.
+            LayoutSwitcher.switchToOpposite()
+            updateStatusIcon()
+            rslog("auto: local layout switched, conversion handled by controlled instance")
+            return
+        }
 
         rslog("auto: convert \(keys.count) keys (+\(bc) sp)")
         if textConverter.convert(wordKeys: [], prevWordKeys: keys, boundaryCount: bc) {
@@ -357,11 +404,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Предлагает включить автозамену при первом запуске (один раз). Фича OFF по умолчанию,
+    /// поэтому без явного предложения пользователь о ней не узнает.
+    private func offerAutoConvertIfNeeded() {
+        let settings = SettingsManager.shared
+        guard !settings.autoConvertOffered else { return }
+        settings.autoConvertOffered = true
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = L10n.onboardAutoConvertTitle
+        alert.informativeText = L10n.onboardAutoConvertText
+        alert.addButton(withTitle: L10n.wizardYes)
+        alert.addButton(withTitle: L10n.wizardNo)
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            settings.autoConvert = true
+            rebuildMenu()  // синхронизировать галочку «Автоматическая конверсия» в меню
+            rslog("User enabled auto-convert at onboarding")
+        } else {
+            rslog("User declined auto-convert at onboarding")
+        }
+    }
+
     // MARK: - Status Item
 
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         rebuildMenu()
+        // issue #9: иконка должна отражать раскладку и при СИСТЕМНОЙ смене (стандартный/
+        // переопределённый хоткей), а не только при нашей конверсии. Слушаем системное
+        // распределённое уведомление о смене источника ввода.
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(systemInputSourceChanged),
+            name: NSNotification.Name("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged"),
+            object: nil
+        )
+    }
+
+    @objc private func systemInputSourceChanged() {
+        updateStatusIcon()
+        keyboardMonitor.soundArmed = true  // issue #7: следующая буква даст звук раскладки
     }
 
     /// Собирает меню статус-бара. Вызывается заново при смене языка интерфейса,
@@ -386,6 +470,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         autoConvertItem.target = self
         autoConvertItem.state = SettingsManager.shared.autoConvert ? .on : .off
         menu.addItem(autoConvertItem)
+
+        let keySoundItem = NSMenuItem(title: L10n.menuKeySound, action: #selector(toggleKeySound), keyEquivalent: "")
+        keySoundItem.target = self
+        keySoundItem.state = SettingsManager.shared.keySound ? .on : .off
+        menu.addItem(keySoundItem)
 
         // Режим удалённого стола отложен в 2.5 — тумблер скрыт за флагом (для тестирования).
         if SettingsManager.shared.showRemoteDesktopBeta {
@@ -430,9 +519,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func updateStatusIcon() {
-        let layout = LayoutSwitcher.currentLayoutID()
-        let isRussian = layout.lowercased().contains("russian") || layout.lowercased().contains("ru")
-        statusItem.button?.title = isRussian ? "🇷🇺" : "🇺🇸"
+        statusItem.button?.title = flagForCurrentLayout()
+    }
+
+    /// Флаг текущей раскладки по коду языка (BCP-47), а не по подстроке в ID — иначе
+    /// "Belarusian" ложно матчил "ru", а любая не-RU/EN пара показывалась как 🇺🇸.
+    private func flagForCurrentLayout() -> String {
+        guard let lang = LayoutSwitcher.currentLanguageCode()?.lowercased(), !lang.isEmpty else {
+            // Язык раскладки недоступен — мягкий фолбэк по ID.
+            let id = LayoutSwitcher.currentLayoutID().lowercased()
+            return (id.contains("russian") || id.hasSuffix(".ru")) ? "🇷🇺" : "🇺🇸"
+        }
+        let code = String(lang.prefix(2))
+        let flags: [String: String] = [
+            "ru": "🇷🇺", "en": "🇺🇸", "uk": "🇺🇦", "be": "🇧🇾",
+            "de": "🇩🇪", "fr": "🇫🇷", "es": "🇪🇸", "it": "🇮🇹",
+            "pt": "🇵🇹", "pl": "🇵🇱", "ja": "🇯🇵", "zh": "🇨🇳", "ko": "🇰🇷",
+        ]
+        return flags[code] ?? code.uppercased()
     }
 
     // MARK: - Actions
@@ -447,6 +551,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleAutoConvert(_ sender: NSMenuItem) {
         SettingsManager.shared.autoConvert.toggle()
         sender.state = SettingsManager.shared.autoConvert ? .on : .off
+    }
+
+    @objc private func toggleKeySound(_ sender: NSMenuItem) {
+        SettingsManager.shared.keySound.toggle()
+        sender.state = SettingsManager.shared.keySound ? .on : .off
     }
 
     @objc private func toggleRemoteDesktop(_ sender: NSMenuItem) {

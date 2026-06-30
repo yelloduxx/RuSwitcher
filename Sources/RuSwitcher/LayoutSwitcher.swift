@@ -11,6 +11,15 @@ enum LayoutSwitcher {
         return sourceID(source)
     }
 
+    /// Код языка ТЕКУЩЕЙ раскладки (BCP-47, например "ru"/"en"). nil если недоступен.
+    /// Надёжнее парсинга ID: тот же признак, что использует сама ОС.
+    static func currentLanguageCode() -> String? {
+        guard let source = TISCopyCurrentKeyboardInputSource()?.takeRetainedValue() else {
+            return nil
+        }
+        return languageCode(source)
+    }
+
     /// Переключает на противоположную раскладку (из настроенной пары)
     static func switchToOpposite() {
         let current = currentLayoutID()
