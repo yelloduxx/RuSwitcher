@@ -24,7 +24,7 @@
 
 ## English
 
-Typed `ghbdtn` when you meant `привет`? Just tap **Option ⌥** and RuSwitcher converts the last word into the right layout — typing it directly, no copy-paste. Works with any pair of installed keyboard layouts — Russian, Ukrainian, Belarusian, German, French, and more — and the trigger key is fully configurable.
+Typed `ghbdtn` when you meant `привет`? Just tap **Option ⌥** and RuSwitcher converts the last word into the right layout — typing it directly, no copy-paste. Works with any pair of installed keyboard layouts — Russian, Ukrainian, Belarusian, German, French, and more. The trigger is fully configurable (a single key or a two-key combo), it can also fix the layout **automatically as you type**, and it even works through **Apple Screen Sharing**.
 
 ### How it works
 
@@ -34,25 +34,33 @@ Typed `ghbdtn` when you meant `привет`? Just tap **Option ⌥** and RuSwit
 | Tap **Option ⌥** again | Reverse conversion (undo) |
 | Select text, tap **Option ⌥** | Selected text is converted |
 
-The trigger is configurable — **Option**, **Command**, **Control** or **Shift**, left or right side, single or double-tap.
+The trigger is configurable — **Option**, **Command**, **Control** or **Shift** (left or right side, single or double-tap), or a **two-key combo** (⌘+⇧, ⌃+⇧, ⌘+⌥, ⌃+⌥) for the Windows-style Alt+Shift feel.
 
-### Automatic conversion (beta — new in 2.4)
+### Automatic conversion (beta)
 
 RuSwitcher can also fix the layout **automatically as you type**, with no key press. Turn it on in **Settings → Auto-conversion** (off by default). When you finish a word (space), it checks the word against the macOS system dictionary and — only when confident — converts it and switches the layout for you.
 
 Precision-first: to avoid false fixes it deliberately **skips** short words (< 3 letters), words with digits / punctuation / URLs, ALL-CAPS acronyms typed with Shift, camelCase / mixed-script code identifiers, terminals / IDEs / password managers, and password fields. It targets layout pairs that have a macOS system dictionary (English ↔ Russian / Ukrainian / German / French… are reliable); languages without one (Belarusian, Armenian, Georgian) keep using the manual trigger.
+
+Because the check relies on the **macOS system dictionary** — which is less complete than the real vocabulary of the languages it converts — some compound, rare or slang words won't auto-convert on their own. That's exactly what the built-in exception lists are for: add words you type often to **Always convert** (or **Never convert**) and RuSwitcher will handle them the way you want, no dictionary needed.
 
 **Three exception lists** let you tune it (Settings → Auto-conversion):
 - **Apps** — where auto-conversion stays off (terminals, IDEs and password managers are pre-filled; password managers can't be removed).
 - **Never convert** — words it must never touch (nicknames, logins, brands). After a wrong fix, tap the trigger to undo and RuSwitcher offers to add the word here.
 - **Always convert** — words to always fix even if they aren't in the dictionary (compound words, slang). Add the **target** word — the result you want.
 
+### Remote desktop (beta — new in 2.5)
+
+RuSwitcher works through **Apple Screen Sharing**. Type into a remote Mac's session and fix wrong-layout text right there — by trigger or automatically — just like on your local machine. Run RuSwitcher on **both** Macs and turn on **Remote Desktop mode** (beta, marked in the menu). Conversion happens on the Mac you're controlling, where the text actually lives.
+
 ### Features
 
 - **Any two layouts** — configure any pair from your installed system layouts. No hardcoded tables.
-- **Configurable trigger** — pick Option, Command, Control or Shift; left or right side; single or double-tap.
+- **Configurable trigger** — Option, Command, Control or Shift (left/right, single/double-tap), or a two-key combo like ⌘+⇧.
 - **Automatic conversion (beta)** — optionally fix the layout as you type, with a precision-first system-dictionary check. Off by default.
+- **Remote desktop (beta)** — fix the layout over Apple Screen Sharing, on the Mac you're controlling.
 - **Exception lists** — a per-app exclusion list plus never-convert and always-convert word lists.
+- **Layout sound (optional)** — a short sound on the first letter after a layout change, so you *hear* which layout you're in.
 - **Universal binary** — runs natively on both Apple Silicon and Intel Macs.
 - **Clipboard-free** — the converted word is typed directly via synthesized Unicode, so it works even in Electron / VS Code / Atom-class editors. Your clipboard is never touched (it's only a fallback for unusual apps).
 - **Smart word detection** — converts the last typed word, including punctuation.
@@ -113,10 +121,12 @@ The app adds itself to the permission lists automatically — you only need to f
 
 Access via the menu bar icon → **Settings** (⌘,).
 
-- **General** — conversion trigger, per-app layout memory, launch at login, interface language, layout pair.
-- **Auto-conversion** — automatic conversion toggle and the three exception lists (apps, never-convert, always-convert).
+- **General** — conversion trigger (single key or combo), per-app layout memory, launch at login, interface language, layout pair.
+- **Auto-conversion** — automatic conversion, **Remote Desktop mode (beta)**, and the three exception lists (apps, never-convert, always-convert).
 - **About** — version, donate, contact, check updates.
 - **Advanced** — debug logging, log management.
+
+The menu-bar menu also has quick toggles for Automatic conversion, Layout sound and Remote Desktop mode.
 
 ### Support the project
 
@@ -133,7 +143,7 @@ If you find RuSwitcher useful:
 
 ## Русский
 
-Набрали `ghbdtn` вместо `привет`? Просто нажмите **Option ⌥** — и RuSwitcher сконвертирует последнее слово в правильную раскладку, печатая его напрямую, без копипасты. Работает с любой парой установленных раскладок — русская, украинская, белорусская, немецкая, французская и другие — а клавишу-триггер можно настроить.
+Набрали `ghbdtn` вместо `привет`? Просто нажмите **Option ⌥** — и RuSwitcher сконвертирует последнее слово в правильную раскладку, печатая его напрямую, без копипасты. Работает с любой парой установленных раскладок — русская, украинская, белорусская, немецкая, французская и другие. Триггер настраивается (одна клавиша или комбо из двух), есть **автоматическая конверсия по ходу набора**, и всё это работает даже через **Apple Screen Sharing**.
 
 ### Как работает
 
@@ -143,25 +153,33 @@ If you find RuSwitcher useful:
 | Нажать **Option ⌥** повторно | Обратная конвертация (отмена) |
 | Выделить текст, нажать **Option ⌥** | Выделенный текст сконвертирован |
 
-Триггер настраивается — **Option**, **Command**, **Control** или **Shift**, левый или правый, одиночный или двойной тап.
+Триггер настраивается — **Option**, **Command**, **Control** или **Shift** (левый или правый, одиночный или двойной тап), либо **комбо из двух клавиш** (⌘+⇧, ⌃+⇧, ⌘+⌥, ⌃+⌥) — в стиле привычного Alt+Shift.
 
-### Автоматическая конверсия (бета — новое в 2.4)
+### Автоматическая конверсия (бета)
 
 RuSwitcher умеет исправлять раскладку **автоматически по ходу набора**, без нажатий. Включается в **Настройки → Автоконверсия** (по умолчанию выключено). Когда вы заканчиваете слово (пробел), приложение сверяет его с системным словарём macOS и — только при уверенности — конвертирует и само переключает раскладку.
 
 Точность важнее полноты: чтобы не сработать зря, авто-конверсия намеренно **пропускает** короткие слова (< 3 букв), слова с цифрами / пунктуацией / URL, акронимы капсом через Shift, camelCase / смешанные алфавиты (идентификаторы кода), терминалы / IDE / менеджеры паролей и поля паролей. Работает для пар раскладок, у которых есть системный словарь macOS (английский ↔ русский / украинский / немецкий / французский… — надёжно); для языков без словаря (белорусский, армянский, грузинский) остаётся ручной триггер.
+
+Поскольку проверка опирается на **системный словарь macOS** — а он не так богат, как реальный словарный запас конвертируемых языков — некоторые составные, редкие или сленговые слова сами не сконвертируются. Ровно для этого и нужны встроенные списки исключений: часто используемые слова добавляйте в **«Всегда конвертировать»** (или **«Никогда не конвертировать»**), и RuSwitcher будет обрабатывать их как вам нужно, без словаря.
 
 **Три списка исключений** для тонкой настройки (Настройки → Автоконверсия):
 - **Приложения** — где авто-конверсия выключена (терминалы, IDE, менеджеры паролей уже в списке; менеджеры паролей удалить нельзя).
 - **Никогда не конвертировать** — слова, которые трогать нельзя (ники, логины, бренды). После ошибочной замены нажмите триггер для отмены — RuSwitcher предложит добавить слово сюда.
 - **Всегда конвертировать** — слова, которые исправлять всегда, даже если их нет в словаре (составные слова, сленг). Добавляйте **целевое** слово — то, что должно получиться.
 
+### Режим удалённого стола (бета — новое в 2.5)
+
+RuSwitcher работает через **Apple Screen Sharing**. Печатаете в сессии удалённого Mac — и неправильная раскладка исправляется прямо там, по триггеру или автоматически, как на локальной машине. Запустите RuSwitcher на **обеих** машинах и включите **Режим удалённого стола** (бета, помечен в меню). Конверсия происходит на управляемой машине, где и находится текст.
+
 ### Возможности
 
 - **Любая пара раскладок** — настраивается любая пара из установленных в системе. Без захардкоженных таблиц.
-- **Настраиваемый триггер** — Option, Command, Control или Shift; левый или правый; одиночный или двойной тап.
+- **Настраиваемый триггер** — Option, Command, Control или Shift (левый/правый, одиночный/двойной тап), либо комбо из двух клавиш вроде ⌘+⇧.
 - **Автоматическая конверсия (бета)** — опционально исправляет раскладку по ходу набора, с проверкой по системному словарю. По умолчанию выключено.
+- **Режим удалённого стола (бета)** — исправление раскладки через Apple Screen Sharing, на управляемой машине.
 - **Списки исключений** — список приложений плюс словари never-convert и always-convert.
+- **Звук раскладки (опционально)** — короткий звук на первой букве после смены раскладки, чтобы *на слух* понимать раскладку.
 - **Universal-сборка** — нативно на Apple Silicon и Intel.
 - **Без буфера обмена** — конвертированное слово печатается напрямую через синтез Unicode, поэтому работает даже в Electron / VS Code / Atom. Буфер обмена не трогается (только как запасной вариант для нестандартных приложений).
 - **Умное определение слова** — конвертирует последнее набранное слово, включая знаки препинания.
@@ -222,10 +240,12 @@ cp -R RuSwitcher.app /Applications/
 
 Доступ через иконку в строке меню → **Настройки** (⌘,).
 
-- **Общие** — триггер конвертации, память раскладки по приложению, автозапуск, язык интерфейса, пара раскладок.
-- **Автоконверсия** — тумблер автоматической конверсии и три списка исключений (приложения, never-convert, always-convert).
+- **Общие** — триггер конвертации (одна клавиша или комбо), память раскладки по приложению, автозапуск, язык интерфейса, пара раскладок.
+- **Автоконверсия** — автоматическая конверсия, **Режим удалённого стола (бета)** и три списка исключений (приложения, never-convert, always-convert).
 - **О программе** — версия, донат, контакт, проверка обновлений.
 - **Дополнительно** — режим отладки, управление логами.
+
+В меню в строке меню также есть быстрые тумблеры: «Автоматическая конверсия», «Звук раскладки» и «Режим удалённого стола».
 
 ### Поддержать проект
 
