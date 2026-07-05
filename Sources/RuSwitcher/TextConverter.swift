@@ -19,6 +19,16 @@ final class TextConverter {
     private var lastConverted = ""
     private var lastWasBuffer = false
 
+    /// NFC-нормализация перед вставкой — но НЕ для иврита/арабского: канонич. композиция
+    /// может переставить/слить комбинирующие знаки (никуд/харакат), и число кодпоинтов
+    /// разъедется со счётчиком Backspace/Shift-Left. Для RTL оставляем строку как есть.
+    nonisolated static func normalizedForInsert(_ s: String) -> String {
+        let hasRTL = s.unicodeScalars.contains {
+            ($0.value >= 0x0590 && $0.value <= 0x05FF) || ($0.value >= 0x0600 && $0.value <= 0x06FF)
+        }
+        return hasRTL ? s : s.precomposedStringWithCanonicalMapping
+    }
+
     /// Создаёт CGEventSource с маркером, чтобы KeyboardMonitor игнорировал наши события
     nonisolated private func makeSource() -> CGEventSource? {
         let source = CGEventSource(stateID: .hidSystemState)
@@ -159,7 +169,7 @@ final class TextConverter {
         // --- Попытка 1: уже есть выделенный текст? ---
         if let text = tryCopy(pasteboard) {
             rslog("convert: selection len=\(text.count)")
-            let converted = DynamicKeyMapping.convert(text).precomposedStringWithCanonicalMapping
+            let converted = TextConverter.normalizedForInsert(DynamicKeyMapping.convert(text))
             pasteText(converted, pasteboard: pasteboard)
             // Курсор остаётся в конце вставленного текста — не пере-выделяем,
             // чтобы следующий ввод не затёр результат. Для reconvert используется
@@ -199,7 +209,7 @@ final class TextConverter {
         }
 
         rslog("convert: word len=\(text.count)")
-        let converted = DynamicKeyMapping.convert(text).precomposedStringWithCanonicalMapping
+        let converted = TextConverter.normalizedForInsert(DynamicKeyMapping.convert(text))
         pasteText(converted, pasteboard: pasteboard)
 
         moveRight(usedBoundary)
@@ -241,7 +251,7 @@ final class TextConverter {
         }
 
         rslog("reconvert: len=\(text.count) → converting")
-        let converted = DynamicKeyMapping.convert(text).precomposedStringWithCanonicalMapping
+        let converted = TextConverter.normalizedForInsert(DynamicKeyMapping.convert(text))
         pasteText(converted, pasteboard: pasteboard)
 
         moveRight(lastBoundaryCount)

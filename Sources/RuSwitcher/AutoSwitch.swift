@@ -44,6 +44,20 @@ enum LayoutDetector {
         let cur = String(currentLang.prefix(2))
         let oth = String(otherLang.prefix(2))
 
+        // --- Кросс-скрипт с ивритом (3.0) ---
+        // Системный ивритский словарь macOS БЕСПОЛЕЗЕН для детекта: он принимает любой набор
+        // букв как «валидное слово» (проверено эмпирически). Поэтому двусторонняя проверка на
+        // стороне иврита не работает. Решаем по НАДЁЖНОМУ английскому словарю, применённому к
+        // латинской форме: если латиница — реальное английское слово, задумана латиница; иначе
+        // задуман иврит. Конвертим, когда набранный скрипт ≠ задуманному. Корректно в обе стороны.
+        if isHebrew(cur) || isHebrew(oth) {
+            let typedIsLatin = !isHebrew(cur)                   // текущая раскладка латинская → набрано латиницей
+            let latin = typedIsLatin ? typed : converted
+            guard Dict.isAvailable("en") else { return .undecided }
+            let intendedIsLatin = Dict.isValidWord(latin.lowercased(), lang: "en")
+            return (intendedIsLatin == typedIsLatin) ? .keep : .switchToConverted
+        }
+
         // Словарь — без учёта регистра (Caps Lock не должен мешать определению слова).
         guard Dict.isAvailable(oth) else { return .undecided }
         guard Dict.isValidWord(converted.lowercased(), lang: oth) else { return .keep }
@@ -55,6 +69,12 @@ enum LayoutDetector {
 
     private static func isAllCaps(_ s: String) -> Bool {
         s == s.uppercased() && s != s.lowercased()
+    }
+
+    /// Язык — иврит (BCP-47 `he` или устаревший `iw`). Каретка кросс-скрипт-детекта (3.0).
+    static func isHebrew(_ lang: String) -> Bool {
+        let two = lang.lowercased().prefix(2)
+        return two == "he" || two == "iw"
     }
 
     /// Похоже на программный идентификатор: внутренняя заглавная (camelCase/PascalCase)

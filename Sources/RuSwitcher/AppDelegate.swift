@@ -2,7 +2,7 @@ import AppKit
 import ApplicationServices
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let keyboardMonitor = KeyboardMonitor()
     private let textConverter = TextConverter()
@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateCheckTimer: Timer?   // периодическая авто-проверка обновлений, пока приложение работает
     private var monitoringActive = false
     private var caretIndicator: CaretIndicator?   // issue #10: флаг у каретки (бета, по умолчанию OFF)
+    private var lastFlagShown: String?            // идентичность раскладки для детекта смены (не title!)
+    private var badgeCache: [String: NSImage] = [:]  // монохромные плашки, чтобы не перерисовывать 2с-опросом
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -29,11 +31,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupSettingsCallbacks() {
-        settingsController.onAutoSwitchChanged = { [weak self] enabled in
-            guard let self else { return }
-            if let menuItem = self.statusItem.menu?.item(at: 0) {
-                menuItem.state = enabled ? .on : .off
-            }
+        settingsController.onAutoSwitchChanged = { [weak self] _ in
+            // Не адресуем пункт по индексу: с 2.5.0 item(at: 0) — строка версии, а со списком
+            // раскладок индексы вообще динамические. Пересборка — как у соседних колбэков.
+            self?.rebuildMenu()
         }
         settingsController.onPerAppLayoutChanged = { [weak self] enabled in
             guard let self else { return }
@@ -475,6 +476,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(verItem)
         menu.addItem(NSMenuItem.separator())
 
+        // Список раскладок как в системном меню ввода: флаг + имя, галочка на текущей,
+        // клик — переключение. Актуализируется в menuWillOpen при каждом открытии.
+        for item in layoutMenuItems() { menu.addItem(item) }
+        menu.addItem(NSMenuItem.separator())
+
         let autoItem = NSMenuItem(title: L10n.menuAutoSwitch, action: #selector(toggleAutoSwitch), keyEquivalent: "")
         autoItem.target = self
         autoItem.state = SettingsManager.shared.autoSwitchEnabled ? .on : .off
@@ -494,6 +500,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         caretFlagItem.target = self
         caretFlagItem.state = SettingsManager.shared.caretFlag ? .on : .off
         menu.addItem(caretFlagItem)
+
+        // Единый стиль меню-бара (Sequoia): монохромная плашка вместо цветного флага.
+        let monoIconItem = NSMenuItem(title: L10n.menuMonoIcon, action: #selector(toggleMonoIcon), keyEquivalent: "")
+        monoIconItem.target = self
+        monoIconItem.state = SettingsManager.shared.monochromeIcon ? .on : .off
+        menu.addItem(monoIconItem)
 
         // Режим удалённого стола отложен в 2.5 — тумблер скрыт за флагом (для тестирования).
         if SettingsManager.shared.showRemoteDesktopBeta {
@@ -533,17 +545,110 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
 
+        menu.delegate = self
         statusItem.menu = menu
         rslog("Menu (re)built with \(menu.items.count) items")
     }
 
+    // MARK: - Layout list in menu
+
+    /// Метка пунктов-раскладок, чтобы находить и обновлять их группу в меню.
+    private static let layoutItemTag = 741
+
+    /// Пункты списка раскладок: «флаг + локализованное имя», галочка на текущей.
+    private func layoutMenuItems() -> [NSMenuItem] {
+        let currentID = LayoutSwitcher.currentLayoutID()
+        return LayoutSwitcher.installedLayouts().map { source in
+            let id = LayoutSwitcher.sourceID(source)
+            let badge = LayoutSwitcher.languageCode(source).map(Self.flagBadge(forLanguage:))
+            let title = [badge, LayoutSwitcher.sourceName(source)].compactMap { $0 }.joined(separator: " ")
+            let item = NSMenuItem(title: title, action: #selector(selectLayout(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = id
+            item.state = (id == currentID) ? .on : .off
+            item.tag = Self.layoutItemTag
+            return item
+        }
+    }
+
+    /// Пересобирает группу раскладок при каждом открытии меню: состав и галочка должны
+    /// отражать систему на момент клика (раскладки добавляют/удаляют в настройках ОС,
+    /// а текущую меняют и мимо нас — системным хоткеем).
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === statusItem.menu else { return }
+        let insertAt = menu.items.firstIndex { $0.tag == Self.layoutItemTag } ?? 2
+        for old in menu.items where old.tag == Self.layoutItemTag { menu.removeItem(old) }
+        for (offset, item) in layoutMenuItems().enumerated() {
+            menu.insertItem(item, at: insertAt + offset)
+        }
+    }
+
+    @objc private func selectLayout(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              id != LayoutSwitcher.currentLayoutID() else { return }
+        LayoutSwitcher.switchTo(layoutID: id)
+        // Явная смена раскладки делает набранный буфер неактуальным — как при per-app restore.
+        keyboardMonitor.markConverted()
+        textConverter.clearState()
+        updateStatusIcon()
+    }
+
     func updateStatusIcon() {
         let flag = flagForCurrentLayout()
-        // Каретку дёргаем ТОЛЬКО при реальной смене флага: updateStatusIcon зовётся ещё и
+        // Каретку дёргаем ТОЛЬКО при реальной смене раскладки: updateStatusIcon зовётся ещё и
         // 2-секундным опросом-страховкой, иначе флаг у каретки выскакивал бы каждые 2с.
-        let changed = statusItem.button?.title != flag
-        statusItem.button?.title = flag
+        // Сравниваем по флагу-идентичности, а не по title — в монохромном режиме title пуст.
+        let changed = lastFlagShown != flag
+        lastFlagShown = flag
+        if SettingsManager.shared.monochromeIcon {
+            statusItem.button?.title = ""
+            statusItem.button?.image = badgeImage(for: currentBadgeLabel())
+        } else {
+            statusItem.button?.image = nil
+            statusItem.button?.title = flag
+        }
         if changed { caretIndicator?.layoutChanged() }
+    }
+
+    /// Подпись монохромной плашки — родная аббревиатура языка, как у системного индикатора.
+    private func currentBadgeLabel() -> String {
+        if let lang = LayoutSwitcher.currentLanguageCode()?.lowercased(), !lang.isEmpty {
+            let code = String(lang.prefix(2))
+            let labels: [String: String] = [
+                "ru": "РУ", "en": "EN", "uk": "УК", "be": "БЕ",
+                "de": "DE", "fr": "FR", "es": "ES", "it": "IT",
+                "pt": "PT", "pl": "PL", "ja": "あ", "zh": "拼", "ko": "한",
+                "he": "עב",   // иврит (3.0)
+                "el": "ΕΛ", "bg": "БГ", "hy": "ՀԱ", "ka": "ქა",
+            ]
+            return labels[code] ?? code.uppercased()
+        }
+        // Язык раскладки недоступен — мягкий фолбэк по ID (как у flagForCurrentLayout).
+        let id = LayoutSwitcher.currentLayoutID().lowercased()
+        return (id.contains("russian") || id.hasSuffix(".ru")) ? "РУ" : "EN"
+    }
+
+    /// Монохромная плашка в стиле системного индикатора раскладки Sequoia: скруглённый
+    /// прямоугольник с «выбитыми» буквами. Template-image — система сама красит её под
+    /// светлый/тёмный меню-бар и пользовательский тинт.
+    private func badgeImage(for label: String) -> NSImage {
+        if let cached = badgeCache[label] { return cached }
+        let font = NSFont.systemFont(ofSize: 10, weight: .bold)
+        let textSize = label.size(withAttributes: [.font: font])
+        let size = NSSize(width: max(ceil(textSize.width) + 8, 20), height: 15)
+        let image = NSImage(size: size, flipped: false) { rect in
+            NSColor.black.setFill()
+            NSBezierPath(roundedRect: rect, xRadius: 3.5, yRadius: 3.5).fill()
+            // Буквы «выбиваются» из плашки (прозрачные), как у системного индикатора.
+            NSGraphicsContext.current?.cgContext.setBlendMode(.destinationOut)
+            label.draw(at: NSPoint(x: (rect.width - textSize.width) / 2,
+                                   y: (rect.height - textSize.height) / 2),
+                       withAttributes: [.font: font, .foregroundColor: NSColor.white])
+            return true
+        }
+        image.isTemplate = true
+        badgeCache[label] = image
+        return image
     }
 
     /// Флаг текущей раскладки по коду языка (BCP-47), а не по подстроке в ID — иначе
@@ -554,11 +659,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let id = LayoutSwitcher.currentLayoutID().lowercased()
             return (id.contains("russian") || id.hasSuffix(".ru")) ? "🇷🇺" : "🇺🇸"
         }
-        let code = String(lang.prefix(2))
+        return Self.flagBadge(forLanguage: lang)
+    }
+
+    /// Единый бейдж раскладки для иконки меню-бара и списка раскладок в меню:
+    /// «🇷🇺» для известных языков, иначе код («EL»).
+    private static func flagBadge(forLanguage lang: String) -> String {
+        let code = String(lang.lowercased().prefix(2))
         let flags: [String: String] = [
             "ru": "🇷🇺", "en": "🇺🇸", "uk": "🇺🇦", "be": "🇧🇾",
             "de": "🇩🇪", "fr": "🇫🇷", "es": "🇪🇸", "it": "🇮🇹",
             "pt": "🇵🇹", "pl": "🇵🇱", "ja": "🇯🇵", "zh": "🇨🇳", "ko": "🇰🇷",
+            "he": "🇮🇱",   // иврит (3.0). Арабский в 3.1 — глифом ع (флага нет), см. дизайн 3.0.
         ]
         return flags[code] ?? code.uppercased()
     }
@@ -603,6 +715,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sender.state = SettingsManager.shared.caretFlag ? .on : .off
         settingsController.updateCaretFlagState(SettingsManager.shared.caretFlag)
         syncCaretIndicator()   // создать/снести индикатор и обновить гейт onUserInput
+    }
+
+    @objc private func toggleMonoIcon(_ sender: NSMenuItem) {
+        SettingsManager.shared.monochromeIcon.toggle()
+        sender.state = SettingsManager.shared.monochromeIcon ? .on : .off
+        updateStatusIcon()   // перерисовать в новом стиле сразу
     }
 
     @objc private func toggleRemoteDesktop(_ sender: NSMenuItem) {

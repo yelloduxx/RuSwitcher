@@ -61,7 +61,10 @@ enum KeyMapping {
     /// Конвертирует строку из одной раскладки в другую
     static func convert(_ text: String) -> String {
         let isLikelyRussian = text.unicodeScalars.contains { $0.value >= 0x0400 && $0.value <= 0x04FF }
-
+        let hasLatin = text.unicodeScalars.contains { ($0.value >= 0x41 && $0.value <= 0x5A) || ($0.value >= 0x61 && $0.value <= 0x7A) }
+        // Статическая таблица — только EN↔RU. Для текста без латиницы и кириллицы (иврит,
+        // арабский и т.п.) не мапим вообще: иначе исказили бы (это лишь фолбэк-путь).
+        guard isLikelyRussian || hasLatin else { return text }
         let map = isLikelyRussian ? ruToEn : enToRu
         return String(text.map { map[$0] ?? $0 })
     }

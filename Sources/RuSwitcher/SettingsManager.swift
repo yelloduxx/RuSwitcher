@@ -30,6 +30,7 @@ final class SettingsManager: @unchecked Sendable {
         static let autoConvertOffered = "com.ruswitcher.autoConvertOffered"
         static let keySound = "com.ruswitcher.keySound"
         static let caretFlag = "com.ruswitcher.caretFlag"
+        static let monochromeIcon = "com.ruswitcher.monochromeIcon"
         static let deniedAppsAdded = "com.ruswitcher.deniedAppsAdded"
         static let deniedAppsRemoved = "com.ruswitcher.deniedAppsRemoved"
         static let deniedWords = "com.ruswitcher.deniedWords"
@@ -182,6 +183,13 @@ final class SettingsManager: @unchecked Sendable {
     var keySound: Bool {
         get { defaults.bool(forKey: Keys.keySound) }
         set { defaults.set(newValue, forKey: Keys.keySound) }
+    }
+
+    /// Иконка меню-бара в системном стиле: монохромная плашка «РУ/EN» (template)
+    /// вместо цветного флага-эмодзи. По умолчанию OFF — флаг привычнее.
+    var monochromeIcon: Bool {
+        get { defaults.bool(forKey: Keys.monochromeIcon) }
+        set { defaults.set(newValue, forKey: Keys.monochromeIcon) }
     }
 
     /// Приложения, где авто-конверсия выключена. Эффективный список = дефолты минус

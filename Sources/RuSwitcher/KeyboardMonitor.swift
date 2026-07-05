@@ -251,6 +251,11 @@ final class KeyboardMonitor: @unchecked Sendable {
         // 'a' (и 'ф' в ЙЦУКЕН), её нельзя глотать, иначе ломается локальная конверсия слов с
         // этими буквами. В локальном режиме сюда не заходим — буква идёт обычным путём ниже.
         if SettingsManager.shared.remoteDesktopMode, keyCode == 0 {
+            // ⌘A/⌘C/⌘X и т.п. по удалёнке прилетают как символ 'a' (keyCode 0) с флагом Cmd.
+            // НЕ копим их в буфер: иначе ⌘A добавляет лишнюю «ф» (keyCode 0 = 'ф' в ЙЦУКЕН)
+            // и рушит выделение. Сбрасываем буфер — триггер уйдёт по clipboard-пути (выделение).
+            let modifiers = flags.intersection([.maskCommand, .maskControl, .maskAlternate])
+            if !modifiers.isEmpty { fullReset(); return }
             if let ch = char { handleForwardedChar(ch) }
             return
         }
@@ -298,9 +303,15 @@ final class KeyboardMonitor: @unchecked Sendable {
             return
         }
 
-        // Буквы считаем только без Cmd/Ctrl/Alt
+        // Cmd/Ctrl/Alt-шорткат (⌘A, ⌘C, ⌘X и т.п.) мог изменить выделение — буфер
+        // больше не отражает реальный текст под курсором. Сбрасываем, как и на прочих
+        // границах (Enter/Tab/стрелки), иначе триггер по устаревшему буферу стирает
+        // выделение и впечатывает одно слово. (Локальный аналог remote-guard выше; issue-PR #13.)
         let modifiers = flags.intersection([.maskCommand, .maskControl, .maskAlternate])
-        if !modifiers.isEmpty { return }
+        if !modifiers.isEmpty {
+            fullReset()
+            return
+        }
 
         if KeyMapping.keycodeToEN[keyCode] != nil {
             currentWordKeys.append(TypedKey(keyCode: keyCode, shift: flags.contains(.maskShift), caps: flags.contains(.maskAlphaShift)))
