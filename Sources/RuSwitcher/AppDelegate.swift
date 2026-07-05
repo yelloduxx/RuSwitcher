@@ -450,11 +450,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // issue #9: иконка должна отражать раскладку и при СИСТЕМНОЙ смене (стандартный/
         // переопределённый хоткей), а не только при нашей конверсии. Слушаем системное
         // распределённое уведомление о смене источника ввода.
+        // suspensionBehavior: .deliverImmediately — иначе для фонового menu-bar-приложения
+        // распределённое уведомление коалесцируется/откладывается (App Nap / suspend), и
+        // иконка после переключения глобусом 🌐 меняется с задержкой до нескольких секунд
+        // (ждёт пробуждения или 2-секундного опроса). deliverImmediately обновляет флаг сразу.
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(systemInputSourceChanged),
             name: NSNotification.Name("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged"),
-            object: nil
+            object: nil,
+            suspensionBehavior: .deliverImmediately
         )
     }
 
