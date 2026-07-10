@@ -78,6 +78,7 @@ cp -R "$V4_MODEL_RESOURCE" "$APP_BUNDLE/Contents/Resources/LayoutRerankerV4.mlmo
 cp "$V4_MANIFEST_RESOURCE" "$APP_BUNDLE/Contents/Resources/layout-model-v4.json"
 cp "$PROJECT_DIR/THIRD_PARTY_NOTICES.md" "$APP_BUNDLE/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$PROJECT_DIR/scripts/data/SCOWL_COPYRIGHT.txt" "$APP_BUNDLE/Contents/Resources/SCOWL_COPYRIGHT.txt"
+cp "$PROJECT_DIR/scripts/data/RUSSIAN_HUNSPELL_COPYRIGHT.txt" "$APP_BUNDLE/Contents/Resources/RUSSIAN_HUNSPELL_COPYRIGHT.txt"
 echo "→ Bundled V3/V4 local models and third-party notices"
 
 # 6. Создаём PkgInfo

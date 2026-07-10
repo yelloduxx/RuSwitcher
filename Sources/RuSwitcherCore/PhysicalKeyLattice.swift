@@ -6,6 +6,7 @@ public struct LayoutHypothesis: Equatable, Sendable {
         case directConversion
         case trailingPunctuation
         case layoutLetterTail
+        case wrappingPunctuation
     }
 
     public let text: String
@@ -63,6 +64,9 @@ public enum PhysicalKeyLattice {
             case .layoutLetterTail:
                 kind = .layoutLetterTail
                 cost = -0.10
+            case .wrappingPunctuation:
+                kind = .wrappingPunctuation
+                cost = -0.11
             }
             result.append(LayoutHypothesis(
                 text: text,

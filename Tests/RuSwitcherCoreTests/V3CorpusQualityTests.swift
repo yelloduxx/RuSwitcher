@@ -117,6 +117,56 @@ final class V3CorpusQualityTests: XCTestCase {
         XCTAssertEqual(falsePositives, 0)
     }
 
+    func testExtendedEnglishTargetsConvertOnlyWithStrongCharacterEvidence() {
+        var eligible = 0
+        var hits = 0
+        for intended in model.trainingExtendedEnglishWords() {
+            guard intended.count >= 4 else { continue }
+            let mistyped = KeyMapping.convert(intended)
+            guard SmartTokenizer.languageHint(for: mistyped) == "ru",
+                  model.wordLogProbability(mistyped, language: "ru") == nil,
+                  model.characterLogProbability(intended, language: "en")
+                    - model.characterLogProbability(mistyped, language: "ru")
+                    >= model.thresholds.englishTargetCharacterAdvantage
+            else { continue }
+            eligible += 1
+            let result = evaluate(
+                mistyped,
+                current: "ru",
+                target: "en",
+                context: ["это", "текст"],
+                beliefLanguage: "ru"
+            )
+            if result.decision.verdict == .switchToConverted { hits += 1 }
+            if eligible == 2_000 { break }
+        }
+        XCTAssertEqual(eligible, 2_000)
+        XCTAssertGreaterThanOrEqual(Double(hits) / Double(eligible), 0.98)
+    }
+
+    func testGeneratedRussianOOVFormsStayProtectedInRussianContext() {
+        let suffixes = ["овость", "енька", "ище", "оватый", "ический", "изация"]
+        var total = 0
+        var falsePositives = 0
+        for stem in model.trainingWords(language: "ru", limit: 700) where stem.count >= 4 {
+            for suffix in suffixes {
+                let word = stem + suffix
+                guard model.wordLogProbability(word, language: "ru") == nil else { continue }
+                total += 1
+                let result = evaluate(
+                    word,
+                    current: "ru",
+                    target: "en",
+                    context: ["это", "редкое", "слово"],
+                    beliefLanguage: "ru"
+                )
+                if result.decision.verdict == .switchToConverted { falsePositives += 1 }
+            }
+        }
+        XCTAssertGreaterThanOrEqual(total, 3_000)
+        XCTAssertLessThanOrEqual(Double(falsePositives) / Double(total), 0.002)
+    }
+
     func testUnknownCompoundRecallGate() {
         let intended = [
             "суперспина", "мегапроект", "киберспорт", "нейросвязь", "автосистема",

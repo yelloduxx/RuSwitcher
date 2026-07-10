@@ -70,4 +70,58 @@ final class AutoConvertCandidateGeneratorTests: XCTestCase {
         XCTAssertEqual(candidate?.suffix, "")
         XCTAssertEqual(candidate?.kind, .layoutLetterTail)
     }
+
+    func testWrappingPunctuationCanRemainLiteral() {
+        let typed = "{gjnjv)"
+        let candidates = AutoConvertCandidateGenerator.candidates(
+            typed: typed,
+            converted: KeyMapping.convert(typed)
+        )
+        XCTAssertTrue(candidates.contains {
+            $0.prefix == "{"
+                && $0.convertedWord == "потом"
+                && $0.suffix == ")"
+                && $0.replacement == "{потом)"
+                && $0.kind == .wrappingPunctuation
+        })
+    }
+
+    func testLeadingCommaCanStillBecomeLayoutLetter() {
+        let typed = ",hfnmtd"
+        let candidate = AutoConvertCandidateGenerator.bestCandidate(
+            typed: typed,
+            converted: KeyMapping.convert(typed),
+            targetLanguage: "ru",
+            isValidWord: { word, language in language == "ru" && word == "братьев" }
+        )
+        XCTAssertEqual(candidate?.replacement, "братьев")
+        XCTAssertEqual(candidate?.prefix, "")
+    }
+
+    func testThreeCharacterEllipsisCanStayPunctuation() {
+        let typed = "штышву..."
+        let candidates = AutoConvertCandidateGenerator.candidates(
+            typed: typed,
+            converted: KeyMapping.convert(typed)
+        )
+        XCTAssertTrue(candidates.contains {
+            $0.convertedWord == "inside"
+                && $0.suffix == "..."
+                && $0.replacement == "inside..."
+        })
+    }
+
+    func testPrefixAndSuffixChoicesAreIndependent() {
+        let typed = "{gkfn`;..."
+        let candidates = AutoConvertCandidateGenerator.candidates(
+            typed: typed,
+            converted: KeyMapping.convert(typed)
+        )
+        XCTAssertTrue(candidates.contains {
+            $0.prefix == "{"
+                && $0.convertedWord == "платёж"
+                && $0.suffix == "..."
+                && $0.replacement == "{платёж..."
+        })
+    }
 }

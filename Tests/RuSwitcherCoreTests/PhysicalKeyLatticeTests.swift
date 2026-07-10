@@ -20,4 +20,15 @@ final class PhysicalKeyLatticeTests: XCTestCase {
         XCTAssertTrue(hypotheses.contains { $0.text == "приветствую" })
         XCTAssertTrue(hypotheses.contains { $0.kind == .trailingPunctuation })
     }
+
+    func testWrappingPunctuationHypothesisPreservesBothSides() {
+        let typed = "[gjxtve."
+        let hypotheses = PhysicalKeyLattice.hypotheses(
+            typed: typed,
+            converted: KeyMapping.convert(typed)
+        )
+        XCTAssertTrue(hypotheses.contains {
+            $0.text == "[почему." && $0.kind == .wrappingPunctuation
+        })
+    }
 }

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Build the deterministic, local RuSwitcher language model.
 
-The checked-in artifact is generated from pinned CC BY 3.0 Google Books
-frequency lists. Runtime code never downloads data.
+The checked-in artifact is generated from pinned Google Books frequencies,
+SCOWL spellings, and LibreOffice Russian Hunspell rules. Runtime code never
+downloads data.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import gzip
 import hashlib
 import json
 import math
+import re
 import struct
 import urllib.request
 from collections import Counter
@@ -43,10 +45,17 @@ SECTION = {
     "productive": 10,
     "thresholds": 11,
     "en_extended": 12,
+    "ru_extended": 13,
 }
 
 SCOWL_ARCHIVE = Path("scripts/data/scowl60-en.txt.gz")
 SCOWL_ARCHIVE_SHA256 = "a15fcf72ca0cb6dbb83420513e0cd6e5d60755635a4bad5f51609c6b279385d5"
+RU_HUNSPELL_ARCHIVE = Path("scripts/data/ru_RU.dic.gz")
+RU_HUNSPELL_ARCHIVE_SHA256 = "f8cd59e9489e05b2e816cb0f414a96634eb4908ec9fed56216dd223f36efee4f"
+RU_HUNSPELL_AFFIXES = Path("scripts/data/ru_RU.aff.gz")
+RU_HUNSPELL_AFFIXES_SHA256 = "a0c3528bc7d0be1fb3a21c8f959d5b862d1a9fa6be3ec95364198819f10b555a"
+RUSSIAN_BLOOM_BITS = 1 << 25
+RUSSIAN_BLOOM_HASHES = 9
 
 PRODUCTIVE_RU = [
     "авиа", "авто", "агро", "аэро", "био", "видео", "гипер", "инфо",
@@ -124,6 +133,68 @@ def read_extended_english(path: Path, frequent: dict[str, float]) -> list[str]:
     return sorted(words.difference(frequent))
 
 
+def read_russian_affixes(path: Path) -> dict[str, list[tuple[str, str, re.Pattern[str]]]]:
+    if sha256(path) != RU_HUNSPELL_AFFIXES_SHA256:
+        raise RuntimeError(f"SHA-256 mismatch for {path}")
+    suffixes: dict[str, list[tuple[str, str, re.Pattern[str]]]] = {}
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        for line in handle:
+            fields = line.split()
+            if len(fields) != 5 or fields[0] != "SFX":
+                continue
+            _, flag, strip, add, condition = fields
+            suffixes.setdefault(flag, []).append((
+                "" if strip == "0" else strip,
+                "" if add == "0" else add.split("/", 1)[0],
+                re.compile(f"(?:{condition})$"),
+            ))
+    return suffixes
+
+
+def russian_hunspell_forms(dictionary: Path, affixes: Path) -> set[str]:
+    if sha256(dictionary) != RU_HUNSPELL_ARCHIVE_SHA256:
+        raise RuntimeError(f"SHA-256 mismatch for {dictionary}")
+    suffixes = read_russian_affixes(affixes)
+    forms: set[str] = set()
+    with gzip.open(dictionary, "rt", encoding="utf-8") as handle:
+        next(handle)  # Hunspell entry count.
+        for line in handle:
+            entry = line.strip()
+            stem, _, flags = entry.partition("/")
+            if not is_language_word(stem, "ru") or len(stem) < 3:
+                continue
+            forms.add(stem)
+            for flag in flags:
+                for strip, add, condition in suffixes.get(flag, []):
+                    if not condition.search(stem):
+                        continue
+                    root = stem[:-len(strip)] if strip else stem
+                    form = root + add
+                    if is_language_word(form, "ru") and len(form) >= 3:
+                        forms.add(form)
+    return forms
+
+
+def bloom_bytes(words: set[str]) -> bytes:
+    bits = bytearray(RUSSIAN_BLOOM_BITS // 8)
+    for word in words:
+        encoded = word.encode("utf-8")
+        first = fnv1a64(encoded)
+        second = fnv1a64(encoded[::-1]) | 1
+        for index in range(RUSSIAN_BLOOM_HASHES):
+            bit = (first + index * second) & (RUSSIAN_BLOOM_BITS - 1)
+            bits[bit >> 3] |= 1 << (bit & 7)
+    header = struct.pack(
+        "<4sHHIQ",
+        b"RSBF",
+        1,
+        RUSSIAN_BLOOM_HASHES,
+        RUSSIAN_BLOOM_BITS,
+        len(words),
+    )
+    return header + bytes(bits)
+
+
 def character_model(words: dict[str, float], limit: int = 30000) -> dict[str, float]:
     counts: Counter[str] = Counter()
     for word, log_frequency in words.items():
@@ -180,19 +251,27 @@ def main() -> None:
     parser.add_argument("--cache-dir", type=Path, default=Path(".build/language-model-source"))
     parser.add_argument("--output", type=Path, default=Path("Sources/RuSwitcherCore/Resources/language-model-v1.bin"))
     parser.add_argument("--english-wordlist", type=Path, default=SCOWL_ARCHIVE)
+    parser.add_argument("--russian-dictionary", type=Path, default=RU_HUNSPELL_ARCHIVE)
+    parser.add_argument("--russian-affixes", type=Path, default=RU_HUNSPELL_AFFIXES)
     args = parser.parse_args()
 
     paths = {key: source_path(key, args.source_dir, args.cache_dir) for key in SOURCES}
     ru_words = read_words(paths["ngrams/1grams_russian.csv"], "ru", CURATED_RU)
     en_words = read_words(paths["ngrams/1grams_english.csv"], "en", CURATED_EN)
     en_extended = read_extended_english(args.english_wordlist, en_words)
+    ru_extended = russian_hunspell_forms(args.russian_dictionary, args.russian_affixes)
     metadata = {
         "formatVersion": 1,
-        "modelVersion": "2026.07-v4-english-source1",
+        "modelVersion": "2026.07-v4-ru-hunspell4",
         "source": "orgtre/google-books-ngram-frequency",
         "sourceRevision": REVISION,
         "license": "CC BY 3.0",
-        "wordCounts": {"ru": len(ru_words), "en": len(en_words), "enExtended": len(en_extended)},
+        "wordCounts": {
+            "ru": len(ru_words),
+            "en": len(en_words),
+            "enExtended": len(en_extended),
+            "ruExtended": len(ru_extended),
+        },
     }
     thresholds = {
         "short": 3.0,
@@ -203,6 +282,7 @@ def main() -> None:
         "russianOOVEnglishLong": 3.2,
         "englishSourceCharacterFloor": -12.0,
         "englishSourcePlausibleBonus": 2.4,
+        "englishTargetCharacterAdvantage": 2.2,
         "compoundBonus": 4.8,
         "confirmedBonus": 20.0,
     }
@@ -219,8 +299,12 @@ def main() -> None:
         "productive": PRODUCTIVE_RU + ["-" + suffix for suffix in PRODUCTIVE_RU_SUFFIXES],
         "thresholds": thresholds,
         "en_extended": en_extended,
+        "ru_extended": bloom_bytes(ru_extended),
     }
-    write_model(args.output, [(SECTION[name], json_bytes(values[name])) for name in SECTION])
+    write_model(args.output, [
+        (SECTION[name], value if isinstance(value, bytes) else json_bytes(value))
+        for name, value in values.items()
+    ])
     print(f"wrote {args.output} ({args.output.stat().st_size} bytes, sha256={sha256(args.output)})")
 
 

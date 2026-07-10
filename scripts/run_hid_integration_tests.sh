@@ -5,7 +5,7 @@ BIN="/Applications/RuSwitcher.app/Contents/MacOS/RuSwitcher"
 test -x "$BIN"
 pgrep -f '/Applications/RuSwitcher.app/Contents/MacOS/RuSwitcher' >/dev/null || open /Applications/RuSwitcher.app
 
-python3 - "$BIN" <<'PY'
+python3 - "$BIN" "$@" <<'PY'
 import json
 import os
 import subprocess
@@ -14,6 +14,7 @@ import tempfile
 import time
 
 binary = sys.argv[1]
+requested = set(sys.argv[2:])
 expected = {
     "use-comma": "use, ",
     "use-comma-no-boundary": "use,",
@@ -29,10 +30,21 @@ expected = {
     "cyst-stays-english": "cyst ",
     "juju-stays-english": "juju ",
     "codex-stays-english": "codex ",
+    "loosen-from-russian": "loosen ",
+    "hello-comma-from-russian": "hello, ",
+    "world-period-from-russian": "world. ",
+    "privet-period-from-english": "привет. ",
 }
+if requested:
+    unknown = requested.difference(expected)
+    if unknown:
+        raise SystemExit(f"unknown scenarios: {', '.join(sorted(unknown))}")
+    expected = {name: value for name, value in expected.items() if name in requested}
+repeats = max(1, int(os.environ.get("RUSWITCH_HID_REPEATS", "1")))
 
 failed = False
-for scenario, wanted in expected.items():
+for attempt in range(1, repeats + 1):
+  for scenario, wanted in expected.items():
     result_path = os.path.join(tempfile.gettempdir(), f"ruswitch-hid-{os.getpid()}-{scenario}.json")
     try:
         os.unlink(result_path)
@@ -66,7 +78,8 @@ for scenario, wanted in expected.items():
         except FileNotFoundError:
             pass
     okay = result["postEventAccess"] and result["text"] == wanted
-    print(f"{'PASS' if okay else 'FAIL'} {scenario}: {result['text']!r} access={result['postEventAccess']}")
+    label = f"{scenario} [{attempt}/{repeats}]" if repeats > 1 else scenario
+    print(f"{'PASS' if okay else 'FAIL'} {label}: {result['text']!r} access={result['postEventAccess']}")
     failed |= not okay
     time.sleep(0.5)
 

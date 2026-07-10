@@ -19,6 +19,9 @@ public enum DecoderEvidence: Equatable, Sendable {
     case englishSourceDictionary
     case englishSourcePlausible
     case englishSourceUnlikely
+    case englishTargetDictionary
+    case russianSourceDictionary
+    case russianTargetDictionary
 }
 
 public struct LayoutDecoderEvaluation: Equatable, Sendable {
@@ -61,17 +64,32 @@ public enum LayoutDecoder {
         model: LanguageModelStore
     ) -> LayoutDecoderEvaluation {
         let generated = AutoConvertCandidateGenerator.candidates(typed: typed, converted: converted)
-        // A physical punctuation key may be a real letter in the target layout.
-        // When the full direct conversion is already a known word (помощью,
-        // приветствую), punctuation alternatives must not truncate it.
-        let direct = generated.first { $0.suffix.isEmpty }
-        let directIsKnown = direct.flatMap {
-            model.wordLogProbability(
-                FrequentWordLexicon.normalize($0.convertedWord),
-                language: LocalLanguageModel.canonical(targetLanguage)
+        let targetCanonical = LocalLanguageModel.canonical(targetLanguage)
+        func candidateWord(_ candidate: AutoConvertCandidate) -> String {
+            FrequentWordLexicon.normalize(
+                SmartTokenizer.lexicalCore(of: candidate.convertedWord)
             )
-        } != nil
-        let candidates = directIsKnown ? direct.map { [$0] } ?? generated : generated
+        }
+        let frequentCandidates = generated.filter { candidate in
+            let word = candidateWord(candidate)
+            return model.wordLogProbability(word, language: targetCanonical) != nil
+                || FrequentWordLexicon.contains(word, language: targetCanonical)
+        }
+        let spellingCandidates = generated.filter { candidate in
+            let word = candidateWord(candidate)
+            return (targetCanonical == "en" && model.isExtendedEnglishWord(word))
+                || (targetCanonical == "ru" && model.isExtendedRussianWord(word))
+        }
+        // Frequency evidence dominates spelling-only membership, which in turn
+        // dominates character-only interpretations of the same physical keys.
+        let candidates: [AutoConvertCandidate]
+        if !frequentCandidates.isEmpty {
+            candidates = frequentCandidates
+        } else if !spellingCandidates.isEmpty {
+            candidates = spellingCandidates
+        } else {
+            candidates = generated
+        }
         let evaluations = candidates.map { candidate in
             evaluateCandidate(
                 candidate,
@@ -90,8 +108,37 @@ public enum LayoutDecoder {
         return evaluations.max { lhs, rhs in
             if lhs.decision.verdict == .switchToConverted, rhs.decision.verdict != .switchToConverted { return false }
             if lhs.decision.verdict != .switchToConverted, rhs.decision.verdict == .switchToConverted { return true }
-            return lhs.convertedScore < rhs.convertedScore
+            let lhsHasPhraseEvidence = lhs.evidence.contains(.phraseContext)
+            let rhsHasPhraseEvidence = rhs.evidence.contains(.phraseContext)
+            if lhsHasPhraseEvidence != rhsHasPhraseEvidence {
+                return !lhsHasPhraseEvidence && rhsHasPhraseEvidence
+            }
+            let lhsPreservesTypedSuffix = preservesTypedSuffix(lhs.decision.candidate)
+            let rhsPreservesTypedSuffix = preservesTypedSuffix(rhs.decision.candidate)
+            if lhsPreservesTypedSuffix != rhsPreservesTypedSuffix {
+                return !lhsPreservesTypedSuffix && rhsPreservesTypedSuffix
+            }
+            if lhsPreservesTypedSuffix {
+                let lhsDecoration = preservedDecorationCount(lhs.decision.candidate)
+                let rhsDecoration = preservedDecorationCount(rhs.decision.candidate)
+                if lhsDecoration != rhsDecoration {
+                    return lhsDecoration < rhsDecoration
+                }
+            }
+            if abs(lhs.convertedScore - rhs.convertedScore) > 0.000_001 {
+                return lhs.convertedScore < rhs.convertedScore
+            }
+            return preservedDecorationCount(lhs.decision.candidate)
+                < preservedDecorationCount(rhs.decision.candidate)
         } ?? fallback(typed: typed, converted: converted)
+    }
+
+    private static func preservedDecorationCount(_ candidate: AutoConvertCandidate) -> Int {
+        candidate.prefix.count + candidate.suffix.count
+    }
+
+    private static func preservesTypedSuffix(_ candidate: AutoConvertCandidate) -> Bool {
+        !candidate.suffix.isEmpty && candidate.typedRaw.hasSuffix(candidate.suffix)
     }
 
     private static func evaluateCandidate(
@@ -109,13 +156,17 @@ public enum LayoutDecoder {
     ) -> LayoutDecoderEvaluation {
         let typed = FrequentWordLexicon.normalize(candidate.typedRaw)
         let literal = SmartTokenizer.lexicalCore(of: typed)
-        let converted = FrequentWordLexicon.normalize(candidate.convertedWord)
+        let converted = FrequentWordLexicon.normalize(
+            SmartTokenizer.lexicalCore(of: candidate.convertedWord)
+        )
         let shape = SmartTokenizer.shape(of: candidate.typedRaw)
         let convertedShape = SmartTokenizer.shape(of: candidate.replacement)
         let baseCandidate = candidate
         let currentCanonical = LocalLanguageModel.canonical(currentLanguage)
         let targetCanonical = LocalLanguageModel.canonical(targetLanguage)
         let targetKnownForShape = model.wordLogProbability(converted, language: targetCanonical)
+        let targetExtendedEnglish = targetCanonical == "en" && model.isExtendedEnglishWord(converted)
+        let targetExtendedRussian = targetCanonical == "ru" && model.isExtendedRussianWord(converted)
 
         if integrity != .clean {
             return fixed(baseCandidate, verdict: .keep, reason: .blockedEditing, evidence: [.blockedEditing])
@@ -124,10 +175,13 @@ public enum LayoutDecoder {
             return fixed(baseCandidate, verdict: .keep, reason: .blockedNever, evidence: [.blockedNever])
         }
         let sourceShapeIsProtected = shape.kind.blocksAutomaticConversion
-            && !(convertedShape.kind == .lexical && targetKnownForShape != nil)
+            && !(convertedShape.kind == .lexical
+                && (targetKnownForShape != nil || targetExtendedEnglish || targetExtendedRussian))
         if Self.isSingleUppercaseLatin(candidate.typedRaw)
             || sourceShapeIsProtected
-            || (convertedShape.kind.blocksAutomaticConversion && candidate.kind != .trailingPunctuation) {
+            || (convertedShape.kind.blocksAutomaticConversion
+                && candidate.kind != .trailingPunctuation
+                && candidate.kind != .wrappingPunctuation) {
             return fixed(baseCandidate, verdict: .keep, reason: .blockedCodeLike, evidence: [.blockedCode])
         }
 
@@ -143,9 +197,16 @@ public enum LayoutDecoder {
         }
 
         let sourceKnown = model.wordLogProbability(literal, language: currentCanonical)
+        let sourceExtendedRussian = currentCanonical == "ru" && model.isExtendedRussianWord(literal)
         let targetKnown = targetKnownForShape
+        let directConsumesLeadingPunctuation = targetCanonical == "ru"
+            && targetExtendedRussian
+            && candidate.prefix.isEmpty
+            && candidate.typedRaw.first.map(Self.isPunctuation) == true
         let englishSourceConfidence: EnglishSourceConfidence? = currentCanonical == "en" && targetCanonical == "ru"
-            ? EnglishSourceClassifier.classify(literal, model: model)
+            ? (directConsumesLeadingPunctuation
+                ? .unlikely
+                : EnglishSourceClassifier.classify(literal, model: model))
             : nil
         let strongScriptMismatch = LayoutDetector.hasStrongScriptMismatch(
             typed: candidate.typedRaw,
@@ -154,7 +215,18 @@ public enum LayoutDecoder {
         )
         let characterAdvantage = model.characterLogProbability(converted, language: targetCanonical)
             - model.characterLogProbability(literal, language: currentCanonical)
-        if literal.count >= 2, sourceKnown != nil, targetKnown != nil {
+        let strongExtendedEnglishTarget = currentCanonical == "ru"
+            && targetExtendedEnglish
+            && converted.count >= 4
+            && sourceKnown == nil
+            && characterAdvantage >= model.thresholds.englishTargetCharacterAdvantage
+        let strongExtendedRussianTarget = currentCanonical == "en"
+            && targetExtendedRussian
+            && sourceKnown == nil
+            && englishSourceConfidence == .unlikely
+        if literal.count >= 2,
+           sourceKnown != nil || sourceExtendedRussian,
+           targetKnown != nil || targetExtendedEnglish || targetExtendedRussian {
             return fixed(baseCandidate, verdict: .keep, reason: .blockedContext, evidence: [.blockedContext])
         }
         if literal.count >= 2, englishSourceConfidence == .frequent {
@@ -171,6 +243,22 @@ public enum LayoutDecoder {
                 verdict: .keep,
                 reason: .keepCurrentWord,
                 evidence: [.englishSourceDictionary]
+            )
+        }
+        if literal.count >= 2, sourceExtendedRussian {
+            return fixed(
+                baseCandidate,
+                verdict: .keep,
+                reason: .keepCurrentWord,
+                evidence: [.russianSourceDictionary]
+            )
+        }
+        if directConsumesLeadingPunctuation, strongExtendedRussianTarget {
+            return fixed(
+                baseCandidate,
+                verdict: .switchToConverted,
+                reason: .frequentWord,
+                evidence: [.russianTargetDictionary, .punctuationPath]
             )
         }
         // A compound is evidence only when the literal hypothesis is not itself a
@@ -194,6 +282,14 @@ public enum LayoutDecoder {
            characterAdvantage >= model.thresholds.russianOOVEnglishLong {
             convertedScore += max(0, currentBeliefScore - targetBeliefScore)
         }
+        if strongExtendedEnglishTarget {
+            // A stale Russian context should not suppress an exact English
+            // spelling when the physical Cyrillic form is clearly implausible.
+            convertedScore += max(0, currentBeliefScore - targetBeliefScore)
+        }
+        if strongExtendedRussianTarget {
+            convertedScore += max(0, currentBeliefScore - targetBeliefScore)
+        }
 
         if sourceKnown != nil { literalScore += 2.2 }
         if englishSourceConfidence == .plausibleOOV {
@@ -205,6 +301,12 @@ public enum LayoutDecoder {
         if targetKnown != nil {
             convertedScore += 3.0
             evidence.append(.frequent)
+        } else if strongExtendedEnglishTarget {
+            convertedScore += 3.0
+            evidence.append(.englishTargetDictionary)
+        } else if strongExtendedRussianTarget {
+            convertedScore += 3.0
+            evidence.append(.russianTargetDictionary)
         } else {
             evidence.append(.characterModel)
         }
@@ -225,7 +327,14 @@ public enum LayoutDecoder {
         let targetHint = SmartTokenizer.languageHint(for: converted)
         if sourceHint.map({ LocalLanguageModel.canonical($0) == currentCanonical }) == true { literalScore += 1.2 }
         if targetHint.map({ LocalLanguageModel.canonical($0) == targetCanonical }) == true { convertedScore += 1.2 }
-        if candidate.kind == .trailingPunctuation { convertedScore += 0.35 }
+        if candidate.kind == .trailingPunctuation || candidate.kind == .wrappingPunctuation {
+            convertedScore += 0.35
+            if !candidate.suffix.isEmpty,
+               Self.preservesTypedSuffix(candidate),
+               candidate.suffix.allSatisfy({ ".!?".contains($0) }) {
+                convertedScore += min(1.5, Double(candidate.suffix.count) * 0.5)
+            }
+        }
         if capsLock { literalScore += 1.0 }
 
         let targetProbability = languageBelief.probability(language: targetCanonical)
@@ -256,25 +365,33 @@ public enum LayoutDecoder {
             return fixed(baseCandidate, verdict: .keep, reason: .blockedContext, evidence: [.blockedContext])
         }
         if currentCanonical == "ru", targetCanonical == "en",
-           sourceKnown == nil, targetKnown == nil {
+           sourceKnown == nil, targetKnown == nil, !strongExtendedEnglishTarget {
             // Unknown English words can still be clear layout mistakes (афиду →
             // fable). Permit them only when the character model has a strong
             // advantage and the recent language state is not distinctly Russian.
             let characterAdvantage = model.characterLogProbability(converted, language: targetCanonical)
                 - model.characterLogProbability(literal, language: currentCanonical)
-            if converted.count < 5 || characterAdvantage < 2.2 || currentProbability >= 0.62 {
+            if converted.count < 5
+                || characterAdvantage < model.thresholds.englishTargetCharacterAdvantage
+                || currentProbability >= 0.62 {
                 return fixed(baseCandidate, verdict: .keep, reason: .blockedContext, evidence: [.blockedContext])
             }
         }
 
         let margin = convertedScore - literalScore
-        let hasLexicalEvidence = targetKnown != nil || compound != nil || strongScriptMismatch
+        let hasLexicalEvidence = targetKnown != nil
+            || strongExtendedEnglishTarget
+            || strongExtendedRussianTarget
+            || compound != nil
+            || strongScriptMismatch
         let verdict: LayoutVerdict = margin >= threshold && hasLexicalEvidence ? .switchToConverted : (sourceKnown != nil ? .keep : .undecided)
         let reason: AutoConvertDecisionReason
         if verdict == .switchToConverted {
             if compound != nil && targetKnown == nil { reason = .compound }
             else if evidence.contains(.phraseContext) { reason = .phraseContext }
-            else if targetKnown != nil { reason = converted.count <= 3 ? .frequentShort : .frequentWord }
+            else if targetKnown != nil || strongExtendedEnglishTarget || strongExtendedRussianTarget {
+                reason = converted.count <= 3 ? .frequentShort : .frequentWord
+            }
             else { reason = .characterModel }
         } else {
             reason = verdict == .keep ? .keepCurrentWord : .undecided
@@ -329,5 +446,9 @@ public enum LayoutDecoder {
         let letters = text.filter(\.isLetter)
         guard letters.count == 1, let character = letters.first else { return false }
         return character.isUppercase && character.unicodeScalars.allSatisfy { (0x41...0x5A).contains(Int($0.value)) }
+    }
+
+    private static func isPunctuation(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy(CharacterSet.punctuationCharacters.contains)
     }
 }

@@ -59,6 +59,14 @@ private struct HIDProbeScenario {
             return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [38, 32, 38, 32, 49])])
         case "codex-stays-english":
             return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [8, 31, 2, 14, 7, 49])])
+        case "loosen-from-russian":
+            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [37, 31, 31, 1, 14, 45, 49])])
+        case "hello-comma-from-russian":
+            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [4, 14, 37, 37, 31, 43, 49])])
+        case "world-period-from-russian":
+            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [13, 31, 15, 37, 2, 47, 49])])
+        case "privet-period-from-english":
+            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [5, 4, 11, 2, 17, 45, 47, 49])])
         default:
             return nil
         }
@@ -90,6 +98,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     private let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 640, height: 180))
     private var window: NSWindow?
     private var originalLayoutID = ""
+    private var didPostKeys = false
 
     init(scenario: HIDProbeScenario, resultPath: String?) {
         self.scenario = scenario
@@ -121,14 +130,28 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             self?.postPhysicalKeys()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            guard let self else { return }
-            self.finish(text: self.textView.string)
-        }
     }
 
-    private func postPhysicalKeys() {
-        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+    private func postPhysicalKeys(attempt: Int = 0) {
+        guard !didPostKeys else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+        window?.makeFirstResponder(textView)
+        guard window?.isKeyWindow == true, window?.firstResponder === textView else {
+            if attempt < 10 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.postPhysicalKeys(attempt: attempt + 1)
+                }
+            } else {
+                finish(text: "<focus-unavailable>")
+            }
+            return
+        }
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            finish(text: "<event-source-unavailable>")
+            return
+        }
+        didPostKeys = true
         source.userData = 0x52535445 // RSTE: deliberately not RuSwitcher's synthetic marker.
         for phase in scenario.phases {
             guard selectLayout(language: phase.sourceLanguage) else { continue }
@@ -151,6 +174,10 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
                 usleep(18_000)
             }
             usleep(120_000)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            self.finish(text: self.textView.string)
         }
     }
 

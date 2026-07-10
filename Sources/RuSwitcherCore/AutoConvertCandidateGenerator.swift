@@ -16,9 +16,34 @@ public enum AutoConvertCandidateGenerator {
             )
         ]
 
+        let shape = SmartTokenizer.shape(of: typed)
+        if !shape.lexicalCore.isEmpty, !shape.prefix.isEmpty {
+            let typedCharacters = Array(typed)
+            let prefixCount = shape.prefix.count
+            let remainder = Array(typedCharacters.dropFirst(prefixCount))
+            let maximumPreservedSuffix = min(3, remainder.count)
+            for suffixLength in 0...maximumPreservedSuffix {
+                let suffixCharacters = remainder.suffix(suffixLength)
+                guard suffixLength == 0 || suffixCharacters.allSatisfy(isTrailingPunctuation) else {
+                    continue
+                }
+                let coreCharacters = remainder.dropLast(suffixLength)
+                guard !coreCharacters.isEmpty else { continue }
+                let candidate = AutoConvertCandidate(
+                    typedRaw: typed,
+                    convertedRaw: converted,
+                    prefix: shape.prefix,
+                    convertedWord: KeyMapping.convert(String(coreCharacters)),
+                    suffix: String(suffixCharacters),
+                    kind: .wrappingPunctuation
+                )
+                if !result.contains(candidate) { result.append(candidate) }
+            }
+        }
+
         let typedChars = Array(typed)
         let convertedChars = Array(converted)
-        let maxSuffix = min(2, typedChars.count, convertedChars.count)
+        let maxSuffix = min(3, typedChars.count, convertedChars.count)
         guard maxSuffix > 0 else { return result }
 
         for suffixLength in 1...maxSuffix {
@@ -82,7 +107,9 @@ public enum AutoConvertCandidateGenerator {
         targetLanguage: String,
         isValidWord: (String, String) -> Bool
     ) -> Int {
-        let word = FrequentWordLexicon.normalize(candidate.convertedWord)
+        let word = FrequentWordLexicon.normalize(
+            SmartTokenizer.lexicalCore(of: candidate.convertedWord)
+        )
         if isValidWord(word, targetLanguage) || FrequentWordLexicon.contains(word, language: targetLanguage) {
             return 10_000 + word.count
         }

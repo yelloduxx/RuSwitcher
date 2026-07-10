@@ -9,7 +9,11 @@ final class LanguageModelStoreTests: XCTestCase {
         XCTAssertGreaterThan(model.metadata.wordCounts["ru"] ?? 0, 9_000)
         XCTAssertGreaterThan(model.metadata.wordCounts["en"] ?? 0, 9_000)
         XCTAssertGreaterThan(model.metadata.wordCounts["enExtended"] ?? 0, 80_000)
+        XCTAssertGreaterThan(model.metadata.wordCounts["ruExtended"] ?? 0, 1_000_000)
         XCTAssertGreaterThan(model.trainingExtendedEnglishWords().count, 80_000)
+        for word in ["ввод", "сервер", "отчёт", "буфер", "клавиатура", "платёж"] {
+            XCTAssertTrue(model.isExtendedRussianWord(word), word)
+        }
     }
 
     func testCompoundIsDiscoveredFromPartsRatherThanWholeWord() throws {

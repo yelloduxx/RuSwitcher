@@ -3,7 +3,7 @@
   "seed": 20260710,
   "bootstrapSource": {
     "path": "Sources/RuSwitcherCore/Resources/language-model-v1.bin",
-    "sha256": "49d88b1e2a5e7c57c9113c7269f2748dba4f13e62a47c4a36f263f2b4022158",
+    "sha256": "954cd3d86fae11dc6e82d099996406a4259c7f1148f67fbfa5d445ef45deb347",
     "license": "CC BY 3.0",
     "upstream": "https://github.com/orgtre/google-books-ngram-frequency",
     "revision": "e20471c15a758be3362b16d07870b34df4f7ccc3"
@@ -17,6 +17,17 @@
     "archive": "scripts/data/scowl60-en.txt.gz",
     "archiveSHA256": "a15fcf72ca0cb6dbb83420513e0cd6e5d60755635a4bad5f51609c6b279385d5",
     "licenseNotice": "scripts/data/SCOWL_COPYRIGHT.txt"
+  },
+  "russianSpellingLexicon": {
+    "name": "LibreOffice Russian Hunspell dictionary",
+    "upstream": "https://github.com/LibreOffice/dictionaries/tree/master/ru_RU",
+    "revision": "38d96a4d54ec3449cf7f28cddae1fce32e2b15a7",
+    "dictionaryArchive": "scripts/data/ru_RU.dic.gz",
+    "dictionarySHA256": "f8cd59e9489e05b2e816cb0f414a96634eb4908ec9fed56216dd223f36efee4f",
+    "affixArchive": "scripts/data/ru_RU.aff.gz",
+    "affixSHA256": "a0c3528bc7d0be1fb3a21c8f959d5b862d1a9fa6be3ec95364198819f10b555a",
+    "parameters": "lowercase Cyrillic forms length >= 3; one SFX rule; Bloom 2^25 bits, 9 double hashes",
+    "licenseNotice": "scripts/data/RUSSIAN_HUNSPELL_COPYRIGHT.txt"
   },
   "optionalContextCorpora": [
     {
@@ -39,6 +50,6 @@
     "precision": "fp16",
     "trainingInputLanguageModelSHA256": "cc40a62e2be0d9ae4d3f2f9476552e49273951f343b24ccaaa15270ab36f6e55",
     "coreMLSHA256": "98dad88031e4f29589c1364550800a2f2dfc52a0fd376ce55cb5b060a09d4da6",
-    "note": "int8 export was rejected by the active simulator after quantizer scale warnings; shadow rollout remains mandatory. The SCOWL source lexicon is a deterministic runtime gate and was not used to train this Core ML artifact."
+    "note": "int8 export was rejected by the active simulator after quantizer scale warnings; shadow rollout remains mandatory. The SCOWL spelling lexicon is a deterministic guarded runtime gate and was not used to train this Core ML artifact."
   }
 }

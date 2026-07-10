@@ -19,15 +19,29 @@ data at runtime.
 
 ## English Speller Database / SCOWL
 
-The source-only English plausibility lexicon in `language-model-v1.bin` is
+The English plausibility lexicon in `language-model-v1.bin` is
 derived from the English Speller Database (formerly SCOWL), release
 `rel-2026.02.25`, commit `7e99edab8e32f9f9ea2b15f249ca8d4d67237410`.
-RuSwitcher uses the level-60 American/British word list only to protect valid
-English source words; it is not treated as target-word frequency evidence.
+RuSwitcher uses the level-60 American/British word list primarily to protect
+valid English source words. It may also confirm an RU-to-EN target behind
+source-language and character-probability safety gates; it is never treated as
+target-word frequency evidence by itself.
 
 - Source: https://github.com/en-wl/wordlist
 - Copyright: 2000-2026 Kevin Atkinson
 - Full notice: `SCOWL_COPYRIGHT.txt`
+
+## LibreOffice Russian Hunspell Dictionary
+
+The Russian spelling Bloom filter in `language-model-v1.bin` is derived from
+the `ru_RU` Hunspell dictionary and suffix rules in LibreOffice Dictionaries,
+commit `38d96a4d54ec3449cf7f28cddae1fce32e2b15a7`. RuSwitcher expands the rules
+offline and ships only a compact probabilistic membership filter. This derived
+representation is modified and is not a replacement dictionary distribution.
+
+- Source: https://github.com/LibreOffice/dictionaries/tree/master/ru_RU
+- Copyright: 1997-2008 Alexander I. Lebedev
+- License: permissive three-clause notice in `RUSSIAN_HUNSPELL_COPYRIGHT.txt`
 
 `LayoutRerankerV4.mlmodelc` is a derived model trained from those aggregate
 word and phrase frequencies plus synthetic keyboard-layout corruptions. The

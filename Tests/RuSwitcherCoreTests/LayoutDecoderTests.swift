@@ -45,7 +45,7 @@ final class LayoutDecoderTests: XCTestCase {
     }
 
     func testKnownDirectWordBeatsTrailingPunctuationAlternative() {
-        let result = evaluate("gjvjom.", context: ["это"])
+        let result = evaluate("gjvjom.", context: ["с"])
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
         XCTAssertEqual(result.decision.candidate.replacement, "помощью")
     }
@@ -147,6 +147,101 @@ final class LayoutDecoderTests: XCTestCase {
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
     }
 
+    func testLiteralTypedCommaBeatsConvertedQuestionMark() {
+        let result = evaluate(
+            "ыцшесрштп,",
+            current: "ru",
+            target: "en",
+            context: ["this", "text"]
+        )
+        XCTAssertEqual(result.decision.candidate.replacement, "switching,")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testWrappingPunctuationIsPreservedAroundConvertedWord() {
+        let result = evaluate("{gjnjv)", context: ["это"])
+        XCTAssertEqual(result.decision.candidate.replacement, "{потом)")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+        XCTAssertEqual(result.decision.candidate.kind, .wrappingPunctuation)
+    }
+
+    func testKnownWrappedTargetBeatsUnknownDirectTargetInEnglishContext() {
+        var englishBelief = LanguageBelief.neutral
+        englishBelief.observe(language: "en")
+        englishBelief.observe(language: "en")
+        let result = evaluate(
+            "{elfkb?",
+            context: ["keyboard", "again"],
+            belief: englishBelief
+        )
+        XCTAssertEqual(result.decision.candidate.replacement, "{удали?")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testLongestKnownPunctuationSuffixWins() {
+        let result = evaluate("htpekmnfn?!", context: ["это"])
+        XCTAssertEqual(result.decision.candidate.replacement, "результат?!")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testFrequentWrappedTargetBeatsBloomOnlyDirectTarget() {
+        for typed in ["[yt", "{yt)", "«lj,"] {
+            let result = evaluate(typed, context: ["это"])
+            let expected = typed.contains("lj")
+                ? typed.replacingOccurrences(of: "lj", with: "до")
+                : typed.replacingOccurrences(of: "yt", with: "не")
+            XCTAssertEqual(result.decision.candidate.replacement, expected, typed)
+            XCTAssertEqual(result.decision.verdict, .switchToConverted, typed)
+        }
+    }
+
+    func testLayoutLetterBeforeDecorationStaysLetter() {
+        let result = evaluate("gkfn`;-", context: ["это"])
+        XCTAssertEqual(result.decision.candidate.replacement, "платёж-")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testTypedPunctuationWinsWhenBothInterpretationsAreWords() {
+        for (typed, expected) in [("b[", "и["), ("xnj,", "что,"), ("yjxm.", "ночь.")] {
+            let result = evaluate(typed, context: ["это"])
+            XCTAssertEqual(result.decision.candidate.replacement, expected, typed)
+            XCTAssertEqual(result.decision.verdict, .switchToConverted, typed)
+        }
+    }
+
+    func testFullTypedEllipsisWinsOverPartialLayoutLetterTail() {
+        let result = evaluate("(yt...", context: ["это"])
+        XCTAssertEqual(result.decision.candidate.replacement, "(не...")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testTrailingUnderscoreIsPreservedWithoutBlockingWord() {
+        let result = evaluate(
+            "црн_",
+            current: "ru",
+            target: "en",
+            context: ["this", "text"]
+        )
+        XCTAssertEqual(result.decision.candidate.replacement, "why_")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testCorrectDecoratedEnglishWordStaysEnglish() {
+        var russianBelief = LanguageBelief.neutral
+        russianBelief.observe(language: "ru")
+        russianBelief.observe(language: "ru")
+        for token in ["input_", "input-", "input—"] {
+            let result = evaluate(
+                token,
+                current: "en",
+                target: "ru",
+                context: ["это", "текст"],
+                belief: russianBelief
+            )
+            XCTAssertNotEqual(result.decision.verdict, .switchToConverted, token)
+        }
+    }
+
     func testPlausibleUnknownEnglishWordConvertsFromRussianLayout() {
         let result = evaluate("афиду", current: "ru", target: "en")
         XCTAssertEqual(result.decision.candidate.replacement, "fable")
@@ -188,14 +283,102 @@ final class LayoutDecoderTests: XCTestCase {
         var russianBelief = LanguageBelief.neutral
         russianBelief.observe(language: "ru")
         russianBelief.observe(language: "ru")
+        let intended = "contextualizable"
+        let mistyped = KeyMapping.convert(intended)
+        XCTAssertFalse(model.contains(intended, language: "en"))
+        XCTAssertFalse(model.isExtendedEnglishWord(intended))
         let result = evaluate(
-            "афиду",
+            mistyped,
             current: "ru",
             target: "en",
             context: ["это", "текст"],
             belief: russianBelief
         )
         XCTAssertEqual(result.decision.verdict, .keep)
+    }
+
+    func testExtendedEnglishTargetCanOverrideStaleRussianContext() {
+        var russianBelief = LanguageBelief.neutral
+        russianBelief.observe(language: "ru")
+        russianBelief.observe(language: "ru")
+        let result = evaluate(
+            "дщщыут",
+            current: "ru",
+            target: "en",
+            context: ["нужно", "немного"],
+            belief: russianBelief
+        )
+        XCTAssertFalse(model.contains("loosen", language: "en"))
+        XCTAssertTrue(model.isExtendedEnglishWord("loosen"))
+        XCTAssertEqual(result.decision.candidate.replacement, "loosen")
+        XCTAssertEqual(
+            result.decision.verdict,
+            .switchToConverted,
+            "margin=\(result.confidenceMargin) threshold=\(result.threshold) evidence=\(result.evidence)"
+        )
+        XCTAssertTrue(result.evidence.contains(.englishTargetDictionary))
+    }
+
+    func testKnownRussianLiteralWinsOverExtendedEnglishCollision() {
+        var checked = 0
+        for word in model.trainingWords(language: "ru") {
+            let english = KeyMapping.convert(word)
+            guard english.count >= 4, model.isExtendedEnglishWord(english) else { continue }
+            checked += 1
+            let result = evaluate(word, current: "ru", target: "en")
+            XCTAssertNotEqual(result.decision.verdict, .switchToConverted, "\(word) -> \(english)")
+        }
+        XCTAssertGreaterThan(checked, 0)
+    }
+
+    func testExtendedRussianDictionaryProtectsCorrectSourceAndConfirmsTarget() {
+        var englishBelief = LanguageBelief.neutral
+        englishBelief.observe(language: "en")
+        englishBelief.observe(language: "en")
+        for word in ["ввод", "сервер", "отчёт", "буфер", "клавиатура", "платёж"] {
+            let correct = evaluate(word, current: "ru", target: "en")
+            XCTAssertNotEqual(correct.decision.verdict, .switchToConverted, word)
+
+            let mistyped = KeyMapping.convert(word)
+            let converted = evaluate(
+                mistyped,
+                current: "en",
+                target: "ru",
+                context: ["this", "text"],
+                belief: englishBelief
+            )
+            XCTAssertEqual(converted.decision.candidate.replacement, word, mistyped)
+            XCTAssertEqual(converted.decision.verdict, .switchToConverted, mistyped)
+            XCTAssertTrue(converted.evidence.contains(.russianTargetDictionary), mistyped)
+        }
+    }
+
+    func testLeadingPunctuationKeyCanBecomeRussianLetterForExactTarget() {
+        var englishBelief = LanguageBelief.neutral
+        englishBelief.observe(language: "en")
+        englishBelief.observe(language: "en")
+        let result = evaluate(
+            ",eath...",
+            context: ["this", "text"],
+            belief: englishBelief
+        )
+        XCTAssertEqual(result.decision.candidate.replacement, "буфер...")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testBothKnownRussianSourceAndEnglishTargetRemainLiteral() {
+        let result = evaluate(
+            "туче",
+            current: "ru",
+            target: "en",
+            context: ["this", "text"]
+        )
+        XCTAssertEqual(KeyMapping.convert("туче"), "next")
+        XCTAssertEqual(result.decision.verdict, .keep)
+        XCTAssertTrue(
+            result.evidence.contains(.russianSourceDictionary)
+                || result.evidence.contains(.blockedContext)
+        )
     }
 
     func testKnownEnglishWordCanStartAfterRussianContext() {

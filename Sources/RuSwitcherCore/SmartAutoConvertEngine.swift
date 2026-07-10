@@ -67,7 +67,9 @@ public enum SmartAutoConvertEngine {
     ) -> SmartAutoConvertEvaluation {
         let typed = FrequentWordLexicon.normalize(candidate.typedRaw)
         let currentCore = SmartTokenizer.lexicalCore(of: typed)
-        let convertedCore = FrequentWordLexicon.normalize(candidate.convertedWord)
+        let convertedCore = FrequentWordLexicon.normalize(
+            SmartTokenizer.lexicalCore(of: candidate.convertedWord)
+        )
         let typedShape = SmartTokenizer.shape(of: candidate.typedRaw)
         let convertedShape = SmartTokenizer.shape(of: candidate.replacement)
 
@@ -83,7 +85,9 @@ public enum SmartAutoConvertEngine {
         if isSingleUppercaseLatin(candidate.typedRaw) || typedShape.kind.blocksAutomaticConversion {
             return fixed(candidate, verdict: .keep, reason: .blockedCodeLike)
         }
-        if convertedShape.kind.blocksAutomaticConversion && candidate.kind != .trailingPunctuation {
+        if convertedShape.kind.blocksAutomaticConversion
+            && candidate.kind != .trailingPunctuation
+            && candidate.kind != .wrappingPunctuation {
             return fixed(candidate, verdict: .keep, reason: .blockedCodeLike)
         }
 
@@ -108,7 +112,9 @@ public enum SmartAutoConvertEngine {
             convertedScore += 1.5
         }
 
-        if candidate.kind == .trailingPunctuation { convertedScore += 0.4 }
+        if candidate.kind == .trailingPunctuation || candidate.kind == .wrappingPunctuation {
+            convertedScore += 0.4
+        }
         if capsLock { literalScore += 1.0 }
 
         let previousLanguage = contextWords.last.flatMap(SmartTokenizer.languageHint)

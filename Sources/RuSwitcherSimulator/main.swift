@@ -220,6 +220,29 @@ private func writeFile(_ data: Data, to path: String) throws {
     try data.write(to: url, options: .atomic)
 }
 
+private func hasKnownTypedPunctuationAlternative(
+    typed: String,
+    intended: String,
+    targetLanguage: String,
+    model: LanguageModelStore
+) -> Bool {
+    AutoConvertCandidateGenerator.candidates(
+        typed: typed,
+        converted: KeyMapping.convert(typed)
+    ).contains { candidate in
+        guard candidate.replacement != intended,
+              !candidate.suffix.isEmpty,
+              candidate.typedRaw.hasSuffix(candidate.suffix) else { return false }
+        let word = FrequentWordLexicon.normalize(
+            SmartTokenizer.lexicalCore(of: candidate.convertedWord)
+        )
+        return model.wordLogProbability(word, language: targetLanguage) != nil
+            || FrequentWordLexicon.contains(word, language: targetLanguage)
+            || (targetLanguage == "en" && model.isExtendedEnglishWord(word))
+            || (targetLanguage == "ru" && model.isExtendedRussianWord(word))
+    }
+}
+
 private func builtInPhraseFixtures(model: LanguageModelStore, limit: Int) -> [PhraseFixture] {
     var fixtures = [
         PhraseFixture(
@@ -358,10 +381,18 @@ private func builtInPhraseFixtures(model: LanguageModelStore, limit: Int) -> [Ph
             let mistyped = KeyMapping.convert(intended)
             let sourceCore = SmartTokenizer.lexicalCore(of: mistyped)
             guard SmartTokenizer.languageHint(for: mistyped) == configuration.source,
+                  !hasKnownTypedPunctuationAlternative(
+                    typed: mistyped,
+                    intended: intended,
+                    targetLanguage: configuration.target,
+                    model: model
+                  ),
                   model.wordLogProbability(
                     sourceCore,
                     language: configuration.source
                   ) == nil,
+                  configuration.source != "ru"
+                    || !model.isExtendedRussianWord(sourceCore),
                   configuration.source != "en"
                     || EnglishSourceClassifier.classify(sourceCore, model: model) == .unlikely
                   else { continue }
@@ -470,6 +501,12 @@ private func builtInFixtures(model: LanguageModelStore, limit: Int) -> [Fixture]
         for intended in model.trainingWords(language: target, limit: limit) where intended.count >= 2 {
             let mistyped = KeyMapping.convert(intended)
             guard SmartTokenizer.languageHint(for: mistyped) == current else { continue }
+            guard !hasKnownTypedPunctuationAlternative(
+                typed: mistyped,
+                intended: intended,
+                targetLanguage: target,
+                model: model
+            ) else { continue }
             let sourceCore = SmartTokenizer.lexicalCore(of: mistyped)
             // Two real words on the same physical keys are intrinsically ambiguous.
             // Production deliberately keeps the literal form unless the user has
@@ -478,6 +515,7 @@ private func builtInFixtures(model: LanguageModelStore, limit: Int) -> [Fixture]
                 sourceCore,
                 language: current
             ) == nil,
+                current != "ru" || !model.isExtendedRussianWord(sourceCore),
                 current != "en"
                     || EnglishSourceClassifier.classify(sourceCore, model: model) == .unlikely
             else { continue }

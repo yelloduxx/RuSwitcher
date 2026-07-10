@@ -37,7 +37,7 @@ public struct TokenShape: Equatable, Sendable {
 
 public enum SmartTokenizer {
     private static let leadingPunctuation = CharacterSet(charactersIn: "([{<\"'«„“‘")
-    private static let trailingPunctuation = CharacterSet(charactersIn: ".,!?;:)]}>\"'»”’…")
+    private static let trailingPunctuation = CharacterSet(charactersIn: ".,!?;:)]}>\"'»”’…_-—–")
 
     public static func shape(of raw: String) -> TokenShape {
         guard !raw.isEmpty else {
@@ -66,7 +66,7 @@ public enum SmartTokenizer {
             return .numeric
         }
         if hasMixedScripts(token) { return .mixedScript }
-        if looksLikeIdentifier(raw) { return .identifier }
+        if looksLikeIdentifier(token) { return .identifier }
         return .lexical
     }
 

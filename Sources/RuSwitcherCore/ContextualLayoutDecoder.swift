@@ -63,14 +63,13 @@ public enum ContextualLayoutDecoder {
         let current = LocalLanguageModel.canonical(currentLanguage)
         let target = LocalLanguageModel.canonical(targetLanguage)
         let literalCore = SmartTokenizer.lexicalCore(of: typed)
-        let literalKnown = lexicalModel.wordLogProbability(literalCore, language: current) != nil
-            || (current == "en" && lexicalModel.isExtendedEnglishWord(literalCore))
+        let literalKnown = isLexicallyKnown(literalCore, language: current, model: lexicalModel)
         let targetKnown = hypotheses.dropFirst().contains {
-            lexicalModel.wordLogProbability($0.lexicalCore, language: target) != nil
+            isLexicallyKnown($0.lexicalCore, language: target, model: lexicalModel)
         }
         let targetKnownLongEnoughForAmbiguity = hypotheses.dropFirst().contains {
             $0.lexicalCore.count >= 4
-                && lexicalModel.wordLogProbability($0.lexicalCore, language: target) != nil
+                && isLexicallyKnown($0.lexicalCore, language: target, model: lexicalModel)
         }
 
         // V4 is a conservative reranker during rollout. A confident V3 switch keeps
@@ -131,7 +130,11 @@ public enum ContextualLayoutDecoder {
         guard let best = ranked.first else { return fallbackEvaluation(fallback) }
         let second = ranked.dropFirst().first.map { probabilities[$0] } ?? 0
         let margin = probabilities[best] - second
-        let selectedKnown = lexicalModel.wordLogProbability(hypotheses[best].lexicalCore, language: target) != nil
+        let selectedKnown = isLexicallyKnown(
+            hypotheses[best].lexicalCore,
+            language: target,
+            model: lexicalModel
+        )
         let bothKnown = best > 0 && literalKnown && selectedKnown
         let probabilityThreshold = bothKnown
             ? scorer.manifest.bothKnownProbability
@@ -180,7 +183,10 @@ public enum ContextualLayoutDecoder {
             )
         }
         var evidence: [DecoderEvidence] = [.neuralContext]
-        if hypotheses[best].kind == .trailingPunctuation { evidence.append(.punctuationPath) }
+        if hypotheses[best].kind == .trailingPunctuation
+            || hypotheses[best].kind == .wrappingPunctuation {
+            evidence.append(.punctuationPath)
+        }
         if isCodeSwitch(context) { evidence.append(.codeSwitch) }
         if adapter.map({ abs($0.score(featureDelta ?? [])) > 0.01 }) == true { evidence.append(.personalized) }
         return V4Evaluation(
@@ -223,13 +229,13 @@ public enum ContextualLayoutDecoder {
         belief: LanguageBelief,
         lexicalModel: LanguageModelStore
     ) -> [Float] {
-        let targetKnown = lexicalModel.wordLogProbability(hypothesis.lexicalCore, language: target) != nil
+        let targetKnown = isLexicallyKnown(hypothesis.lexicalCore, language: target, model: lexicalModel)
         let sourceCharacter = lexicalModel.characterLogProbability(hypothesis.lexicalCore, language: current)
         let targetCharacter = lexicalModel.characterLogProbability(hypothesis.lexicalCore, language: target)
         return [
             hypothesis.isLiteral ? 1 : 0,
             hypothesis.isLiteral ? 0 : 1,
-            hypothesis.kind == .trailingPunctuation ? 1 : 0,
+            hypothesis.kind == .trailingPunctuation || hypothesis.kind == .wrappingPunctuation ? 1 : 0,
             hypothesis.kind == .layoutLetterTail ? 1 : 0,
             current == "ru" ? 1 : 0,
             target == "ru" ? 1 : 0,
@@ -252,6 +258,16 @@ public enum ContextualLayoutDecoder {
 
     private static func isCodeSwitch(_ context: ContextSnapshot) -> Bool {
         Set(context.tokenLanguages.compactMap { $0.map(LocalLanguageModel.canonical) }).count > 1
+    }
+
+    private static func isLexicallyKnown(
+        _ word: String,
+        language: String,
+        model: LanguageModelStore
+    ) -> Bool {
+        model.wordLogProbability(word, language: language) != nil
+            || (language == "en" && model.isExtendedEnglishWord(word))
+            || (language == "ru" && model.isExtendedRussianWord(word))
     }
 
     private static func fallbackEvaluation(_ fallback: LayoutDecoderEvaluation) -> V4Evaluation {

@@ -18,6 +18,7 @@ public struct LanguageModelThresholds: Codable, Equatable, Sendable {
     public let russianOOVEnglishLong: Double
     public let englishSourceCharacterFloor: Double
     public let englishSourcePlausibleBonus: Double
+    public let englishTargetCharacterAdvantage: Double
     public let compoundBonus: Double
     public let confirmedBonus: Double
 }
@@ -48,6 +49,7 @@ public final class LanguageModelStore: @unchecked Sendable {
         case productive = 10
         case thresholds = 11
         case extendedEnglish = 12
+        case extendedRussian = 13
     }
 
     public static var bundledResourceURL: URL? {
@@ -67,6 +69,7 @@ public final class LanguageModelStore: @unchecked Sendable {
     public let productiveRussianParts: Set<String>
     public let productiveRussianSuffixes: Set<String>
     private let extendedEnglishWords: Set<String>
+    private let extendedRussianWords: RussianSpellingBloom
 
     private let words: [String: [String: Double]]
     private let characters: [String: [String: Double]]
@@ -141,6 +144,10 @@ public final class LanguageModelStore: @unchecked Sendable {
             "en": try decode([String: Double].self, section: .enTrigrams),
         ]
         extendedEnglishWords = Set(try decode([String].self, section: .extendedEnglish))
+        guard let russianBloomData = sectionData[.extendedRussian] else {
+            throw LanguageModelError.missingSection(Int(Section.extendedRussian.rawValue))
+        }
+        extendedRussianWords = try RussianSpellingBloom(data: russianBloomData)
     }
 
     public func contains(_ word: String, language: String) -> Bool {
@@ -155,6 +162,10 @@ public final class LanguageModelStore: @unchecked Sendable {
         let values = extendedEnglishWords.sorted()
         guard let limit else { return values }
         return Array(values.prefix(max(0, limit)))
+    }
+
+    public func isExtendedRussianWord(_ word: String) -> Bool {
+        extendedRussianWords.contains(Self.normalize(word))
     }
 
     public func wordLogProbability(_ word: String, language: String) -> Double? {
