@@ -44,6 +44,22 @@ final class LayoutDecoderTests: XCTestCase {
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
     }
 
+    func testKnownDirectWordBeatsTrailingPunctuationAlternative() {
+        let result = evaluate("gjvjom.", context: ["это"])
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+        XCTAssertEqual(result.decision.candidate.replacement, "помощью")
+    }
+
+    func testTwoKnownWordsOnSameKeysRemainLiteral() {
+        var russianBelief = LanguageBelief.neutral
+        russianBelief.observe(language: "ru")
+        russianBelief.observe(language: "ru")
+        let result = evaluate("here", context: ["это", "текст"], belief: russianBelief)
+        XCTAssertEqual(KeyMapping.convert("here"), "руку")
+        XCTAssertEqual(result.decision.verdict, .keep)
+        XCTAssertEqual(result.decision.reason, .blockedContext)
+    }
+
     func testColloquialSuffixConvertsFromKnownStem() {
         var englishBelief = LanguageBelief.neutral
         englishBelief.observe(language: "en")
@@ -60,6 +76,21 @@ final class LayoutDecoderTests: XCTestCase {
             "margin=\(result.confidenceMargin) threshold=\(result.threshold) evidence=\(result.evidence)"
         )
         XCTAssertTrue(result.evidence.contains(.compound(segmentLengths: [6, 5])))
+    }
+
+    func testEnglishUseWithCommaRemainsEnglishInRussianContext() {
+        var russianBelief = LanguageBelief.neutral
+        russianBelief.observe(language: "ru")
+        russianBelief.observe(language: "ru")
+        let result = evaluate(
+            "use,",
+            current: "en",
+            target: "ru",
+            context: ["это", "текст"],
+            belief: russianBelief
+        )
+        XCTAssertEqual(result.decision.verdict, .keep)
+        XCTAssertEqual(result.decision.candidate.replacement, "гыу,")
     }
 
     func testShortConjunctionAndPlanBAreDisambiguatedByContext() {

@@ -21,6 +21,11 @@ let package = Package(
                 .linkedFramework("ServiceManagement"),
             ]
         ),
+        .executableTarget(
+            name: "RuSwitcherSimulator",
+            dependencies: ["RuSwitcherCore"],
+            path: "Sources/RuSwitcherSimulator"
+        ),
         .testTarget(
             name: "RuSwitcherCoreTests",
             dependencies: ["RuSwitcherCore"],

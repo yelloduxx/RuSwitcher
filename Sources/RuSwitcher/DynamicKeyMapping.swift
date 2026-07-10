@@ -168,7 +168,7 @@ enum DynamicKeyMapping {
     /// Конвертирует набранные keycodes в строки исходной и целевой раскладок —
     /// для движка перепечатки (не читаем поле, не трогаем буфер обмена).
     /// nil — если раскладки не определились (тогда вызывающий падает на clipboard).
-    static func convertKeys(_ keys: [TypedKey]) -> (original: String, converted: String)? {
+    static func convertKeys(_ keys: [TypedKey]) -> ReconciledKeyText? {
         guard !keys.isEmpty else { return nil }
         // Удалёнка: символы проброшены через Screen Sharing (keyCode 0 + char). Конвертируем
         // по самому символу — направление RU↔EN определяет KeyMapping.convert по скрипту
@@ -176,7 +176,11 @@ enum DynamicKeyMapping {
         // конвертит «руддщ»→«hello» независимо от того, какая раскладка активна на нём.
         if keys.allSatisfy({ $0.char != nil }) {
             let original = String(keys.compactMap { $0.char })
-            return (original, KeyMapping.convert(original))
+            return ReconciledKeyText(
+                original: original,
+                converted: KeyMapping.convert(original),
+                sourceWasOpposite: false
+            )
         }
         let settings = SettingsManager.shared
         let layouts = LayoutSwitcher.installedLayouts()
@@ -205,7 +209,13 @@ enum DynamicKeyMapping {
             original.append(sc)
             converted.append(tc)
         }
-        return (original, converted)
+        let producedValues = keys.compactMap(\.producedText)
+        let producedText = producedValues.count == keys.count ? producedValues.joined() : nil
+        return KeyTextReconciler.reconcile(
+            reconstructedOriginal: original,
+            reconstructedConverted: converted,
+            producedText: producedText
+        )
     }
 
     // Авто-детект раскладок живёт в LayoutSwitcher (autoDetectID1/ID2).

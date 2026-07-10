@@ -39,6 +39,7 @@ final class SettingsManager: @unchecked Sendable {
         static let adaptiveRules = "com.ruswitcher.adaptiveRules.v1"
         static let smartEngineV2 = "com.ruswitcher.smartEngineV2"
         static let smartEngineV3 = "com.ruswitcher.smartEngineV3"
+        static let shareAnonymousStatistics = "com.ruswitcher.shareAnonymousStatistics"
     }
 
     private init() {}
@@ -168,6 +169,12 @@ final class SettingsManager: @unchecked Sendable {
             return defaults.bool(forKey: Keys.smartEngineV3)
         }
         set { defaults.set(newValue, forKey: Keys.smartEngineV3) }
+    }
+
+    /// Opt-in only. Payloads contain aggregate counters, never typed text or app IDs.
+    var shareAnonymousStatistics: Bool {
+        get { defaults.bool(forKey: Keys.shareAnonymousStatistics) }
+        set { defaults.set(newValue, forKey: Keys.shareAnonymousStatistics) }
     }
 
     /// issue #10: показывать флаг раскладки у текстовой каретки (бета). По умолчанию ВЫКЛ.

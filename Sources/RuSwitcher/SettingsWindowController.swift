@@ -389,6 +389,23 @@ final class SettingsWindowController {
         view.addSubview(engineLabel)
         y -= 38
 
+        let statisticsCheckbox = NSButton(
+            checkboxWithTitle: L10n.settingsAnonymousStatistics,
+            target: self,
+            action: #selector(anonymousStatisticsChanged)
+        )
+        statisticsCheckbox.frame = NSRect(x: 20, y: y, width: 420, height: 22)
+        statisticsCheckbox.state = SettingsManager.shared.shareAnonymousStatistics ? .on : .off
+        view.addSubview(statisticsCheckbox)
+        y -= 24
+
+        let statisticsHint = NSTextField(wrappingLabelWithString: L10n.settingsAnonymousStatisticsHint)
+        statisticsHint.frame = NSRect(x: 40, y: y - 34, width: 390, height: 34)
+        statisticsHint.font = .systemFont(ofSize: 11)
+        statisticsHint.textColor = .secondaryLabelColor
+        view.addSubview(statisticsHint)
+        y -= 48
+
         let clearLearningBtn = NSButton(
             title: L10n.settingsClearLearning,
             target: self,
@@ -562,6 +579,15 @@ final class SettingsWindowController {
 
     @objc private func debugLogChanged(_ sender: NSButton) {
         SettingsManager.shared.debugLogEnabled = sender.state == .on
+    }
+
+    @objc private func anonymousStatisticsChanged(_ sender: NSButton) {
+        SettingsManager.shared.shareAnonymousStatistics = sender.state == .on
+        if sender.state == .on {
+            AnonymousStatisticsReporter.shared.uploadIfDue()
+        } else {
+            AnonymousStatisticsReporter.shared.clear()
+        }
     }
 
     @objc private func clearAdaptiveLearning() {

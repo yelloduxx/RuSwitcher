@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         syncLoginItem()
         runPermissionWizard()
         UpdateChecker.checkOnLaunch()
+        AnonymousStatisticsReporter.shared.uploadIfDue()
         // Периодическая авто-проверка обновлений, пока приложение работает (не только на старте).
         // Тикает каждые 6ч; сам запрос к GitHub не чаще раза в сутки (троттл в UpdateChecker) и
         // уважает настройку «Автоматически проверять обновления» (её можно снять, чтобы отключить).
@@ -108,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             converted: last.converted,
             appBundleID: last.appBundleID
         )
+        AnonymousStatisticsReporter.shared.record(.correctionUndone)
         rslog("learn: negative originalLen=\(last.original.count) convertedLen=\(last.converted.count)")
     }
 
@@ -119,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             converted: last.converted,
             appBundleID: last.appBundleID
         )
+        AnonymousStatisticsReporter.shared.record(.correctionAccepted)
         rslog("learn: positive originalLen=\(last.original.count) convertedLen=\(last.converted.count)")
     }
 
@@ -416,6 +419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             LayoutSwitcher.switchToOpposite()
         }
         updateStatusIcon()
+        AnonymousStatisticsReporter.shared.record(.manualConverted)
         guard let pair = textConverter.lastLearningPair else {
             lastAutoConverted = nil
             return
@@ -488,7 +492,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             langs = typedIsCyrillic ? ("ru", "en") : ("en", "ru")
         } else if let sourceLayoutID = snapshot.sourceLayoutID,
                   let l = LayoutSwitcher.languagePair(sourceLayoutID: sourceLayoutID) {
-            langs = l
+            langs = pair.sourceWasOpposite
+                ? (current: l.opposite, opposite: l.current)
+                : l
         } else {
             rslog("auto: bail langs-nil"); return .passThrough
         }
@@ -602,8 +608,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             evidenceDescription = "fallback"
         }
         let candidate = decision.candidate
+        let statisticsPair = "\(langs.current)-\(targetLang)"
         rslog("auto: len=\(pair.original.count) ctx=\(contextWords.count) rev=\(snapshot.editRevision) \(langs.current)/\(targetLang) verdict=\(decision.verdict) reason=\(decision.reason) evidence=\(evidenceDescription) kind=\(candidate.kind) wordLen=\(candidate.convertedWord.count) suffix=\(candidate.suffix.count) margin=\(String(format: "%.2f", confidenceMargin))")
         guard decision.verdict == .switchToConverted else {
+            AnonymousStatisticsReporter.shared.record(
+                decision.verdict == .keep ? .autoKept : .autoUndecided,
+                languagePair: statisticsPair,
+                reason: String(describing: decision.reason),
+                tokenLength: pair.original.count
+            )
             let finalizeToken: Bool
             if case .punctuation = snapshot.boundary, decision.verdict == .undecided {
                 // It may be a layout letter inside an unfinished unknown word. Keep
@@ -656,7 +669,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
         }
 
-        let targetLayoutID = oppositeLayoutID(for: snapshot.sourceLayoutID)
+        let targetLayoutID = pair.sourceWasOpposite
+            ? snapshot.sourceLayoutID
+            : oppositeLayoutID(for: snapshot.sourceLayoutID)
         let transaction = ConversionTransaction(
             original: pair.original,
             replacement: candidate.replacement,
@@ -689,6 +704,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 appBundleID: frontID,
                 at: Date()
             )
+            AnonymousStatisticsReporter.shared.record(
+                .autoConverted,
+                languagePair: statisticsPair,
+                reason: String(describing: decision.reason),
+                tokenLength: pair.original.count
+            )
             return TokenHandlingResult(
                 consumeBoundary: snapshot.boundary.shouldConsumeOriginalEvent,
                 resolvedText: candidate.replacement,
@@ -704,6 +725,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 wasConverted: false
             )
         }
+        AnonymousStatisticsReporter.shared.record(
+            .transactionFailed,
+            languagePair: statisticsPair,
+            reason: String(describing: execution),
+            tokenLength: pair.original.count
+        )
         return TokenHandlingResult(
             consumeBoundary: false,
             resolvedText: pair.original,

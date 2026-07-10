@@ -67,6 +67,8 @@ enum L10n {
     static var settingsClearLearning: String { s("settings.learning.clear") }
     static var settingsClearLearningConfirm: String { s("settings.learning.clearConfirm") }
     static var settingsSmartEngine: String { s("settings.smartEngine") }
+    static var settingsAnonymousStatistics: String { s("settings.statistics.anonymous") }
+    static var settingsAnonymousStatisticsHint: String { s("settings.statistics.anonymousHint") }
     static var statusActive: String { s("status.active") }
     static var statusDisabled: String { s("status.disabled") }
     static var statusSecureInput: String { s("status.secureInput") }
@@ -201,6 +203,8 @@ enum L10n {
             "settings.learning.clear": "Reset learned corrections",
             "settings.learning.clearConfirm": "Reset all corrections learned from manual fixes and undo actions?",
             "settings.smartEngine": "Smart Engine %@ · language model %@",
+            "settings.statistics.anonymous": "Share anonymous quality statistics",
+            "settings.statistics.anonymousHint": "Off by default. Sends only aggregate outcomes and length buckets; never words, nearby text, or app names.",
             "status.active": "Smart conversion is active",
             "status.disabled": "Automatic conversion is disabled",
             "status.secureInput": "Paused: secure input is active",
@@ -298,6 +302,8 @@ enum L10n {
             "settings.learning.clear": "Сбросить выученные исправления",
             "settings.learning.clearConfirm": "Сбросить все правила, выученные по ручным исправлениям и отменам?",
             "settings.smartEngine": "Smart Engine %@ · языковая модель %@",
+            "settings.statistics.anonymous": "Отправлять анонимную статистику качества",
+            "settings.statistics.anonymousHint": "По умолчанию выключено. Только итоги и диапазоны длины; без слов, соседнего текста и названий приложений.",
             "status.active": "Умная конверсия работает",
             "status.disabled": "Автоматическая конверсия выключена",
             "status.secureInput": "Приостановлено: защищённый ввод",

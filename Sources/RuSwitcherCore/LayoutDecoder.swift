@@ -51,7 +51,18 @@ public enum LayoutDecoder {
         isConfirmed: (String, String) -> Bool = { _, _ in false },
         model: LanguageModelStore
     ) -> LayoutDecoderEvaluation {
-        let candidates = AutoConvertCandidateGenerator.candidates(typed: typed, converted: converted)
+        let generated = AutoConvertCandidateGenerator.candidates(typed: typed, converted: converted)
+        // A physical punctuation key may be a real letter in the target layout.
+        // When the full direct conversion is already a known word (помощью,
+        // приветствую), punctuation alternatives must not truncate it.
+        let direct = generated.first { $0.suffix.isEmpty }
+        let directIsKnown = direct.flatMap {
+            model.wordLogProbability(
+                FrequentWordLexicon.normalize($0.convertedWord),
+                language: LocalLanguageModel.canonical(targetLanguage)
+            )
+        } != nil
+        let candidates = directIsKnown ? direct.map { [$0] } ?? generated : generated
         let evaluations = candidates.map { candidate in
             evaluateCandidate(
                 candidate,
@@ -124,6 +135,9 @@ public enum LayoutDecoder {
 
         let sourceKnown = model.wordLogProbability(literal, language: currentCanonical)
         let targetKnown = targetKnownForShape
+        if literal.count >= 2, sourceKnown != nil, targetKnown != nil {
+            return fixed(baseCandidate, verdict: .keep, reason: .blockedContext, evidence: [.blockedContext])
+        }
         // A compound is evidence only when the literal hypothesis is not itself a
         // known word. This protects ordinary English prose from productive Russian
         // prefix decompositions that happen to share the same physical keys.

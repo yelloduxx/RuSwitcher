@@ -80,6 +80,7 @@ final class KeyboardMonitor: @unchecked Sendable {
     fileprivate var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var inputSession = InputSession(contextLimit: 5)
+    private var observedFrontmostProcessID: pid_t?
 
     /// Длина текущего набираемого слова
     var currentWordLength: Int { inputSession.currentKeys.count }
@@ -306,6 +307,16 @@ final class KeyboardMonitor: @unchecked Sendable {
         producedText: String? = nil,
         sourceLayoutID: String? = nil
     ) -> Bool {
+        let frontmostProcessID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if let previous = observedFrontmostProcessID,
+           let current = frontmostProcessID,
+           previous != current {
+            rslog("input-session: frontmost process changed; state invalidated")
+            keysTypedSinceConversion = true
+            fullReset(invalidated: true)
+            onEditingInvalidated?()
+        }
+        observedFrontmostProcessID = frontmostProcessID
         triggerArmed = false
         lastTapTime = nil
         let hadRecentCorrection = !keysTypedSinceConversion
