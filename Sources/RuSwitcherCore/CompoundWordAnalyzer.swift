@@ -35,9 +35,14 @@ public enum CompoundWordAnalyzer {
                 let isProductivePrefix = start == 0
                     && model.productiveRussianParts.contains(segment)
                     && end < characters.count
+                let isProductiveSuffix = end == characters.count
+                    && start >= 4
+                    && model.productiveRussianSuffixes.contains(segment)
+                    && model.contains(String(characters[0..<start]), language: language)
                 guard let wordScore = model.wordLogProbability(segment, language: language) else {
-                    if !isProductivePrefix { continue }
-                    let score = state.score + 1.2 + Double(segment.count) * 0.08
+                    if !isProductivePrefix && !isProductiveSuffix { continue }
+                    let morphologyBonus = isProductiveSuffix ? 2.4 : 1.2
+                    let score = state.score + morphologyBonus + Double(segment.count) * 0.08
                     Self.store(State(segments: state.segments + [segment], score: score), at: end, in: &best)
                     continue
                 }

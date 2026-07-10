@@ -44,6 +44,24 @@ final class LayoutDecoderTests: XCTestCase {
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
     }
 
+    func testColloquialSuffixConvertsFromKnownStem() {
+        var englishBelief = LanguageBelief.neutral
+        englishBelief.observe(language: "en")
+        englishBelief.observe(language: "en")
+        let result = evaluate(
+            "ghbdtnekmrb",
+            context: ["this", "is"],
+            belief: englishBelief
+        )
+        XCTAssertEqual(result.decision.candidate.replacement, "приветульки")
+        XCTAssertEqual(
+            result.decision.verdict,
+            .switchToConverted,
+            "margin=\(result.confidenceMargin) threshold=\(result.threshold) evidence=\(result.evidence)"
+        )
+        XCTAssertTrue(result.evidence.contains(.compound(segmentLengths: [6, 5])))
+    }
+
     func testShortConjunctionAndPlanBAreDisambiguatedByContext() {
         XCTAssertEqual(evaluate("b", context: ["это", "план"]).decision.candidate.replacement, "и")
         XCTAssertEqual(evaluate("b", context: ["это", "план"]).decision.verdict, .switchToConverted)

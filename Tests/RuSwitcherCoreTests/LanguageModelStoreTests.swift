@@ -17,6 +17,13 @@ final class LanguageModelStoreTests: XCTestCase {
         XCTAssertEqual(analysis.segments, ["супер", "спина"])
     }
 
+    func testProductiveColloquialSuffixUsesKnownStem() throws {
+        let model = try XCTUnwrap(LanguageModelStore.bundled)
+        XCTAssertFalse(model.contains("приветульки", language: "ru"))
+        let analysis = try XCTUnwrap(CompoundWordAnalyzer.analyze("приветульки", language: "ru", model: model))
+        XCTAssertEqual(analysis.segments, ["привет", "ульки"])
+    }
+
     func testChecksumRejectsCorruptedModel() throws {
         let url = try XCTUnwrap(LanguageModelStore.bundledResourceURL)
         var data = try Data(contentsOf: url)

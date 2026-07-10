@@ -60,6 +60,7 @@ public final class LanguageModelStore: @unchecked Sendable {
     public let metadata: LanguageModelMetadata
     public let thresholds: LanguageModelThresholds
     public let productiveRussianParts: Set<String>
+    public let productiveRussianSuffixes: Set<String>
 
     private let words: [String: [String: Double]]
     private let characters: [String: [String: Double]]
@@ -112,7 +113,11 @@ public final class LanguageModelStore: @unchecked Sendable {
 
         metadata = try decode(LanguageModelMetadata.self, section: .metadata)
         thresholds = try decode(LanguageModelThresholds.self, section: .thresholds)
-        productiveRussianParts = Set(try decode([String].self, section: .productive))
+        let productive: [String] = try decode([String].self, section: .productive)
+        productiveRussianParts = Set(productive.filter { !$0.hasPrefix("-") })
+        productiveRussianSuffixes = Set(productive.compactMap { value in
+            value.hasPrefix("-") ? String(value.dropFirst()) : nil
+        })
         words = [
             "ru": try decode([String: Double].self, section: .ruWords),
             "en": try decode([String: Double].self, section: .enWords),

@@ -50,6 +50,12 @@ PRODUCTIVE_RU = [
     "экзо", "эко", "электро",
 ]
 
+# Conservative colloquial/morphological endings. The leading marker keeps
+# suffixes distinguishable from productive prefixes in the compact section.
+PRODUCTIVE_RU_SUFFIXES = [
+    "ульки", "юшки", "ушки", "оньки", "еньки", "очки", "ечки",
+]
+
 CURATED_RU = [
     "супер", "спина", "привет", "приветствую", "раскладка",
     "автоконверсия", "контекст", "контекстный", "нейросеть", "флоуменеджер",
@@ -163,7 +169,7 @@ def main() -> None:
     en_words = read_words(paths["ngrams/1grams_english.csv"], "en", CURATED_EN)
     metadata = {
         "formatVersion": 1,
-        "modelVersion": "2026.07-v1",
+        "modelVersion": "2026.07-v2",
         "source": "orgtre/google-books-ngram-frequency",
         "sourceRevision": REVISION,
         "license": "CC BY 3.0",
@@ -187,7 +193,7 @@ def main() -> None:
         "en_bigrams": read_phrases(paths["ngrams/2grams_english.csv"], "en", 2),
         "ru_trigrams": read_phrases(paths["ngrams/3grams_russian.csv"], "ru", 3),
         "en_trigrams": read_phrases(paths["ngrams/3grams_english.csv"], "en", 3),
-        "productive": PRODUCTIVE_RU,
+        "productive": PRODUCTIVE_RU + ["-" + suffix for suffix in PRODUCTIVE_RU_SUFFIXES],
         "thresholds": thresholds,
     }
     write_model(args.output, [(SECTION[name], json_bytes(values[name])) for name in SECTION])
