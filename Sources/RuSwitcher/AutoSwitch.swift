@@ -53,6 +53,23 @@ enum LayoutDetector {
         return .switchToConverted
     }
 
+    /// issue #15: отщепляет прилипшую к концу слова пунктуацию ("ghbdtn," → ядро 6 + ",").
+    /// Ядро детектится и конвертится как обычно, хвост возвращается в поле ЛИТЕРАЛОМ —
+    /// конвертировать его по кейкодам нельзя: клавиша ',' в EN — это 'б' в RU, а
+    /// запятая RU (Shift+6) в EN — '^'. Набор консервативный: цифры, дефис, @/#
+    /// НЕ отщепляем — для URL/кода/почты вето детектора отрабатывает по делу.
+    /// Кавычки ' и " исключены сознательно: смарт-пунктуация приложений подменяет их
+    /// типографскими, а на dead-key раскладках (U.S. International) апостроф — dead key;
+    /// оба случая ломают счёт/литеральность. «…»/«»/– недостижимы из буфера (Option-слой).
+    /// ВАЖНО: '.', ',', ';', ':' в EN — клавиши букв ю/б/ж/Ж в ЙЦУКЕН, поэтому вызывающий
+    /// ОБЯЗАН проверить полную конверсию по словарю (неоднозначность «думаю» vs «дума.»).
+    static func splitTrailingPunctuation(_ s: String) -> (coreLength: Int, suffix: String) {
+        let punct: Set<Character> = [",", ".", "!", "?", ";", ":", ")"]
+        var core = s[...]
+        while let last = core.last, punct.contains(last) { core = core.dropLast() }
+        return (core.count, String(s.dropFirst(core.count)))
+    }
+
     private static func isAllCaps(_ s: String) -> Bool {
         s == s.uppercased() && s != s.lowercased()
     }

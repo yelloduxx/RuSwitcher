@@ -352,10 +352,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             rslog("auto: bail focus-changed"); return  // фокус уехал между пробелом и сейчас
         }
 
-        let keys = keyboardMonitor.prevWordKeys
+        let allKeys = keyboardMonitor.prevWordKeys
         let bc = keyboardMonitor.boundaryCount
-        guard !keys.isEmpty else { rslog("auto: bail empty-keys"); return }  // курсор уехал — небезопасно
-        guard let pair = DynamicKeyMapping.convertKeys(keys) else { rslog("auto: bail convertKeys-nil"); return }
+        guard !allKeys.isEmpty else { rslog("auto: bail empty-keys"); return }  // курсор уехал — небезопасно
+        guard let fullPair = DynamicKeyMapping.convertKeys(allKeys) else { rslog("auto: bail convertKeys-nil"); return }
+
+        // issue #15: слово с прилипшей пунктуацией ("ghbdtn,") — отщепляем хвост, детектим
+        // и конвертим ядро, хвост вернётся в поле литералом. Проверка счёта — инвариант
+        // «1 клавиша = 1 символ» обоих путей convertKeys; при слиянии графем не отщепляем.
+        var keys = allKeys
+        var suffix = ""
+        let split = LayoutDetector.splitTrailingPunctuation(fullPair.original)
+        if !split.suffix.isEmpty, split.coreLength > 0, fullPair.original.count == allKeys.count {
+            keys = Array(allKeys.prefix(split.coreLength))
+            suffix = split.suffix
+        }
+        guard let pair = suffix.isEmpty ? fullPair : DynamicKeyMapping.convertKeys(keys) else {
+            rslog("auto: bail convertKeys-nil"); return
+        }
         if AutoSwitchPolicy.isDeniedWord(pair.original, pair.converted) { rslog("auto: bail denied-word"); return }
 
         // Язык для детектора. Для проброшенного через удалёнку текста (все символы — char)
@@ -370,6 +384,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             langs = l
         } else {
             rslog("auto: bail langs-nil"); return
+        }
+
+        // Ревью-находка (#15): '.', ',', ';', ':' в EN — клавиши букв ю/б/ж/Ж в ЙЦУКЕН,
+        // поэтому начало «хвоста» в целевой раскладке может оказаться буквами, а ядро +
+        // эти буквы — словарным словом: «levf.» → «думаю», «levf.!» → «думаю!». Идём по
+        // буквенному расширению ядра в полной конверсии и проверяем каждый префикс по
+        // словарю: первое словарное расширение = неоднозначность («думаю» vs «дума.») →
+        // точность важнее полноты, не делаем НИЧЕГО (ручной триггер конвертирует целиком).
+        // Первая не-буква — стоп: дальше хвост пунктуация и в целевой раскладке,
+        // двусмысленности нет. NSSpellChecker токенизирует («привет!» для него валиден),
+        // поэтому проверять полную конверсию целиком нельзя — только буквенные префиксы.
+        if !suffix.isEmpty, Dict.isAvailable(langs.opposite) {
+            let oth = String(langs.opposite.prefix(2))
+            let fullConv = Array(fullPair.converted)
+            var candidate = String(fullConv[..<split.coreLength])
+            for ch in fullConv[split.coreLength...] {
+                guard ch.isLetter else { break }
+                candidate.append(ch)
+                if Dict.isValidWord(candidate.lowercased(), lang: oth) {
+                    rslog("auto: bail ambiguous-suffix")
+                    return
+                }
+            }
         }
 
         let capsLock = keys.contains { $0.caps }
@@ -388,8 +425,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
-        rslog("auto: convert \(keys.count) keys (+\(bc) sp)")
-        if textConverter.convert(wordKeys: [], prevWordKeys: keys, boundaryCount: bc) {
+        rslog("auto: convert \(keys.count) keys (+\(suffix.count) punct, +\(bc) sp)")
+        if textConverter.convert(wordKeys: [], prevWordKeys: keys, boundaryCount: bc,
+                                 passthroughSuffix: suffix) {
             keyboardMonitor.markConverted()
             LayoutSwitcher.switchToOpposite()
             updateStatusIcon()

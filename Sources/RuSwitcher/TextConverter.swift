@@ -70,7 +70,10 @@ final class TextConverter {
     /// юникод-вставку — без буфера обмена и без выделения (работает в Atom/Electron).
     /// Падает на clipboard-движок, если буфера нет (текст выделен мышью) или
     /// раскладки не определились.
-    func convert(wordKeys: [TypedKey], prevWordKeys: [TypedKey], boundaryCount: Int) -> Bool {
+    /// passthroughSuffix (issue #15): прилипшая к слову пунктуация — стирается вместе со
+    /// словом и возвращается в поле как есть, БЕЗ кейкод-конверсии (',' EN ↔ 'б' RU).
+    func convert(wordKeys: [TypedKey], prevWordKeys: [TypedKey], boundaryCount: Int,
+                 passthroughSuffix: String = "") -> Bool {
         let keys: [TypedKey]
         let trailingSpaces: Int
         if !wordKeys.isEmpty {
@@ -83,6 +86,12 @@ final class TextConverter {
         }
 
         guard let pair = DynamicKeyMapping.convertKeys(keys) else {
+            // Clipboard-путь про суффикс не знает (селекция посчиталась бы неверно) —
+            // точность важнее полноты: с суффиксом тихо отказываемся.
+            guard passthroughSuffix.isEmpty else {
+                rslog("buffer convert: suffix + unresolved layouts — bail")
+                return false
+            }
             rslog("buffer convert: layouts not resolved — fallback to clipboard")
             return convertViaClipboard(wordLength: wordKeys.count, prevWordLength: prevWordKeys.count, boundaryCount: boundaryCount)
         }
@@ -91,12 +100,12 @@ final class TextConverter {
         isConverting = true
 
         let spaces = String(repeating: " ", count: trailingSpaces)
-        let bsCount = keys.count + trailingSpaces
-        let insert = pair.converted + spaces
-        lastOriginal = pair.original + spaces
-        lastConverted = pair.converted + spaces
+        let bsCount = keys.count + passthroughSuffix.count + trailingSpaces
+        let insert = pair.converted + passthroughSuffix + spaces
+        lastOriginal = pair.original + passthroughSuffix + spaces
+        lastConverted = pair.converted + passthroughSuffix + spaces
         lastWasBuffer = true
-        rslog("buffer convert: \(keys.count) keys (+\(trailingSpaces) sp)")
+        rslog("buffer convert: \(keys.count) keys (+\(passthroughSuffix.count) punct, +\(trailingSpaces) sp)")
 
         // Инжект — вне main, чтобы usleep не голодал event tap.
         injectQueue.async { [weak self] in
