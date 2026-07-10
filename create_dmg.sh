@@ -7,9 +7,25 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 VERSION=$(/usr/bin/python3 -c "import json;print(json.load(open('version.json'))['version'])")
 BUILD=$(/usr/bin/python3 -c "import json;print(json.load(open('version.json')).get('build','1'))")
 DMG_NAME="${APP_NAME}-${VERSION}.dmg"
-# Keychain profile used for Apple notarization. Override with NOTARIZE_PROFILE=<name>.
-# Skip notarization entirely with SKIP_NOTARIZE=1.
+# Нотаризация: предпочитаем API-ключ App Store Connect — файл на диске, НЕ зависит
+# от Keychain (keychain-профиль уже дважды пропадал: 2026-07-01 и 2026-07-10).
+# Конфиг ключа: ~/.config/ruswitcher/notary.conf (задаёт NOTARY_KEY_FILE,
+# NOTARY_KEY_ID, NOTARY_ISSUER_ID; chmod 600). Фолбэк — keychain-профиль.
+# Переопределение: NOTARIZE_PROFILE=<name>, NOTARY_CONF=<path>. Пропуск: SKIP_NOTARIZE=1.
 NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-notarytool-studio}"
+NOTARY_CONF="${NOTARY_CONF:-$HOME/.config/ruswitcher/notary.conf}"
+if [ -f "$NOTARY_CONF" ]; then
+    # shellcheck source=/dev/null
+    . "$NOTARY_CONF"
+fi
+if [ -n "${NOTARY_KEY_FILE:-}" ] && [ -f "$NOTARY_KEY_FILE" ] \
+   && [ -n "${NOTARY_KEY_ID:-}" ] && [ -n "${NOTARY_ISSUER_ID:-}" ]; then
+    NOTARY_ARGS=(--key "$NOTARY_KEY_FILE" --key-id "$NOTARY_KEY_ID" --issuer "$NOTARY_ISSUER_ID")
+    NOTARY_VIA="ASC API key $NOTARY_KEY_ID"
+else
+    NOTARY_ARGS=(--keychain-profile "$NOTARIZE_PROFILE")
+    NOTARY_VIA="keychain profile $NOTARIZE_PROFILE"
+fi
 DMG_TEMP="${APP_NAME}-temp.dmg"
 VOL_NAME="${APP_NAME}"
 BACKGROUND="dmg_background.png"
@@ -17,6 +33,23 @@ APP_PATH="${APP_NAME}.app"
 DMG_SIZE="10m"
 
 echo "=== Creating styled DMG ==="
+
+# 00. Fail fast: нотаризационный профиль проверяем ДО многоминутной сборки.
+#     Профиль уже ДВАЖДЫ пропадал из Keychain (2026-07: удалён на живой системе
+#     между релизами, без ребута/обновлений — подозрение на чистильщики/VPN-софт),
+#     и падение в середине пайплайна путает. Ловим сразу, с рецептом починки.
+if [ "${SKIP_NOTARIZE:-0}" != "1" ]; then
+    if ! xcrun notarytool history "${NOTARY_ARGS[@]}" >/dev/null 2>&1; then
+        echo "ОШИБКА: нотаризационные креды недоступны (пробовали: $NOTARY_VIA)."
+        echo "Вариант 1 (надёжный): API-ключ App Store Connect в $NOTARY_CONF"
+        echo "  (NOTARY_KEY_FILE=…AuthKey_XXX.p8, NOTARY_KEY_ID=…, NOTARY_ISSUER_ID=…)."
+        echo "Вариант 2: keychain-профиль (пароль — app-specific password, интерактивно):"
+        echo "  xcrun notarytool store-credentials $NOTARIZE_PROFILE \\"
+        echo "      --apple-id xrashid@gmail.com --team-id 9GEWCZ59HK"
+        exit 69
+    fi
+    echo "→ Notary credentials OK ($NOTARY_VIA)"
+fi
 
 # 0. ВСЕГДА пересобираем приложение из исходников. Без этого шага DMG берёт имя
 #    из version.json, а payload — из случайно лежащего рядом RuSwitcher.app.
@@ -42,7 +75,7 @@ echo "→ Verified bundle $BUNDLE_VERSION (build $BUNDLE_BUILD) matches version.
 if [ "${SKIP_NOTARIZE:-0}" != "1" ]; then
     echo "→ Notarizing the app bundle..."
     ditto -c -k --keepParent "$APP_PATH" "${APP_NAME}-app.zip"
-    xcrun notarytool submit "${APP_NAME}-app.zip" --keychain-profile "$NOTARIZE_PROFILE" --wait
+    xcrun notarytool submit "${APP_NAME}-app.zip" "${NOTARY_ARGS[@]}" --wait
     rm -f "${APP_NAME}-app.zip"
     echo "→ Stapling the app bundle..."
     xcrun stapler staple "$APP_PATH"
@@ -164,9 +197,9 @@ fi
 if [ "${SKIP_NOTARIZE:-0}" = "1" ]; then
     echo "→ SKIP_NOTARIZE=1 — skipping notarization (DMG will NOT pass Gatekeeper on other Macs)"
 else
-    echo "→ Submitting to Apple notary service (profile: $NOTARIZE_PROFILE)..."
+    echo "→ Submitting to Apple notary service ($NOTARY_VIA)..."
     xcrun notarytool submit "$DMG_NAME" \
-        --keychain-profile "$NOTARIZE_PROFILE" \
+        "${NOTARY_ARGS[@]}" \
         --wait
 
     echo "→ Stapling notarization ticket..."
