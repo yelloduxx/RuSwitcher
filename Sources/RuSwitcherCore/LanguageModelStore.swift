@@ -14,6 +14,8 @@ public struct LanguageModelThresholds: Codable, Equatable, Sendable {
     public let russianContext: Double
     public let neutral: Double
     public let englishContext: Double
+    public let russianOOVNeutral: Double
+    public let russianOOVEnglishLong: Double
     public let compoundBonus: Double
     public let confirmedBonus: Double
 }

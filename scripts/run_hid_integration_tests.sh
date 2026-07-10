@@ -23,6 +23,9 @@ expected = {
     "hello-from-russian": "hello ",
     "use-comma-from-russian": "use, ",
     "fable-from-russian": "fable ",
+    "wipe-from-english": "протереть ",
+    "butt-from-english": "задница ",
+    "slur-from-english": "пидр ",
 }
 
 failed = False

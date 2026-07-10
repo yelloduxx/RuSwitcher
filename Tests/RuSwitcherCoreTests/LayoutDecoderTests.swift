@@ -135,6 +135,37 @@ final class LayoutDecoderTests: XCTestCase {
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
     }
 
+    func testUnknownRussianWordsUseGeneralCharacterEvidence() {
+        for (typed, expected) in [
+            ("ghjnthtnm", "протереть"),
+            ("pflybwf", "задница"),
+            ("gblh", "пидр"),
+        ] {
+            let result = evaluate(typed, context: ["нужно"])
+            XCTAssertEqual(
+                result.decision.verdict,
+                .switchToConverted,
+                "\(typed) -> \(expected), margin=\(result.confidenceMargin) threshold=\(result.threshold) evidence=\(result.evidence)"
+            )
+            XCTAssertEqual(result.decision.candidate.replacement, expected)
+        }
+    }
+
+    func testEnglishBeliefOnlyAllowsLongStrongRussianOOVWords() {
+        var englishBelief = LanguageBelief.neutral
+        englishBelief.observe(language: "en")
+        englishBelief.observe(language: "en")
+
+        let wipe = evaluate("ghjnthtnm", context: ["this"], belief: englishBelief)
+        let butt = evaluate("pflybwf", context: ["this"], belief: englishBelief)
+        XCTAssertEqual(wipe.decision.verdict, .switchToConverted, "margin=\(wipe.confidenceMargin) threshold=\(wipe.threshold)")
+        XCTAssertEqual(butt.decision.verdict, .switchToConverted, "margin=\(butt.confidenceMargin) threshold=\(butt.threshold)")
+        XCTAssertEqual(
+            evaluate("gblh", context: ["this"], belief: englishBelief).decision.verdict,
+            .undecided
+        )
+    }
+
     func testPlausibleUnknownEnglishWordStaysBlockedInStrongRussianContext() {
         var russianBelief = LanguageBelief.neutral
         russianBelief.observe(language: "ru")

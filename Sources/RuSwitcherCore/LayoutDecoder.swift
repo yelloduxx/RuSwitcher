@@ -140,6 +140,13 @@ public enum LayoutDecoder {
 
         let sourceKnown = model.wordLogProbability(literal, language: currentCanonical)
         let targetKnown = targetKnownForShape
+        let strongScriptMismatch = LayoutDetector.hasStrongScriptMismatch(
+            typed: candidate.typedRaw,
+            converted: converted,
+            targetLang: targetLanguage
+        )
+        let characterAdvantage = model.characterLogProbability(converted, language: targetCanonical)
+            - model.characterLogProbability(literal, language: currentCanonical)
         if literal.count >= 2, sourceKnown != nil, targetKnown != nil {
             return fixed(baseCandidate, verdict: .keep, reason: .blockedContext, evidence: [.blockedContext])
         }
@@ -153,8 +160,17 @@ public enum LayoutDecoder {
 
         var literalScore = Self.lexicalScore(literal, language: currentCanonical, known: sourceKnown, model: model)
         var convertedScore = Self.lexicalScore(converted, language: targetCanonical, known: targetKnown, model: model)
-        literalScore += languageBelief.score(language: currentCanonical)
-        convertedScore += languageBelief.score(language: targetCanonical) + adaptiveBias
+        let currentBeliefScore = languageBelief.score(language: currentCanonical)
+        let targetBeliefScore = languageBelief.score(language: targetCanonical)
+        literalScore += currentBeliefScore
+        convertedScore += targetBeliefScore + adaptiveBias
+
+        if currentCanonical == "en", targetCanonical == "ru",
+           sourceKnown == nil, targetKnown == nil,
+           strongScriptMismatch, converted.count >= 6,
+           characterAdvantage >= model.thresholds.russianOOVEnglishLong {
+            convertedScore += max(0, currentBeliefScore - targetBeliefScore)
+        }
 
         if sourceKnown != nil { literalScore += 2.2 }
         if targetKnown != nil {
@@ -185,7 +201,7 @@ public enum LayoutDecoder {
 
         let targetProbability = languageBelief.probability(language: targetCanonical)
         let currentProbability = languageBelief.probability(language: currentCanonical)
-        let threshold: Double
+        var threshold: Double
         if converted.count <= 2 {
             threshold = model.thresholds.short
         } else if targetProbability >= 0.68 {
@@ -194,6 +210,15 @@ public enum LayoutDecoder {
             threshold = model.thresholds.englishContext
         } else {
             threshold = model.thresholds.neutral
+        }
+
+        if currentCanonical == "en", targetCanonical == "ru",
+           sourceKnown == nil, targetKnown == nil, strongScriptMismatch {
+            if currentProbability < 0.62 {
+                threshold = min(threshold, model.thresholds.russianOOVNeutral)
+            } else if converted.count >= 6 {
+                threshold = min(threshold, model.thresholds.russianOOVEnglishLong)
+            }
         }
 
         if converted.count == 1,
@@ -214,8 +239,7 @@ public enum LayoutDecoder {
         }
 
         let margin = convertedScore - literalScore
-        let hasLexicalEvidence = targetKnown != nil || compound != nil
-            || LayoutDetector.hasStrongScriptMismatch(typed: candidate.typedRaw, converted: converted, targetLang: targetLanguage)
+        let hasLexicalEvidence = targetKnown != nil || compound != nil || strongScriptMismatch
         let verdict: LayoutVerdict = margin >= threshold && hasLexicalEvidence ? .switchToConverted : (sourceKnown != nil ? .keep : .undecided)
         let reason: AutoConvertDecisionReason
         if verdict == .switchToConverted {

@@ -3,7 +3,7 @@
   "seed": 20260710,
   "bootstrapSource": {
     "path": "Sources/RuSwitcherCore/Resources/language-model-v1.bin",
-    "sha256": "cc40a62e2be0d9ae4d3f2f9476552e49273951f343b24ccaaa15270ab36f6e55",
+    "sha256": "a8e0fec3769a698d7f9f6c3ff67ff06788c977062972899dc09fbdabc3cad182",
     "license": "CC BY 3.0",
     "upstream": "https://github.com/orgtre/google-books-ngram-frequency",
     "revision": "e20471c15a758be3362b16d07870b34df4f7ccc3"

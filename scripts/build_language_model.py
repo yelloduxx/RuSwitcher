@@ -169,7 +169,7 @@ def main() -> None:
     en_words = read_words(paths["ngrams/1grams_english.csv"], "en", CURATED_EN)
     metadata = {
         "formatVersion": 1,
-        "modelVersion": "2026.07-v2",
+        "modelVersion": "2026.07-v3-oov2",
         "source": "orgtre/google-books-ngram-frequency",
         "sourceRevision": REVISION,
         "license": "CC BY 3.0",
@@ -180,6 +180,8 @@ def main() -> None:
         "russianContext": 1.15,
         "neutral": 2.2,
         "englishContext": 3.8,
+        "russianOOVNeutral": 1.55,
+        "russianOOVEnglishLong": 3.2,
         "compoundBonus": 4.8,
         "confirmedBonus": 20.0,
     }

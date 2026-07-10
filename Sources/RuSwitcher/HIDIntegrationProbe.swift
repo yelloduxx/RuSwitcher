@@ -47,6 +47,12 @@ private struct HIDProbeScenario {
             return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [32, 1, 14, 43, 49])])
         case "fable-from-russian":
             return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [3, 0, 11, 37, 14, 49])])
+        case "wipe-from-english":
+            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [5, 4, 38, 45, 17, 4, 17, 45, 46, 49])])
+        case "butt-from-english":
+            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [35, 3, 37, 16, 11, 13, 3, 49])])
+        case "slur-from-english":
+            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [5, 11, 37, 4, 49])])
         default:
             return nil
         }
