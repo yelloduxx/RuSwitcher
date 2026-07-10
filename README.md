@@ -40,7 +40,9 @@ The trigger is configurable — **Option**, **Command**, **Control** or **Shift*
 
 RuSwitcher can also fix the layout **automatically as you type**, with no key press. Turn it on in **Settings → Auto-conversion** (off by default). When you finish a word (space), it checks the word against the macOS system dictionary and — only when confident — converts it and switches the layout for you.
 
-Precision-first: to avoid false fixes it deliberately **skips** short words (< 3 letters), words with digits / punctuation / URLs, ALL-CAPS acronyms typed with Shift, camelCase / mixed-script code identifiers, terminals / IDEs / password managers, and password fields. It targets layout pairs that have a macOS system dictionary (English ↔ Russian / Ukrainian / German / French… are reliable); languages without one (Belarusian, Armenian, Georgian) keep using the manual trigger.
+Words with trailing punctuation are handled too *(new in 2.7.0)*: `ghbdtn,` becomes `привет,` — the punctuation stays exactly as typed. Genuinely ambiguous tails are left alone on purpose: on the Russian layout the EN keys `. , ; :` are the letters `ю б ж Ж`, so `levf.` could mean either «думаю» or «дума.» — such words are yours to convert with the manual trigger.
+
+Precision-first: to avoid false fixes it deliberately **skips** short words (< 3 letters), words with digits / URLs / punctuation in the middle, ALL-CAPS acronyms typed with Shift, camelCase / mixed-script code identifiers, terminals / IDEs / password managers, and password fields. It targets layout pairs that have a macOS system dictionary (English ↔ Russian / Ukrainian / German / French… are reliable); languages without one (Belarusian, Armenian, Georgian) keep using the manual trigger.
 
 Because the check relies on the **macOS system dictionary** — which is less complete than the real vocabulary of the languages it converts — some compound, rare or slang words won't auto-convert on their own. That's exactly what the built-in exception lists are for: add words you type often to **Always convert** (or **Never convert**) and RuSwitcher will handle them the way you want, no dictionary needed.
 
@@ -166,7 +168,9 @@ If you find RuSwitcher useful:
 
 RuSwitcher умеет исправлять раскладку **автоматически по ходу набора**, без нажатий. Включается в **Настройки → Автоконверсия** (по умолчанию выключено). Когда вы заканчиваете слово (пробел), приложение сверяет его с системным словарём macOS и — только при уверенности — конвертирует и само переключает раскладку.
 
-Точность важнее полноты: чтобы не сработать зря, авто-конверсия намеренно **пропускает** короткие слова (< 3 букв), слова с цифрами / пунктуацией / URL, акронимы капсом через Shift, camelCase / смешанные алфавиты (идентификаторы кода), терминалы / IDE / менеджеры паролей и поля паролей. Работает для пар раскладок, у которых есть системный словарь macOS (английский ↔ русский / украинский / немецкий / французский… — надёжно); для языков без словаря (белорусский, армянский, грузинский) остаётся ручной триггер.
+Слова с прилипшим знаком препинания тоже обрабатываются *(новое в 2.7.0)*: `ghbdtn,` превратится в `привет,` — знак останется ровно как набран. По-настоящему неоднозначные хвосты не трогаем сознательно: клавиши `. , ; :` английской раскладки — это буквы `ю б ж Ж` в ЙЦУКЕН, так что `levf.` может означать и «думаю», и «дума.» — такие слова конвертируйте ручным триггером.
+
+Точность важнее полноты: чтобы не сработать зря, авто-конверсия намеренно **пропускает** короткие слова (< 3 букв), слова с цифрами / URL / пунктуацией в середине, акронимы капсом через Shift, camelCase / смешанные алфавиты (идентификаторы кода), терминалы / IDE / менеджеры паролей и поля паролей. Работает для пар раскладок, у которых есть системный словарь macOS (английский ↔ русский / украинский / немецкий / французский… — надёжно); для языков без словаря (белорусский, армянский, грузинский) остаётся ручной триггер.
 
 Поскольку проверка опирается на **системный словарь macOS** — а он не так богат, как реальный словарный запас конвертируемых языков — некоторые составные, редкие или сленговые слова сами не сконвертируются. Ровно для этого и нужны встроенные списки исключений: часто используемые слова добавляйте в **«Всегда конвертировать»** (или **«Никогда не конвертировать»**), и RuSwitcher будет обрабатывать их как вам нужно, без словаря.
 
