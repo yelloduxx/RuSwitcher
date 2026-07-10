@@ -97,6 +97,7 @@ public struct LearnedCorrectionsArchive: Codable, Equatable, Sendable {
         }) else { return false }
         guard rule.positiveCount >= 0, rule.positiveCount <= 1_000_000,
               rule.negativeCount >= 0, rule.negativeCount <= 1_000_000 else { return false }
+        guard !rule.applicationException || rule.appBundleID != nil else { return false }
         return rule.appBundleID.map { !$0.isEmpty && $0.count <= 256 } ?? true
     }
 }

@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var badgeCache: [String: NSImage] = [:]  // монохромные плашки, чтобы не перерисовывать 2с-опросом
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        SettingsManager.shared.migrateAdaptiveRulesIfNeeded()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(resetPersonalizationAdapter),
@@ -156,8 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         lastAutoConverted = nil
         SettingsManager.shared.recordAdaptivePositive(
             original: last.original,
-            converted: last.converted,
-            appBundleID: last.appBundleID
+            converted: last.converted
         )
         updatePersonalization(last, positive: true, strength: 0.25)
         AnonymousStatisticsReporter.shared.record(.correctionAccepted)
@@ -491,7 +491,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
            SmartTokenizer.kind(of: pair.converted) == .lexical {
             SettingsManager.shared.recordAdaptiveConfirmed(
                 original: pair.original,
-                converted: pair.converted
+                converted: pair.converted,
+                appBundleID: frontID
             )
             sessionNegativePairs.remove(learningKey(
                 original: pair.original,

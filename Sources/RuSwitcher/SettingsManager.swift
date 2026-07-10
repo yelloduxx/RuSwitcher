@@ -313,9 +313,9 @@ final class SettingsManager: @unchecked Sendable {
         adaptiveRuleBook.isConfirmed(original: original, converted: converted, appBundleID: appBundleID)
     }
 
-    func recordAdaptivePositive(original: String, converted: String, appBundleID: String?) {
+    func recordAdaptivePositive(original: String, converted: String) {
         var book = adaptiveRuleBook
-        book.recordPositive(original: original, converted: converted, appBundleID: appBundleID)
+        book.recordPositive(original: original, converted: converted)
         adaptiveRuleBook = book
     }
 
@@ -325,12 +325,19 @@ final class SettingsManager: @unchecked Sendable {
         adaptiveRuleBook = book
     }
 
-    func recordAdaptiveConfirmed(original: String, converted: String) {
+    func recordAdaptiveConfirmed(original: String, converted: String, appBundleID: String?) {
         var book = adaptiveRuleBook
-        // Explicit manual intent is portable across applications. Undo removes
-        // confirmation before adding an app-scoped negative signal.
-        book.recordConfirmed(original: original, converted: converted, appBundleID: nil)
+        book.recordManualCorrection(
+            original: original,
+            converted: converted,
+            appBundleID: appBundleID
+        )
         adaptiveRuleBook = book
+    }
+
+    func migrateAdaptiveRulesIfNeeded() {
+        guard defaults.data(forKey: Keys.adaptiveRules) != nil else { return }
+        adaptiveRuleBook = adaptiveRuleBook
     }
 
     func clearAdaptiveRules() {

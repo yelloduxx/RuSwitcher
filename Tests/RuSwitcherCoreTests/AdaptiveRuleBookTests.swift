@@ -8,7 +8,7 @@ final class AdaptiveRuleBookTests: XCTestCase {
         decoder.dateDecodingStrategy = .secondsSince1970
         let book = try decoder.decode(AdaptiveRuleBook.self, from: Data(oldJSON.utf8))
 
-        XCTAssertEqual(book.modelVersion, 3)
+        XCTAssertEqual(book.modelVersion, 4)
         XCTAssertEqual(book.rules.count, 1)
         XCTAssertFalse(book.rules[0].confirmed)
         XCTAssertGreaterThan(book.bias(original: "ghbdtn", converted: "привет", appBundleID: nil), 0)
@@ -26,7 +26,7 @@ final class AdaptiveRuleBookTests: XCTestCase {
 
     func testPositiveAndNegativeSignalsAdjustBias() {
         var book = AdaptiveRuleBook()
-        book.recordPositive(original: "ghbdtn", converted: "привет", appBundleID: nil)
+        book.recordPositive(original: "ghbdtn", converted: "привет")
         XCTAssertGreaterThan(book.bias(original: "ghbdtn", converted: "привет", appBundleID: "chat"), 0)
 
         book.recordNegative(original: "ghbdtn", converted: "привет", appBundleID: nil)
@@ -39,6 +39,140 @@ final class AdaptiveRuleBookTests: XCTestCase {
         book.recordNegative(original: "brand", converted: "икфтв", appBundleID: "chat.one")
         XCTAssertLessThan(book.bias(original: "brand", converted: "икфтв", appBundleID: "chat.one"), 0)
         XCTAssertEqual(book.bias(original: "brand", converted: "икфтв", appBundleID: "chat.two"), 0)
+    }
+
+    func testConfirmedWordIsGlobalAcrossApplications() {
+        var book = AdaptiveRuleBook()
+        book.recordConfirmed(original: "qazwsxedc", converted: "йфяцычувс")
+
+        XCTAssertTrue(book.isConfirmed(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "chat.one"
+        ))
+        XCTAssertTrue(book.isConfirmed(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "editor.two"
+        ))
+    }
+
+    func testReversalCreatesExceptionOnlyForCurrentApplication() {
+        var book = AdaptiveRuleBook()
+        book.recordConfirmed(original: "qazwsxedc", converted: "йфяцычувс")
+        book.recordNegative(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "chat.one"
+        )
+
+        XCTAssertFalse(book.isConfirmed(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "chat.one"
+        ))
+        XCTAssertLessThanOrEqual(book.bias(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "chat.one"
+        ), -10)
+        XCTAssertTrue(book.isConfirmed(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "editor.two"
+        ))
+    }
+
+    func testManualConfirmationClearsOnlyCurrentApplicationException() {
+        var book = AdaptiveRuleBook()
+        book.recordConfirmed(original: "qazwsxedc", converted: "йфяцычувс")
+        book.recordNegative(original: "qazwsxedc", converted: "йфяцычувс", appBundleID: "chat.one")
+        book.recordNegative(original: "qazwsxedc", converted: "йфяцычувс", appBundleID: "editor.two")
+
+        book.recordConfirmed(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            clearingExceptionFor: "chat.one"
+        )
+
+        XCTAssertTrue(book.isConfirmed(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "chat.one"
+        ))
+        XCTAssertFalse(book.isConfirmed(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "editor.two"
+        ))
+    }
+
+    func testManualReverseCreatesApplicationExceptionInsteadOfOppositeGlobalRule() {
+        var book = AdaptiveRuleBook()
+        book.recordConfirmed(original: "qazwsxedc", converted: "йфяцычувс")
+
+        book.recordManualCorrection(
+            original: "йфяцычувс",
+            converted: "qazwsxedc",
+            appBundleID: "chat.one"
+        )
+
+        XCTAssertTrue(book.hasApplicationException(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "chat.one"
+        ))
+        XCTAssertTrue(book.isConfirmed(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "editor.two"
+        ))
+        XCTAssertFalse(book.isConfirmed(
+            original: "йфяцычувс",
+            converted: "qazwsxedc",
+            appBundleID: "editor.two"
+        ))
+    }
+
+    func testAcceptedCorrectionBuildsGlobalBias() {
+        var book = AdaptiveRuleBook()
+        book.recordPositive(original: "qazwsxedc", converted: "йфяцычувс")
+
+        XCTAssertGreaterThan(book.bias(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "chat.one"
+        ), 0)
+        XCTAssertGreaterThan(book.bias(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "editor.two"
+        ), 0)
+    }
+
+    func testLegacyApplicationLearningMigratesToGlobalWithLocalException() throws {
+        let json = #"{"modelVersion":3,"rules":[{"original":"qazwsxedc","converted":"йфяцычувс","appBundleID":"chat.one","positiveCount":3,"negativeCount":0,"confirmed":true,"lastUsed":0},{"original":"qazwsxedc","converted":"йфяцычувс","appBundleID":"editor.two","positiveCount":0,"negativeCount":1,"confirmed":false,"lastUsed":0}]}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+
+        let book = try decoder.decode(AdaptiveRuleBook.self, from: Data(json.utf8))
+
+        XCTAssertEqual(book.modelVersion, 4)
+        XCTAssertTrue(book.isConfirmed(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "another.app"
+        ))
+        XCTAssertFalse(book.isConfirmed(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "editor.two"
+        ))
+        XCTAssertTrue(book.hasApplicationException(
+            original: "qazwsxedc",
+            converted: "йфяцычувс",
+            appBundleID: "editor.two"
+        ))
     }
 
     func testLearnedCorrectionsArchiveRoundTrip() throws {
@@ -106,6 +240,20 @@ final class AdaptiveRuleBookTests: XCTestCase {
 
         XCTAssertThrowsError(try LearnedCorrectionsArchive.decode(data)) { error in
             XCTAssertEqual(error as? LearnedCorrectionsArchiveError, .invalidFormat)
+        }
+    }
+
+    func testLearnedCorrectionsArchiveRejectsGlobalApplicationException() {
+        let book = AdaptiveRuleBook(rules: [
+            AdaptiveRule(
+                original: "qazwsxedc",
+                converted: "йфяцычувс",
+                applicationException: true
+            ),
+        ])
+
+        XCTAssertThrowsError(try LearnedCorrectionsArchive(ruleBook: book).encoded()) { error in
+            XCTAssertEqual(error as? LearnedCorrectionsArchiveError, .invalidRule)
         }
     }
 }
