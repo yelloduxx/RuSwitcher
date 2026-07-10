@@ -135,7 +135,7 @@ The app adds itself to the permission lists automatically — you only need to f
 swift run -c release RuSwitcherSimulator --jobs 8 --output simulation.json
 ```
 
-Use `--input fixtures.jsonl` for custom words, `--phrase-input phrases.jsonl` for stateful mixed-language phrases, and `--learn-output rules.json` to produce supervised adaptive rules for missed expected conversions. Built-in phrase tests preserve context, language belief and active layout between words and run in parallel. The separate sequential `scripts/run_hid_integration_tests.sh` suite posts `CGEvent` key events through the installed app and verifies the final editor text; it is reserved for event-tap, layout switching, punctuation, and duplicate-insertion regressions.
+Use `--input fixtures.jsonl` for custom words, `--phrase-input phrases.jsonl` for stateful mixed-language phrases, `--phrase-results results.jsonl` for a complete step-by-step audit, and `--learn-output rules.json` to produce supervised adaptive rules for missed expected conversions. Built-in phrase tests preserve context, language belief and active layout between words and run in parallel. `scripts/verify_simulator_negative_control.sh` proves that an intentionally wrong expectation is rejected. The separate sequential `scripts/run_hid_integration_tests.sh` suite posts `CGEvent` key events through the installed app and verifies the final editor text; it is reserved for event-tap, layout switching, punctuation, and duplicate-insertion regressions.
 
 Anonymous quality reporting is off by default. It stores only aggregate outcome/reason/length buckets. Upload is enabled only in builds that define `RSStatisticsEndpoint`; no endpoint means no network request.
 
@@ -276,7 +276,7 @@ cp -R RuSwitcher.app /Applications/
 swift run -c release RuSwitcherSimulator --jobs 8 --output simulation.json
 ```
 
-`--input fixtures.jsonl` принимает тесты слов, `--phrase-input phrases.jsonl` — последовательные смешанные фразы, а `--learn-output rules.json` создаёт обученные правила для ожидаемых, но пропущенных замен. В тестах фраз между словами сохраняются контекст, языковой belief и активная раскладка; сами фразы запускаются параллельно. Последовательный `scripts/run_hid_integration_tests.sh` оставлен только для реального event tap: смены раскладки, пунктуации и защиты от дублей.
+`--input fixtures.jsonl` принимает тесты слов, `--phrase-input phrases.jsonl` — последовательные смешанные фразы, `--phrase-results results.jsonl` сохраняет полный пошаговый отчёт, а `--learn-output rules.json` создаёт обученные правила для ожидаемых, но пропущенных замен. В тестах фраз между словами сохраняются контекст, языковой belief и активная раскладка; сами фразы запускаются параллельно. `scripts/verify_simulator_negative_control.sh` доказывает, что намеренно неверное ожидание отклоняется. Последовательный `scripts/run_hid_integration_tests.sh` оставлен только для реального event tap: смены раскладки, пунктуации и защиты от дублей.
 
 Анонимная статистика выключена по умолчанию и содержит только агрегированные исходы, причины и диапазоны длины. Отправка работает лишь в сборках с `RSStatisticsEndpoint`; без endpoint сетевых запросов нет.
 

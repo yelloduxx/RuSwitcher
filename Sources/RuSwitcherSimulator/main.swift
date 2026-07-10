@@ -60,8 +60,10 @@ private struct PhraseFixture: Codable, Sendable {
 private struct PhraseStepResult: Codable, Sendable {
     let typed: String
     let sourceLanguage: String
-    let verdict: String
-    let resolved: String
+    let expectedVerdict: String
+    let actualVerdict: String
+    let expectedResolved: String
+    let actualResolved: String
     let passed: Bool
 }
 
@@ -90,6 +92,7 @@ private struct Options {
     var inputPath: String?
     var phraseInputPath: String?
     var outputPath: String?
+    var phraseResultsPath: String?
     var learnOutputPath: String?
     var jobs = max(1, ProcessInfo.processInfo.activeProcessorCount)
     var generatedLimit = 2_500
@@ -154,11 +157,12 @@ private func parseOptions() -> Options {
         case "--input": options.inputPath = value()
         case "--phrase-input": options.phraseInputPath = value()
         case "--output": options.outputPath = value()
+        case "--phrase-results": options.phraseResultsPath = value()
         case "--learn-output": options.learnOutputPath = value()
         case "--jobs": options.jobs = max(1, Int(value()) ?? 1)
         case "--limit": options.generatedLimit = max(1, Int(value()) ?? 2_500)
         case "--help":
-            print("RuSwitcherSimulator [--input words.jsonl] [--phrase-input phrases.jsonl] [--output report.json] [--learn-output rules.json] [--jobs N] [--limit N]")
+            print("RuSwitcherSimulator [--input words.jsonl] [--phrase-input phrases.jsonl] [--output report.json] [--phrase-results results.jsonl] [--learn-output rules.json] [--jobs N] [--limit N]")
             exit(0)
         default:
             FileHandle.standardError.write(Data("unknown argument: \(argument)\n".utf8))
@@ -182,6 +186,15 @@ private func loadPhraseJSONL(_ path: String) throws -> [PhraseFixture] {
             )
         }
     }
+}
+
+private func writeFile(_ data: Data, to path: String) throws {
+    let url = URL(fileURLWithPath: path)
+    try FileManager.default.createDirectory(
+        at: url.deletingLastPathComponent(),
+        withIntermediateDirectories: true
+    )
+    try data.write(to: url, options: .atomic)
 }
 
 private func builtInPhraseFixtures(model: LanguageModelStore, limit: Int) -> [PhraseFixture] {
@@ -415,8 +428,10 @@ private func evaluatePhrase(_ fixture: PhraseFixture, model: LanguageModelStore)
         stepResults.append(PhraseStepResult(
             typed: step.typed,
             sourceLanguage: currentLanguage,
-            verdict: String(describing: evaluation.decision.verdict),
-            resolved: resolved,
+            expectedVerdict: step.expected.rawValue,
+            actualVerdict: String(describing: evaluation.decision.verdict),
+            expectedResolved: step.expectedResolved,
+            actualResolved: resolved,
             passed: passed
         ))
         output += resolved + step.separator
@@ -501,8 +516,17 @@ private func run() -> Never {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     let report = try! encoder.encode(summary)
-    if let outputPath = options.outputPath {
-        try! report.write(to: URL(fileURLWithPath: outputPath), options: .atomic)
+    do {
+        if let outputPath = options.outputPath {
+            try writeFile(report, to: outputPath)
+        }
+        if let phraseResultsPath = options.phraseResultsPath {
+            let lines = completedPhrases.map { String(decoding: try! JSONEncoder().encode($0), as: UTF8.self) }
+            try writeFile(Data((lines.joined(separator: "\n") + "\n").utf8), to: phraseResultsPath)
+        }
+    } catch {
+        FileHandle.standardError.write(Data("unable to write report: \(error.localizedDescription)\n".utf8))
+        exit(74)
     }
     FileHandle.standardOutput.write(report)
     FileHandle.standardOutput.write(Data("\n".utf8))
@@ -517,7 +541,12 @@ private func run() -> Never {
             )
         }
         let data = try! encoder.encode(book)
-        try! data.write(to: URL(fileURLWithPath: learnOutputPath), options: .atomic)
+        do {
+            try writeFile(data, to: learnOutputPath)
+        } catch {
+            FileHandle.standardError.write(Data("unable to write learned rules: \(error.localizedDescription)\n".utf8))
+            exit(74)
+        }
     }
 
     exit(failures.isEmpty && phraseFailures.isEmpty ? 0 : 1)
