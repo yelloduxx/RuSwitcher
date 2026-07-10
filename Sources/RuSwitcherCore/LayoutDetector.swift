@@ -29,6 +29,16 @@ public struct AutoConvertDecision: Equatable, Sendable {
     public let verdict: LayoutVerdict
     public let reason: AutoConvertDecisionReason
     public let candidate: AutoConvertCandidate
+
+    public init(
+        verdict: LayoutVerdict,
+        reason: AutoConvertDecisionReason,
+        candidate: AutoConvertCandidate
+    ) {
+        self.verdict = verdict
+        self.reason = reason
+        self.candidate = candidate
+    }
 }
 
 public struct AutoConvertPolicy: Equatable, Sendable {

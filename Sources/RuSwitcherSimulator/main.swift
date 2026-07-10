@@ -23,9 +23,14 @@ private struct Result: Codable, Sendable {
     let expected: String
     let expectedReplacement: String?
     let actual: String
+    let v3Verdict: String
     let replacement: String
     let margin: Double
     let reason: String
+    let v4Outcome: String?
+    let v4Verdict: String?
+    let v4Probability: Double?
+    let v4LatencyMilliseconds: Double?
 }
 
 private struct PhraseStep: Codable, Sendable {
@@ -65,6 +70,9 @@ private struct PhraseStepResult: Codable, Sendable {
     let expectedResolved: String
     let actualResolved: String
     let passed: Bool
+    let v4Outcome: String?
+    let v4Probability: Double?
+    let v4LatencyMilliseconds: Double?
 }
 
 private struct PhraseResult: Codable, Sendable {
@@ -76,6 +84,8 @@ private struct PhraseResult: Codable, Sendable {
 }
 
 private struct Summary: Codable {
+    let engine: String
+    let deadlineMilliseconds: Double
     let total: Int
     let passed: Int
     let failed: Int
@@ -86,6 +96,10 @@ private struct Summary: Codable {
     let failures: [Result]
     let phraseFailures: [PhraseResult]
     let phraseSamples: [PhraseResult]
+    let v4Outcomes: [String: Int]
+    let v4Disagreements: Int
+    let v4LatencyP95: Double?
+    let v4LatencyP99: Double?
 }
 
 private struct Options {
@@ -96,6 +110,8 @@ private struct Options {
     var learnOutputPath: String?
     var jobs = max(1, ProcessInfo.processInfo.activeProcessorCount)
     var generatedLimit = 2_500
+    var engine = "v3"
+    var deadlineMilliseconds = 4.0
 }
 
 private final class ResultStore: @unchecked Sendable {
@@ -161,8 +177,15 @@ private func parseOptions() -> Options {
         case "--learn-output": options.learnOutputPath = value()
         case "--jobs": options.jobs = max(1, Int(value()) ?? 1)
         case "--limit": options.generatedLimit = max(1, Int(value()) ?? 2_500)
+        case "--engine":
+            options.engine = value()
+            guard ["v3", "v4-shadow", "v4-active"].contains(options.engine) else {
+                FileHandle.standardError.write(Data("invalid engine: \(options.engine)\n".utf8))
+                exit(64)
+            }
+        case "--deadline-ms": options.deadlineMilliseconds = max(0, Double(value()) ?? 4)
         case "--help":
-            print("RuSwitcherSimulator [--input words.jsonl] [--phrase-input phrases.jsonl] [--output report.json] [--phrase-results results.jsonl] [--learn-output rules.json] [--jobs N] [--limit N]")
+            print("RuSwitcherSimulator [--engine v3|v4-shadow|v4-active] [--deadline-ms 4] [--input words.jsonl] [--phrase-input phrases.jsonl] [--output report.json] [--phrase-results results.jsonl] [--learn-output rules.json] [--jobs N] [--limit N]")
             exit(0)
         default:
             FileHandle.standardError.write(Data("unknown argument: \(argument)\n".utf8))
@@ -265,6 +288,40 @@ private func builtInPhraseFixtures(model: LanguageModelStore, limit: Int) -> [Ph
             ],
             expectedText: "революция началась online"
         ),
+        PhraseFixture(
+            id: "both-known-english-here",
+            initialLanguage: "en",
+            steps: [
+                PhraseStep("put"),
+                PhraseStep("it"),
+                PhraseStep("here", separator: ""),
+            ],
+            expectedText: "put it here"
+        ),
+        PhraseFixture(
+            id: "both-known-russian-hand",
+            initialLanguage: "ru",
+            steps: [
+                PhraseStep("подними"),
+                PhraseStep(
+                    "here",
+                    manualLanguage: "en",
+                    separator: "",
+                    expected: .keep,
+                    expectedResolved: "here"
+                ),
+            ],
+            expectedText: "подними here"
+        ),
+        PhraseFixture(
+            id: "both-known-ambiguous-abstain",
+            initialLanguage: "ru",
+            steps: [
+                PhraseStep("это"),
+                PhraseStep("here", manualLanguage: "en", separator: ""),
+            ],
+            expectedText: "это here"
+        ),
     ]
 
     let generatedPerDirection = min(500, max(1, limit / 5))
@@ -327,6 +384,17 @@ private func builtInFixtures(model: LanguageModelStore, limit: Int) -> [Fixture]
         Fixture(id: "hello", typed: "руддщ", currentLanguage: "ru", targetLanguage: "en", context: ["this"], expected: .switchLayout, expectedReplacement: "hello"),
         Fixture(id: "reverse-comma", typed: "гыуб", currentLanguage: "ru", targetLanguage: "en", context: ["this"], expected: .switchLayout, expectedReplacement: "use,"),
         Fixture(id: "unknown-english", typed: "афиду", currentLanguage: "ru", targetLanguage: "en", context: ["this"], expected: .switchLayout, expectedReplacement: "fable"),
+        Fixture(id: "keep-put-it-here", typed: "here", currentLanguage: "en", targetLanguage: "ru", context: ["put", "it"], expected: .keep, expectedReplacement: nil),
+        Fixture(
+            id: "switch-pick-up-hand",
+            typed: "here",
+            currentLanguage: "en",
+            targetLanguage: "ru",
+            context: ["подними"],
+            expected: .keep,
+            expectedReplacement: nil
+        ),
+        Fixture(id: "keep-ambiguous-here", typed: "here", currentLanguage: "en", targetLanguage: "ru", context: ["это"], expected: .keep, expectedReplacement: nil),
     ]
     var generated = regressions
     var generatedUnknownEnglish = 0
@@ -390,23 +458,129 @@ private func builtInFixtures(model: LanguageModelStore, limit: Int) -> [Fixture]
     return generated
 }
 
-private func evaluate(_ fixture: Fixture, model: LanguageModelStore) -> Result {
+private struct EngineDecision {
+    let decision: AutoConvertDecision
+    let margin: Double
+    let v4: V4Evaluation?
+}
+
+private func v4Verdict(_ evaluation: V4Evaluation?) -> String? {
+    guard let evaluation else { return nil }
+    switch evaluation.outcome {
+    case .switchToHypothesis: return String(describing: LayoutVerdict.switchToConverted)
+    case .keep: return String(describing: LayoutVerdict.keep)
+    case .abstain: return String(describing: LayoutVerdict.undecided)
+    case .fallbackV3: return String(describing: evaluation.fallback.decision.verdict)
+    }
+}
+
+private func evaluateEngine(
+    typed: String,
+    currentLanguage: String,
+    targetLanguage: String,
+    context: [String],
+    belief: LanguageBelief,
+    model: LanguageModelStore,
+    contextualModel: ContextualLayoutModel?,
+    engine: String,
+    deadlineMilliseconds: Double
+) -> EngineDecision {
+    let converted = KeyMapping.convert(typed)
+    let v3 = LayoutDecoder.evaluate(
+        typed: typed,
+        converted: converted,
+        currentLanguage: currentLanguage,
+        targetLanguage: targetLanguage,
+        capsLock: typed == typed.uppercased() && typed != typed.lowercased(),
+        contextWords: context,
+        languageBelief: belief,
+        policy: .empty,
+        model: model
+    )
+    guard engine != "v3", let contextualModel else {
+        return EngineDecision(decision: v3.decision, margin: v3.confidenceMargin, v4: nil)
+    }
+    let tokens = context.map {
+        InputContextToken(text: $0, language: SmartTokenizer.languageHint(for: $0))
+    }
+    let snapshot = ContextSnapshot(
+        tokens: tokens,
+        activeLayoutID: nil,
+        focus: FocusedElementIdentity(processID: 0, bundleID: "simulator"),
+        editRevision: 0
+    )
+    let v4 = ContextualLayoutDecoder.evaluate(
+        typed: typed,
+        converted: converted,
+        currentLanguage: currentLanguage,
+        targetLanguage: targetLanguage,
+        capsLock: typed == typed.uppercased() && typed != typed.lowercased(),
+        context: snapshot,
+        languageBelief: belief,
+        integrity: .clean,
+        policy: .empty,
+        lexicalModel: model,
+        scorer: contextualModel,
+        adapter: nil,
+        maximumLatencyMilliseconds: deadlineMilliseconds
+    )
+    guard engine == "v4-active" else {
+        return EngineDecision(decision: v3.decision, margin: v3.confidenceMargin, v4: v4)
+    }
+    switch v4.outcome {
+    case .fallbackV3:
+        return EngineDecision(decision: v3.decision, margin: v3.confidenceMargin, v4: v4)
+    case .keep:
+        return EngineDecision(
+            decision: AutoConvertDecision(verdict: .keep, reason: .keepCurrentWord, candidate: v3.decision.candidate),
+            margin: -v4.confidenceMargin,
+            v4: v4
+        )
+    case .abstain:
+        return EngineDecision(
+            decision: AutoConvertDecision(verdict: .undecided, reason: .undecided, candidate: v3.decision.candidate),
+            margin: v4.confidenceMargin,
+            v4: v4
+        )
+    case .switchToHypothesis:
+        guard let candidate = ContextualLayoutDecoder.selectedCandidate(
+            from: v4,
+            typed: typed,
+            converted: converted
+        ) else {
+            return EngineDecision(decision: v3.decision, margin: v3.confidenceMargin, v4: v4)
+        }
+        return EngineDecision(
+            decision: AutoConvertDecision(verdict: .switchToConverted, reason: .phraseContext, candidate: candidate),
+            margin: v4.confidenceMargin,
+            v4: v4
+        )
+    }
+}
+
+private func evaluate(
+    _ fixture: Fixture,
+    model: LanguageModelStore,
+    contextualModel: ContextualLayoutModel?,
+    engine: String,
+    deadlineMilliseconds: Double
+) -> Result {
     var belief = LanguageBelief.neutral
     let contextLanguage = fixture.context.last.flatMap(SmartTokenizer.languageHint)
     if let contextLanguage {
         belief.observe(language: contextLanguage)
         belief.observe(language: contextLanguage)
     }
-    let evaluation = LayoutDecoder.evaluate(
+    let evaluation = evaluateEngine(
         typed: fixture.typed,
-        converted: KeyMapping.convert(fixture.typed),
         currentLanguage: fixture.currentLanguage,
         targetLanguage: fixture.targetLanguage,
-        capsLock: false,
-        contextWords: fixture.context,
-        languageBelief: belief,
-        policy: .empty,
-        model: model
+        context: fixture.context,
+        belief: belief,
+        model: model,
+        contextualModel: contextualModel,
+        engine: engine,
+        deadlineMilliseconds: deadlineMilliseconds
     )
     let switched = evaluation.decision.verdict == .switchToConverted
     let expectedSwitch = fixture.expected == .switchLayout
@@ -420,13 +594,24 @@ private func evaluate(_ fixture: Fixture, model: LanguageModelStore) -> Result {
         expected: fixture.expected.rawValue,
         expectedReplacement: fixture.expectedReplacement,
         actual: String(describing: evaluation.decision.verdict),
+        v3Verdict: String(describing: evaluation.v4?.fallback.decision.verdict ?? evaluation.decision.verdict),
         replacement: replacement,
-        margin: evaluation.confidenceMargin,
-        reason: String(describing: evaluation.decision.reason)
+        margin: evaluation.margin,
+        reason: String(describing: evaluation.decision.reason),
+        v4Outcome: evaluation.v4?.outcome.rawValue,
+        v4Verdict: v4Verdict(evaluation.v4),
+        v4Probability: evaluation.v4?.selectedHypothesisProbability,
+        v4LatencyMilliseconds: evaluation.v4?.latencyMilliseconds
     )
 }
 
-private func evaluatePhrase(_ fixture: PhraseFixture, model: LanguageModelStore) -> PhraseResult {
+private func evaluatePhrase(
+    _ fixture: PhraseFixture,
+    model: LanguageModelStore,
+    contextualModel: ContextualLayoutModel?,
+    engine: String,
+    deadlineMilliseconds: Double
+) -> PhraseResult {
     var currentLanguage = fixture.initialLanguage
     var context: [String] = []
     var belief = LanguageBelief.neutral
@@ -436,16 +621,16 @@ private func evaluatePhrase(_ fixture: PhraseFixture, model: LanguageModelStore)
     for step in fixture.steps {
         if let manualLanguage = step.manualLanguage { currentLanguage = manualLanguage }
         let targetLanguage = currentLanguage == "ru" ? "en" : "ru"
-        let evaluation = LayoutDecoder.evaluate(
+        let evaluation = evaluateEngine(
             typed: step.typed,
-            converted: KeyMapping.convert(step.typed),
             currentLanguage: currentLanguage,
             targetLanguage: targetLanguage,
-            capsLock: step.typed == step.typed.uppercased() && step.typed != step.typed.lowercased(),
-            contextWords: context,
-            languageBelief: belief,
-            policy: .empty,
-            model: model
+            context: context,
+            belief: belief,
+            model: model,
+            contextualModel: contextualModel,
+            engine: engine,
+            deadlineMilliseconds: deadlineMilliseconds
         )
         let switched = evaluation.decision.verdict == .switchToConverted
         let resolved = switched ? evaluation.decision.candidate.replacement : step.typed
@@ -459,7 +644,10 @@ private func evaluatePhrase(_ fixture: PhraseFixture, model: LanguageModelStore)
             actualVerdict: String(describing: evaluation.decision.verdict),
             expectedResolved: step.expectedResolved,
             actualResolved: resolved,
-            passed: passed
+            passed: passed,
+            v4Outcome: evaluation.v4?.outcome.rawValue,
+            v4Probability: evaluation.v4?.selectedHypothesisProbability,
+            v4LatencyMilliseconds: evaluation.v4?.latencyMilliseconds
         ))
         output += resolved + step.separator
         let contextToken = SmartTokenizer.lexicalCore(of: resolved)
@@ -486,11 +674,17 @@ private func run() -> Never {
         FileHandle.standardError.write(Data("language model unavailable\n".utf8))
         exit(70)
     }
+    let contextualModel = options.engine == "v3" ? nil : ContextualLayoutModel.bundled
+    if options.engine != "v3", contextualModel == nil {
+        FileHandle.standardError.write(Data("V4 contextual model unavailable\n".utf8))
+        exit(70)
+    }
 
     let fixtures: [Fixture]
     let phraseFixtures: [PhraseFixture]
     do {
-        fixtures = try options.inputPath.map(loadJSONL) ?? builtInFixtures(model: model, limit: options.generatedLimit)
+        fixtures = try options.inputPath.map(loadJSONL)
+            ?? builtInFixtures(model: model, limit: options.generatedLimit)
         phraseFixtures = try options.phraseInputPath.map(loadPhraseJSONL)
             ?? builtInPhraseFixtures(model: model, limit: options.generatedLimit)
     } catch {
@@ -508,7 +702,13 @@ private func run() -> Never {
         semaphore.wait()
         group.enter()
         queue.async {
-            results.set(evaluate(fixtures[index], model: model), at: index)
+            results.set(evaluate(
+                fixtures[index],
+                model: model,
+                contextualModel: contextualModel,
+                engine: options.engine,
+                deadlineMilliseconds: options.deadlineMilliseconds
+            ), at: index)
             semaphore.signal()
             group.leave()
         }
@@ -517,7 +717,13 @@ private func run() -> Never {
         semaphore.wait()
         group.enter()
         queue.async {
-            phraseResults.set(evaluatePhrase(phraseFixtures[index], model: model), at: index)
+            phraseResults.set(evaluatePhrase(
+                phraseFixtures[index],
+                model: model,
+                contextualModel: contextualModel,
+                engine: options.engine,
+                deadlineMilliseconds: options.deadlineMilliseconds
+            ), at: index)
             semaphore.signal()
             group.leave()
         }
@@ -528,7 +734,25 @@ private func run() -> Never {
     let failures = completed.filter { !$0.passed }
     let completedPhrases = phraseResults.completed()
     let phraseFailures = completedPhrases.filter { !$0.passed }
+    let allV4Outcomes = completed.compactMap(\.v4Outcome)
+        + completedPhrases.flatMap(\.steps).compactMap(\.v4Outcome)
+    let v4Outcomes = Dictionary(grouping: allV4Outcomes, by: { $0 }).mapValues(\.count)
+    let v4Disagreements = completed.filter {
+        guard let verdict = $0.v4Verdict else { return false }
+        return verdict != $0.v3Verdict
+    }.count
+    let v4Latencies = (completed.compactMap(\.v4LatencyMilliseconds)
+        + completedPhrases.flatMap(\.steps).compactMap(\.v4LatencyMilliseconds))
+        .filter { $0 > 0 }
+        .sorted()
+    func percentile(_ percentile: Double) -> Double? {
+        guard !v4Latencies.isEmpty else { return nil }
+        let index = min(v4Latencies.count - 1, Int(Double(v4Latencies.count - 1) * percentile))
+        return v4Latencies[index]
+    }
     let summary = Summary(
+        engine: options.engine,
+        deadlineMilliseconds: options.deadlineMilliseconds,
         total: completed.count + completedPhrases.count,
         passed: completed.count - failures.count + completedPhrases.count - phraseFailures.count,
         failed: failures.count + phraseFailures.count,
@@ -538,7 +762,11 @@ private func run() -> Never {
         workers: options.jobs,
         failures: Array(failures.prefix(100)),
         phraseFailures: phraseFailures,
-        phraseSamples: Array(completedPhrases.prefix(6))
+        phraseSamples: Array(completedPhrases.prefix(6)),
+        v4Outcomes: v4Outcomes,
+        v4Disagreements: v4Disagreements,
+        v4LatencyP95: percentile(0.95),
+        v4LatencyP99: percentile(0.99)
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

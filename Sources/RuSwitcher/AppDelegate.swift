@@ -10,7 +10,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let textConverter = TextConverter()
     private lazy var conversionCoordinator = ConversionCoordinator(eventReplacer: textConverter)
     private let languageModel = LanguageModelStore.bundled
+    private let contextualModel = ContextualLayoutModel.bundled
     private let textContextReader = FocusedTextContextReader()
+    private var personalizationAdapter: PersonalizationAdapter?
+    private let v4PrefixQueue = DispatchQueue(label: "com.ruswitcher.v4-prefix", qos: .userInteractive)
+    private struct V4PrefixResult {
+        let original: String
+        let converted: String
+        let focus: FocusedElementIdentity
+        let sequence: UInt64
+        let editRevision: UInt64
+        let evaluation: V4Evaluation
+    }
+    private var v4PrefixResult: V4PrefixResult?
     private var languageBeliefs: [String: LanguageBelief] = [:]
     private let settingsController = SettingsWindowController()
     private let perAppLayoutManager = PerAppLayoutManager()
@@ -23,6 +35,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var badgeCache: [String: NSImage] = [:]  // монохромные плашки, чтобы не перерисовывать 2с-опросом
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(resetPersonalizationAdapter),
+            name: SettingsManager.learningResetNotification,
+            object: nil
+        )
+        if let contextualModel {
+            personalizationAdapter = SettingsManager.shared.personalizationAdapter(for: contextualModel.manifest)
+            rslog("engine: v4 mode=\(SettingsManager.shared.smartEngineV4Mode.rawValue) model=\(contextualModel.manifest.modelVersion)")
+        } else {
+            rslog("engine: v4 unavailable fallback=v3")
+        }
         if SettingsManager.shared.smartEngineV3, let languageModel {
             rslog("engine: v3 model=\(languageModel.metadata.modelVersion) format=\(languageModel.metadata.formatVersion)")
         } else {
@@ -40,6 +64,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { _ in
             Task { @MainActor in UpdateChecker.checkPeriodic() }
         }
+    }
+
+    @objc private func resetPersonalizationAdapter() {
+        guard let manifest = contextualModel?.manifest else {
+            personalizationAdapter = nil
+            return
+        }
+        personalizationAdapter = PersonalizationAdapter(
+            modelVersion: manifest.modelVersion,
+            embeddingSize: manifest.embeddingSize
+        )
+        rslog("learn: v4 adapter cleared")
     }
 
     private func setupSettingsCallbacks() {
@@ -83,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let converted: String
         let appBundleID: String?
         let at: Date
+        let v4FeatureDelta: [Float]?
     }
 
     private var lastAutoConverted: AutoLearningEvent?
@@ -109,6 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             converted: last.converted,
             appBundleID: last.appBundleID
         )
+        updatePersonalization(last, positive: false, strength: 1)
         AnonymousStatisticsReporter.shared.record(.correctionUndone)
         rslog("learn: negative originalLen=\(last.original.count) convertedLen=\(last.converted.count)")
     }
@@ -121,8 +159,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             converted: last.converted,
             appBundleID: last.appBundleID
         )
+        updatePersonalization(last, positive: true, strength: 0.25)
         AnonymousStatisticsReporter.shared.record(.correctionAccepted)
         rslog("learn: positive originalLen=\(last.original.count) convertedLen=\(last.converted.count)")
+    }
+
+    private func updatePersonalization(
+        _ event: AutoLearningEvent,
+        positive: Bool,
+        strength: Float
+    ) {
+        guard let featureDelta = event.v4FeatureDelta,
+              let manifest = contextualModel?.manifest,
+              var adapter = personalizationAdapter else { return }
+        adapter.update(
+            featureDelta: featureDelta,
+            positive: positive,
+            strength: strength,
+            learningRate: manifest.learningRate,
+            l2: manifest.l2
+        )
+        personalizationAdapter = adapter
+        SettingsManager.shared.savePersonalizationAdapter(adapter)
+        rslog("learn: v4 outcome=\(positive ? "positive" : "negative") dimensions=\(featureDelta.count)")
     }
 
     private func startPerAppLayout() {
@@ -383,12 +442,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         keyboardMonitor.onTokenCompleted = { [weak self] snapshot, proxy in
             self?.handleAutoConvert(snapshot, proxy: proxy) ?? .passThrough
         }
+        keyboardMonitor.onTokenChanged = { [weak self] draft in
+            self?.prefetchV4(draft)
+        }
         keyboardMonitor.onCorrectionEdited = { [weak self] in
             self?.learnFromUndo()
         }
         keyboardMonitor.onEditingInvalidated = { [weak self] in
             self?.textConverter.clearState()
             self?.lastAutoConverted = nil
+            self?.v4PrefixResult = nil
         }
         keyboardMonitor.onUserInput = { [weak self] in self?.caretIndicator?.userTyped() }  // issue #10
         updateStatusIcon()        // сначала выставляем флаг меню-бара, пока индикатора ещё нет
@@ -441,13 +504,126 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             original: pair.original,
             converted: pair.converted,
             appBundleID: frontID,
-            at: Date()
+            at: Date(),
+            v4FeatureDelta: nil
         )
     }
 
     /// Smart auto-conversion runs synchronously while the active event tap owns the
     /// boundary. It only consumes a space after the complete replacement transaction
     /// has been posted; every early exit passes the original event through unchanged.
+    private func layoutLanguages(
+        keys: [TypedKey],
+        pair: ReconciledKeyText,
+        sourceLayoutID: String?
+    ) -> (current: String, opposite: String)? {
+        if keys.allSatisfy({ $0.char != nil }) {
+            let typedIsCyrillic = pair.original.unicodeScalars.contains {
+                (0x0400...0x04FF).contains($0.value)
+            }
+            return typedIsCyrillic ? ("ru", "en") : ("en", "ru")
+        }
+        guard let sourceLayoutID,
+              let languages = LayoutSwitcher.languagePair(sourceLayoutID: sourceLayoutID) else { return nil }
+        return pair.sourceWasOpposite
+            ? (current: languages.opposite, opposite: languages.current)
+            : languages
+    }
+
+    private func prefetchV4(_ draft: TokenDraft) {
+        guard SettingsManager.shared.smartEngineV4Mode != .off,
+              SettingsManager.shared.smartEngineV3,
+              SettingsManager.shared.autoSwitchEnabled,
+              SettingsManager.shared.autoConvert,
+              !AutoSwitchPolicy.secureInputActive,
+              let languageModel,
+              let contextualModel,
+              let pair = DynamicKeyMapping.convertKeys(draft.keys),
+              !AutoSwitchPolicy.isDeniedApp(draft.focus.bundleID),
+              !AutoSwitchPolicy.isDeniedWord(pair.original, pair.converted),
+              let languages = layoutLanguages(
+                keys: draft.keys,
+                pair: pair,
+                sourceLayoutID: draft.sourceLayoutID
+              ),
+              Set([LocalLanguageModel.canonical(languages.current), LocalLanguageModel.canonical(languages.opposite)])
+                == Set(["en", "ru"]) else {
+            v4PrefixResult = nil
+            return
+        }
+
+        let beliefKey = self.beliefKey(for: draft.focus)
+        let belief = languageBeliefs[beliefKey] ?? draft.languageBelief
+        let policy = AutoConvertPolicy(
+            neverConvert: SettingsManager.shared.deniedWordsSet,
+            alwaysConvert: SettingsManager.shared.alwaysConvertWordsSet
+        )
+        let appBundleID = draft.focus.bundleID
+        let sessionPenalty = sessionNegativePairs.contains(learningKey(
+            original: pair.original,
+            converted: pair.converted,
+            appBundleID: appBundleID
+        )) ? -12.0 : 0.0
+        let cachedPrefix = textContextReader.cachedPrefix(for: draft.focus)
+        textContextReader.prefetchPrefix(for: draft.focus)
+        let context = ContextSnapshot(
+            tokens: draft.context,
+            axPrefix: cachedPrefix,
+            activeLayoutID: draft.sourceLayoutID,
+            focus: draft.focus,
+            editRevision: draft.editRevision
+        )
+        let adapter = personalizationAdapter
+        let original = pair.original
+        let converted = pair.converted
+        let focus = draft.focus
+        let sequence = draft.sequence
+        let revision = draft.editRevision
+        let capsLock = draft.keys.contains { $0.caps }
+
+        v4PrefixQueue.async {
+            let evaluation = ContextualLayoutDecoder.evaluate(
+                typed: original,
+                converted: converted,
+                currentLanguage: languages.current,
+                targetLanguage: languages.opposite,
+                capsLock: capsLock,
+                context: context,
+                languageBelief: belief,
+                integrity: draft.integrity,
+                policy: policy,
+                adaptiveBias: { source, target in
+                    SettingsManager.shared.adaptiveBias(
+                        original: source,
+                        converted: target,
+                        appBundleID: appBundleID
+                    ) + sessionPenalty
+                },
+                isConfirmed: { source, target in
+                    SettingsManager.shared.isAdaptiveConfirmed(
+                        original: source,
+                        converted: target,
+                        appBundleID: appBundleID
+                    )
+                },
+                lexicalModel: languageModel,
+                scorer: contextualModel,
+                adapter: adapter,
+                maximumLatencyMilliseconds: 1_000
+            )
+            Task { @MainActor [weak self] in
+                self?.v4PrefixResult = V4PrefixResult(
+                    original: original,
+                    converted: converted,
+                    focus: focus,
+                    sequence: sequence,
+                    editRevision: revision,
+                    evaluation: evaluation
+                )
+            }
+        }
+    }
+
     private func handleAutoConvert(
         _ snapshot: TokenSnapshot,
         proxy: CGEventTapProxy
@@ -486,16 +662,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // направление определяем по СКРИПТУ набранного, а не по раскладке офисной машины:
         // на офисе раскладка может не соответствовать тому, что напечатали на контроллере,
         // и тогда decide ошибочно даёт keep (это и есть «авто в удалёнке не работает»).
-        let langs: (current: String, opposite: String)
-        if keys.allSatisfy({ $0.char != nil }) {
-            let typedIsCyrillic = pair.original.unicodeScalars.contains { $0.value >= 0x0400 && $0.value <= 0x04FF }
-            langs = typedIsCyrillic ? ("ru", "en") : ("en", "ru")
-        } else if let sourceLayoutID = snapshot.sourceLayoutID,
-                  let l = LayoutSwitcher.languagePair(sourceLayoutID: sourceLayoutID) {
-            langs = pair.sourceWasOpposite
-                ? (current: l.opposite, opposite: l.current)
-                : l
-        } else {
+        guard let langs = layoutLanguages(
+            keys: keys,
+            pair: pair,
+            sourceLayoutID: snapshot.sourceLayoutID
+        ) else {
             rslog("auto: bail langs-nil"); return .passThrough
         }
 
@@ -512,9 +683,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             !word.isEmpty && Dict.isAvailable(lang) && Dict.isValidWord(word, lang: lang)
         }
         let languagePair = Set([String(langs.current.lowercased().prefix(2)), String(targetLang.lowercased().prefix(2))])
-        let decision: AutoConvertDecision
-        let confidenceMargin: Double
-        let evidenceDescription: String
+        var decision: AutoConvertDecision
+        var confidenceMargin: Double
+        var evidenceDescription: String
         if SettingsManager.shared.smartEngineV3,
            languagePair == Set(["en", "ru"]),
            let languageModel {
@@ -606,6 +777,84 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
             confidenceMargin = decision.verdict == .switchToConverted ? 1 : -1
             evidenceDescription = "fallback"
+        }
+        var v4FeatureDelta: [Float]?
+        let v4Mode = SettingsManager.shared.smartEngineV4Mode
+        if v4Mode != .off,
+           languagePair == Set(["en", "ru"]),
+           let cached = v4PrefixResult,
+           cached.original == pair.original,
+           cached.converted == pair.converted,
+           cached.sequence == snapshot.sequence,
+           cached.editRevision == snapshot.editRevision,
+           cached.focus.processID == snapshot.focus.processID,
+           cached.focus.bundleID == snapshot.focus.bundleID {
+            let v4 = cached.evaluation
+            let v4Evidence = v4.evidence.map(String.init(describing:)).joined(separator: ",")
+            rslog("auto-v4: cache=hit mode=\(v4Mode.rawValue) outcome=\(v4.outcome.rawValue) selected=\(v4.selectedIndex) probability=\(String(format: "%.3f", v4.selectedHypothesisProbability)) margin=\(String(format: "%.3f", v4.confidenceMargin)) latency=\(String(format: "%.2f", v4.latencyMilliseconds)) evidence=\(v4Evidence)")
+            let marginBucket: String
+            switch v4.confidenceMargin {
+            case ..<0.10: marginBucket = "m0"
+            case ..<0.30: marginBucket = "m1"
+            case ..<0.60: marginBucket = "m2"
+            default: marginBucket = "m3"
+            }
+            let latencyBucket: String
+            switch v4.latencyMilliseconds {
+            case ..<1: latencyBucket = "l0"
+            case ..<2: latencyBucket = "l1"
+            case ..<4: latencyBucket = "l2"
+            default: latencyBucket = "l3"
+            }
+            AnonymousStatisticsReporter.shared.record(
+                .v4Evaluated,
+                languagePair: "\(langs.current)-\(targetLang)",
+                reason: "\(v4.outcome.rawValue)-\(marginBucket)-\(latencyBucket)",
+                tokenLength: pair.original.count
+            )
+            if v4.outcome == .switchToHypothesis,
+               decision.verdict == .switchToConverted {
+                v4FeatureDelta = v4.featureDelta
+            }
+            if v4Mode == .active {
+                switch v4.outcome {
+                case .fallbackV3:
+                    break
+                case .keep:
+                    decision = AutoConvertDecision(
+                        verdict: .keep,
+                        reason: .keepCurrentWord,
+                        candidate: decision.candidate
+                    )
+                    confidenceMargin = -v4.confidenceMargin
+                    evidenceDescription = v4Evidence
+                case .abstain:
+                    decision = AutoConvertDecision(
+                        verdict: .undecided,
+                        reason: .undecided,
+                        candidate: decision.candidate
+                    )
+                    confidenceMargin = v4.confidenceMargin
+                    evidenceDescription = v4Evidence
+                case .switchToHypothesis:
+                    if let selected = ContextualLayoutDecoder.selectedCandidate(
+                        from: v4,
+                        typed: pair.original,
+                        converted: pair.converted
+                    ) {
+                        decision = AutoConvertDecision(
+                            verdict: .switchToConverted,
+                            reason: .phraseContext,
+                            candidate: selected
+                        )
+                        confidenceMargin = v4.confidenceMargin
+                        evidenceDescription = v4Evidence
+                        v4FeatureDelta = v4.featureDelta
+                    }
+                }
+            }
+        } else if v4Mode != .off, languagePair == Set(["en", "ru"]) {
+            rslog("auto-v4: cache=miss fallback=v3 rev=\(snapshot.editRevision) seq=\(snapshot.sequence)")
         }
         let candidate = decision.candidate
         let statisticsPair = "\(langs.current)-\(targetLang)"
@@ -702,7 +951,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 original: pair.original,
                 converted: candidate.replacement,
                 appBundleID: frontID,
-                at: Date()
+                at: Date(),
+                v4FeatureDelta: v4FeatureDelta
             )
             AnonymousStatisticsReporter.shared.record(
                 .autoConverted,

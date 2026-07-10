@@ -80,7 +80,9 @@ final class AnonymousStatisticsReporter: @unchecked Sendable {
 
         init(statistics: AnonymousUsageStatistics) {
             appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
-            modelVersion = LanguageModelStore.bundled?.metadata.modelVersion ?? "fallback"
+            modelVersion = ContextualLayoutModel.bundled?.manifest.modelVersion
+                ?? LanguageModelStore.bundled?.metadata.modelVersion
+                ?? "fallback"
             osMajorVersion = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
             interfaceLanguage = String((Locale.preferredLanguages.first ?? "unknown").prefix(2))
             self.statistics = statistics

@@ -16,3 +16,9 @@ the Google Books Ngram Corpus contributors.
 The application ships only the derived frequency tables required for local
 language scoring. It does not contain source texts and never downloads model
 data at runtime.
+
+`LayoutRerankerV4.mlmodelc` is a derived model trained from those aggregate
+word and phrase frequencies plus synthetic keyboard-layout corruptions. The
+checked bootstrap artifact does not contain Wikipedia, Tatoeba, user text, or
+other source sentences. Exact inputs, seed and artifact checksum are recorded
+in `scripts/v4_training_sources.json`.

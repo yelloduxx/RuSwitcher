@@ -143,6 +143,42 @@ public struct TokenSnapshot: Equatable, Sendable {
     }
 }
 
+public struct TokenDraft: Equatable, Sendable {
+    public let keys: [TypedKey]
+    public let context: [InputContextToken]
+    public let focus: FocusedElementIdentity
+    public let sequence: UInt64
+    public let languageState: TypingLanguageState
+    public let languageBelief: LanguageBelief
+    public let editRevision: UInt64
+    public let integrity: EditorIntegrity
+
+    public init(
+        keys: [TypedKey],
+        context: [InputContextToken],
+        focus: FocusedElementIdentity,
+        sequence: UInt64,
+        languageState: TypingLanguageState,
+        languageBelief: LanguageBelief,
+        editRevision: UInt64,
+        integrity: EditorIntegrity
+    ) {
+        self.keys = keys
+        self.context = context
+        self.focus = focus
+        self.sequence = sequence
+        self.languageState = languageState
+        self.languageBelief = languageBelief
+        self.editRevision = editRevision
+        self.integrity = integrity
+    }
+
+    public var sourceLayoutID: String? {
+        let ids = Set(keys.compactMap(\.sourceLayoutID))
+        return ids.count == 1 ? ids.first : nil
+    }
+}
+
 public struct TokenHandlingResult: Equatable, Sendable {
     public let consumeBoundary: Bool
     public let finalizeToken: Bool
@@ -192,6 +228,20 @@ public struct InputSession: Equatable, Sendable {
 
     public init(contextLimit: Int = 5) {
         self.contextLimit = max(1, contextLimit)
+    }
+
+    public func draft(focus: FocusedElementIdentity) -> TokenDraft? {
+        guard !currentKeys.isEmpty else { return nil }
+        return TokenDraft(
+            keys: currentKeys,
+            context: context,
+            focus: focus,
+            sequence: sequence,
+            languageState: languageState,
+            languageBelief: languageBelief,
+            editRevision: editRevision,
+            integrity: integrity
+        )
     }
 
     public mutating func append(_ key: TypedKey) {

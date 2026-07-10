@@ -378,8 +378,17 @@ final class SettingsWindowController {
         view.addSubview(pathLabel)
         y -= 72
 
-        let engineVersion = SettingsManager.shared.smartEngineV3 && LanguageModelStore.bundled != nil ? "V3" : "V2"
-        let modelVersion = LanguageModelStore.bundled?.metadata.modelVersion ?? "fallback"
+        let v4Mode = SettingsManager.shared.smartEngineV4Mode
+        let v4Model = ContextualLayoutModel.bundled
+        let engineVersion: String
+        let modelVersion: String
+        if v4Mode != .off, let v4Model {
+            engineVersion = "V4 \(v4Mode.rawValue)"
+            modelVersion = v4Model.manifest.modelVersion
+        } else {
+            engineVersion = SettingsManager.shared.smartEngineV3 && LanguageModelStore.bundled != nil ? "V3" : "V2"
+            modelVersion = LanguageModelStore.bundled?.metadata.modelVersion ?? "fallback"
+        }
         let engineLabel = NSTextField(
             labelWithString: String(format: L10n.settingsSmartEngine, engineVersion, modelVersion)
         )

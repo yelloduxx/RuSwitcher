@@ -6,6 +6,7 @@ import ServiceManagement
 /// Настройки приложения. Свойства thread-safe через UserDefaults.
 final class SettingsManager: @unchecked Sendable {
     static let shared = SettingsManager()
+    static let learningResetNotification = Notification.Name("com.ruswitcher.learningReset")
 
     private let defaults = UserDefaults.standard
 
@@ -39,6 +40,8 @@ final class SettingsManager: @unchecked Sendable {
         static let adaptiveRules = "com.ruswitcher.adaptiveRules.v1"
         static let smartEngineV2 = "com.ruswitcher.smartEngineV2"
         static let smartEngineV3 = "com.ruswitcher.smartEngineV3"
+        static let smartEngineV4Mode = "com.ruswitcher.smartEngineV4Mode"
+        static let personalizationAdapterV4 = "com.ruswitcher.personalizationAdapterV4"
         static let shareAnonymousStatistics = "com.ruswitcher.shareAnonymousStatistics"
     }
 
@@ -171,6 +174,32 @@ final class SettingsManager: @unchecked Sendable {
         set { defaults.set(newValue, forKey: Keys.smartEngineV3) }
     }
 
+    var smartEngineV4Mode: SmartEngineV4Mode {
+        get {
+            guard let raw = defaults.string(forKey: Keys.smartEngineV4Mode),
+                  let mode = SmartEngineV4Mode(rawValue: raw) else { return .shadow }
+            return mode
+        }
+        set { defaults.set(newValue.rawValue, forKey: Keys.smartEngineV4Mode) }
+    }
+
+    func personalizationAdapter(for manifest: ContextualModelManifest) -> PersonalizationAdapter {
+        guard let data = defaults.data(forKey: Keys.personalizationAdapterV4),
+              var adapter = try? JSONDecoder().decode(PersonalizationAdapter.self, from: data) else {
+            return PersonalizationAdapter(
+                modelVersion: manifest.modelVersion,
+                embeddingSize: manifest.embeddingSize
+            )
+        }
+        adapter.migrate(modelVersion: manifest.modelVersion, embeddingSize: manifest.embeddingSize)
+        return adapter
+    }
+
+    func savePersonalizationAdapter(_ adapter: PersonalizationAdapter) {
+        guard let data = try? JSONEncoder().encode(adapter) else { return }
+        defaults.set(data, forKey: Keys.personalizationAdapterV4)
+    }
+
     /// Opt-in only. Payloads contain aggregate counters, never typed text or app IDs.
     var shareAnonymousStatistics: Bool {
         get { defaults.bool(forKey: Keys.shareAnonymousStatistics) }
@@ -300,6 +329,8 @@ final class SettingsManager: @unchecked Sendable {
 
     func clearAdaptiveRules() {
         defaults.removeObject(forKey: Keys.adaptiveRules)
+        defaults.removeObject(forKey: Keys.personalizationAdapterV4)
+        NotificationCenter.default.post(name: Self.learningResetNotification, object: nil)
     }
 
     var donateURL: String { "https://boosty.to/ruswitcher" }

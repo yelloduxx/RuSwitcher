@@ -38,13 +38,13 @@ The trigger is configurable — **Option**, **Command**, **Control** or **Shift*
 
 ### Automatic conversion
 
-RuSwitcher can also fix the layout **automatically as you type**, with no key press. Turn it on in **Settings → Auto-conversion** (off by default). Smart Engine V3 treats layout detection as a local noisy-channel problem: at a word boundary it scores both the literal and converted hypotheses using a bundled RU/EN frequency model, character n-grams, the two previous words, recent language belief, compound decomposition and rules learned from your corrections.
+RuSwitcher can also fix the layout **automatically as you type**, with no key press. Turn it on in **Settings → Auto-conversion** (off by default). Smart Engine V4 adds a compact local byte-level Transformer over a physical-key lattice to the V3 noisy-channel decoder. It sees up to 16 recent tokens, ranks only deterministic layout/punctuation candidates and can abstain. Inference is prefetched after the last letter; the boundary callback uses it only when sequence, revision and focus still match, otherwise it immediately falls back to V3. V4 initially runs in shadow mode so it can be measured without changing text.
 
 It handles common short words (`b` → `и`, `z` → `я`), long words such as `ghbdtncnde.` → `приветствую`, trailing punctuation (`ghbdtn,` → `привет,`) and unknown compounds such as `cegthcgbyf` → `суперспина` (`супер` + `спина`). Corrections happen only after space, punctuation, Enter or Tab, never halfway through a word. To avoid dangerous false fixes it skips words with digits / URLs / email-like text, single uppercase Latin letters (`plan B`), ALL-CAPS acronyms, camelCase / mixed-script code identifiers, terminals / IDEs / password managers, and password fields.
 
 The input state is revision-based: Backspace updates the current physical token, while word deletion, navigation, Cut/Paste/Undo, mouse clicks and focus changes invalidate stale state. Before an automatic replacement RuSwitcher performs a read-only Accessibility check when the target supports it, then posts one ordered replacement transaction. This prevents stale selection, duplicate insertion and deletion at the wrong caret.
 
-Undoing an automatic correction or immediately editing it teaches RuSwitcher locally; manually converting a missed word is a positive signal. Learned rules stay on this Mac and can be reset in **Settings → Advanced**. The explicit **Always convert** and **Never convert** lists remain hard overrides.
+Undoing an automatic correction or immediately editing it teaches RuSwitcher locally. V4 stores only a small 192-value personalization adapter and counters, never the typed context; manually converted pairs remain explicit local confirmations. Learned state stays on this Mac and can be reset in **Settings → Advanced**. The explicit **Always convert** and **Never convert** lists remain hard overrides.
 
 **Three exception lists** let you tune it (Settings → Auto-conversion):
 - **Apps** — where auto-conversion stays off (terminals, IDEs and password managers are pre-filled; password managers can't be removed).
@@ -123,6 +123,7 @@ The app adds itself to the permission lists automatically — you only need to f
 - `CGEvent.keyboardSetUnicodeString` to type the converted text directly — no clipboard, no pasteboard side effects.
 - `CGEventSource.userData` marker to filter the app's own simulated events.
 - A memory-mapped, versioned local RU/EN language model generated from pinned Google Books n-gram frequency data.
+- A checksum-verified FP16 Core ML byte Transformer that only reranks candidates from a deterministic physical-key lattice.
 - Read-only `AXUIElement` range probes for focus and suffix validation; selected-text conversion uses AX first and preserves every pasteboard type in its fallback.
 - `SMAppService` for login item management.
 - No hardcoded layout tables — works with any installed layouts.
@@ -132,10 +133,10 @@ The app adds itself to the permission lists automatically — you only need to f
 `RuSwitcherSimulator` runs the real decoder against generated or JSONL fixtures in parallel, without Accessibility permissions or keyboard emulation:
 
 ```bash
-swift run -c release RuSwitcherSimulator --jobs 8 --output simulation.json
+swift run -c release RuSwitcherSimulator --engine v4-shadow --jobs 8 --output simulation.json
 ```
 
-Use `--input fixtures.jsonl` for custom words, `--phrase-input phrases.jsonl` for stateful mixed-language phrases, `--phrase-results results.jsonl` for a complete step-by-step audit, and `--learn-output rules.json` to produce supervised adaptive rules for missed expected conversions. Built-in phrase tests preserve context, language belief and active layout between words and run in parallel. `scripts/verify_simulator_negative_control.sh` proves that an intentionally wrong expectation is rejected. The separate sequential `scripts/run_hid_integration_tests.sh` suite posts `CGEvent` key events through the installed app and verifies the final editor text; it is reserved for event-tap, layout switching, punctuation, and duplicate-insertion regressions.
+Use `--engine v3|v4-shadow|v4-active` to compare engines. The JSON report includes V4 outcomes, disagreement count and latency percentiles. `--input fixtures.jsonl` accepts custom words, `--phrase-input phrases.jsonl` accepts stateful mixed-language phrases, and `--phrase-results results.jsonl` writes a complete step trace. Pure decoder simulations need no HID; the separate sequential `scripts/run_hid_integration_tests.sh` suite is only for event-tap ordering, layout switching, punctuation and duplicate-insertion regressions.
 
 Anonymous quality reporting is off by default. It stores only aggregate outcome/reason/length buckets. Upload is enabled only in builds that define `RSStatisticsEndpoint`; no endpoint means no network request.
 
@@ -179,13 +180,13 @@ If you find RuSwitcher useful:
 
 ### Автоматическая конверсия
 
-RuSwitcher умеет исправлять раскладку **автоматически по ходу набора**, без нажатий. Включается в **Настройки → Автоконверсия** (по умолчанию выключено). Smart Engine V3 рассматривает раскладку как noisy-channel задачу: на границе слова он оценивает исходную и преобразованную гипотезы по встроенной RU/EN частотной модели, символьным n-граммам, двум предыдущим словам, недавнему языковому состоянию, разбору составных слов и локально выученным правилам.
+RuSwitcher умеет исправлять раскладку **автоматически по ходу набора**, без нажатий. Включается в **Настройки → Автоконверсия** (по умолчанию выключено). Smart Engine V4 добавляет к noisy-channel decoder компактный локальный byte-level Transformer и lattice физических клавиш. Он видит до 16 последних токенов, ранжирует только детерминированные варианты раскладки и пунктуации и умеет воздерживаться от замены. Inference заранее запускается после последней буквы; на границе используется только результат с совпадающими sequence, revision и focus, иначе немедленно остаётся V3. Сначала V4 работает в shadow-режиме и не меняет решения V3.
 
 Теперь авто-конверсия обрабатывает частые короткие слова (`b` → `и`, `z` → `я`), длинные слова вроде `ghbdtncnde.` → `приветствую`, пунктуацию в конце (`ghbdtn,` → `привет,`) и неизвестные слитные слова вроде `cegthcgbyf` → `суперспина` (`супер` + `спина`). Исправление выполняется только после пробела, пунктуации, Enter или Tab, но не посреди слова. Защищены цифры, URL/email, одиночные заглавные латинские буквы (`plan B`), ALL-CAPS, camelCase, смешанные идентификаторы, терминалы, IDE, менеджеры паролей и защищённые поля.
 
 Состояние ввода теперь ревизионное: обычный Backspace удаляет физическую клавишу из текущего токена, а удаление слова, навигация, Cut/Paste/Undo, клик и смена поля инвалидируют устаревший снимок. Перед автоматической заменой выполняется read-only AX-проверка, если поле её поддерживает, после чего вся замена отправляется одной упорядоченной транзакцией. Это защищает от выделения вместо замены, дублирования и удаления текста не у той каретки.
 
-Отмена автоматического исправления или немедленное редактирование слова обучает RuSwitcher локально; ручная конверсия пропущенного слова считается положительным сигналом. Выученные правила остаются на этом Mac и сбрасываются в **Настройки → Дополнительно**. Явные списки **«Всегда конвертировать»** и **«Никогда не конвертировать»** остаются жёсткими правилами.
+Отмена автоматического исправления или немедленное редактирование обучает RuSwitcher локально. V4 хранит только адаптер из 192 чисел и счётчики, но не введённый контекст; ручные исправления остаются подтверждёнными локальными парами. Всё обучение остаётся на этом Mac и сбрасывается в **Настройки → Дополнительно**. Явные списки **«Всегда конвертировать»** и **«Никогда не конвертировать»** остаются жёсткими правилами.
 
 **Три списка исключений** для тонкой настройки (Настройки → Автоконверсия):
 - **Приложения** — где авто-конверсия выключена (терминалы, IDE, менеджеры паролей уже в списке; менеджеры паролей удалить нельзя).
@@ -264,6 +265,7 @@ cp -R RuSwitcher.app /Applications/
 - `CGEvent.keyboardSetUnicodeString` для прямой печати конвертированного текста — без буфера обмена и побочных эффектов с pasteboard.
 - Маркер `CGEventSource.userData` для фильтрации собственных симулированных событий.
 - Версионированная memory-mapped RU/EN-модель, воспроизводимо собранная из закреплённой версии частотных Google Books n-gram data.
+- Проверяемая по checksum FP16 Core ML byte-модель, которая только ранжирует варианты детерминированного lattice.
 - Read-only `AXUIElement` range probes для проверки фокуса и хвоста перед кареткой; ручная замена выделения сначала использует AX, а fallback сохраняет все типы pasteboard.
 - `SMAppService` для управления автозапуском.
 - Без захардкоженных таблиц — работает с любыми установленными раскладками.
@@ -273,10 +275,10 @@ cp -R RuSwitcher.app /Applications/
 Отдельный `RuSwitcherSimulator` параллельно прогоняет настоящий decoder по сгенерированным или JSONL-сценариям без Accessibility и эмуляции клавиатуры:
 
 ```bash
-swift run -c release RuSwitcherSimulator --jobs 8 --output simulation.json
+swift run -c release RuSwitcherSimulator --engine v4-shadow --jobs 8 --output simulation.json
 ```
 
-`--input fixtures.jsonl` принимает тесты слов, `--phrase-input phrases.jsonl` — последовательные смешанные фразы, `--phrase-results results.jsonl` сохраняет полный пошаговый отчёт, а `--learn-output rules.json` создаёт обученные правила для ожидаемых, но пропущенных замен. В тестах фраз между словами сохраняются контекст, языковой belief и активная раскладка; сами фразы запускаются параллельно. `scripts/verify_simulator_negative_control.sh` доказывает, что намеренно неверное ожидание отклоняется. Последовательный `scripts/run_hid_integration_tests.sh` оставлен только для реального event tap: смены раскладки, пунктуации и защиты от дублей.
+`--engine v3|v4-shadow|v4-active` позволяет сравнить движки; JSON-отчёт содержит исходы V4, расхождения и p95/p99 задержки. `--input fixtures.jsonl` принимает тесты слов, `--phrase-input phrases.jsonl` — последовательные смешанные фразы, а `--phrase-results results.jsonl` сохраняет полный пошаговый отчёт. Для симуляции decoder HID не нужен. Последовательный `scripts/run_hid_integration_tests.sh` оставлен только для реального event tap: порядка событий, смены раскладки, пунктуации и защиты от дублей.
 
 Анонимная статистика выключена по умолчанию и содержит только агрегированные исходы, причины и диапазоны длины. Отправка работает лишь в сборках с `RSStatisticsEndpoint`; без endpoint сетевых запросов нет.
 

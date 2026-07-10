@@ -79,7 +79,7 @@ struct TriggerConfig {
 final class KeyboardMonitor: @unchecked Sendable {
     fileprivate var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
-    private var inputSession = InputSession(contextLimit: 5)
+    private var inputSession = InputSession(contextLimit: ContextSnapshot.maximumTokens)
     private var observedFrontmostProcessID: pid_t?
 
     /// Длина текущего набираемого слова
@@ -107,6 +107,7 @@ final class KeyboardMonitor: @unchecked Sendable {
     /// Авто-конвертация получает неизменяемый снимок прямо на границе токена.
     /// Возвращаемое значение сообщает active event tap, нужно ли пропустить границу.
     var onTokenCompleted: ((TokenSnapshot, CGEventTapProxy) -> TokenHandlingResult)?
+    var onTokenChanged: ((TokenDraft) -> Void)?
     /// Immediate editing of the last automatic correction is a local negative
     /// learning signal. Repeated signals make the rule persistent.
     var onCorrectionEdited: (() -> Void)?
@@ -275,6 +276,16 @@ final class KeyboardMonitor: @unchecked Sendable {
         return "axhash:\(CFHash(element))"
     }
 
+    private func notifyTokenChanged() {
+        guard SettingsManager.shared.autoConvert else { return }
+        let app = NSWorkspace.shared.frontmostApplication
+        let focus = FocusedElementIdentity(
+            processID: app?.processIdentifier ?? 0,
+            bundleID: app?.bundleIdentifier
+        )
+        if let draft = inputSession.draft(focus: focus) { onTokenChanged?(draft) }
+    }
+
     /// Сброс буфера при клике мышью — иначе backspace перепечатки сотрёт не то
     /// (курсор мог уехать в другое место).
     fileprivate func resetBuffersOnClick() {
@@ -401,6 +412,7 @@ final class KeyboardMonitor: @unchecked Sendable {
                 onEditingInvalidated?()
             } else {
                 inputSession.handle(.plainBackspace)
+                notifyTokenChanged()
                 if currentWordLength == 0 {
                     wordBeforeBoundaryLength = 0
                     boundaryCount = 0
@@ -438,6 +450,7 @@ final class KeyboardMonitor: @unchecked Sendable {
                 producedText: producedText,
                 sourceLayoutID: sourceLayoutID
             ))
+            notifyTokenChanged()
             wordBeforeBoundaryLength = 0
             boundaryCount = 0
             prevWordKeys = []
@@ -512,6 +525,7 @@ final class KeyboardMonitor: @unchecked Sendable {
                 char: ch,
                 producedCharacter: ch
             ))
+            notifyTokenChanged()
             wordBeforeBoundaryLength = 0
             boundaryCount = 0
             prevWordKeys = []

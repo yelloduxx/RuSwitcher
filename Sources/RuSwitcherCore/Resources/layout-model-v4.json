@@ -1,0 +1,22 @@
+{
+  "artifactClass": "bootstrap-shadow",
+  "bothKnownMargin": 0.45,
+  "bothKnownProbability": 0.9,
+  "byteNormalization": "raw UTF-8 bytes shifted by one; NFC input",
+  "embeddingSize": 192,
+  "featureCount": 12,
+  "formatVersion": 1,
+  "l2": 0.0001,
+  "learningRate": 0.02,
+  "maximumBytes": 192,
+  "maximumCandidates": 6,
+  "minimumMargin": 0.1,
+  "minimumProbability": 0.7,
+  "modelSHA256": "98dad88031e4f29589c1364550800a2f2dfc52a0fd376ce55cb5b060a09d4da6",
+  "modelVersion": "2026.07-v4-bootstrap-2-fp16",
+  "temperature": 0.5,
+  "trainingGroups": 42099,
+  "trainingSeed": 20260710,
+  "trainingSourceManifestSHA256": "ae6f1365ead9ca15e0f1948dd6e9db90664a4f856dd0dcdfcb968f55f5605b79",
+  "weightPrecision": "fp16"
+}

@@ -8,7 +8,12 @@ let package = Package(
         .target(
             name: "RuSwitcherCore",
             path: "Sources/RuSwitcherCore",
-            resources: [.process("Resources")]
+            resources: [
+                .process("Resources/language-model-v1.bin"),
+                .process("Resources/layout-model-v4.json"),
+                .copy("Resources/LayoutRerankerV4.mlmodelc"),
+            ],
+            linkerSettings: [.linkedFramework("CoreML")]
         ),
         .executableTarget(
             name: "RuSwitcher",

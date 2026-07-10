@@ -10,6 +10,11 @@ public enum DecoderEvidence: Equatable, Sendable {
     case blockedNever
     case blockedEditing
     case blockedContext
+    case neuralContext
+    case codeSwitch
+    case punctuationPath
+    case personalized
+    case abstained
 }
 
 public struct LayoutDecoderEvaluation: Equatable, Sendable {

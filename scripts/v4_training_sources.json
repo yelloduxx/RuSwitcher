@@ -1,0 +1,33 @@
+{
+  "formatVersion": 1,
+  "seed": 20260710,
+  "bootstrapSource": {
+    "path": "Sources/RuSwitcherCore/Resources/language-model-v1.bin",
+    "sha256": "cc40a62e2be0d9ae4d3f2f9476552e49273951f343b24ccaaa15270ab36f6e55",
+    "license": "CC BY 3.0",
+    "upstream": "https://github.com/orgtre/google-books-ngram-frequency",
+    "revision": "e20471c15a758be3362b16d07870b34df4f7ccc3"
+  },
+  "optionalContextCorpora": [
+    {
+      "name": "English and Russian Wikipedia",
+      "license": "CC BY-SA 4.0",
+      "input": "UTF-8 JSONL supplied with --corpus-jsonl; exact dump URL and SHA-256 must be added before a release model is trained"
+    },
+    {
+      "name": "Tatoeba English and Russian sentences",
+      "license": "CC BY 2.0",
+      "input": "UTF-8 JSONL supplied with --corpus-jsonl; exact snapshot URL and SHA-256 must be added before a release model is trained"
+    }
+  ],
+  "checkedArtifactClass": "bootstrap-shadow",
+  "trainingRun": {
+    "modelVersion": "2026.07-v4-bootstrap-2-fp16",
+    "architecture": "6x byte Transformer, d_model=192, heads=6, ffn=384",
+    "groups": 42099,
+    "epochs": 3,
+    "precision": "fp16",
+    "coreMLSHA256": "98dad88031e4f29589c1364550800a2f2dfc52a0fd376ce55cb5b060a09d4da6",
+    "note": "int8 export was rejected by the active simulator after quantizer scale warnings; shadow rollout remains mandatory"
+  }
+}

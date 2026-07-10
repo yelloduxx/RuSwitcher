@@ -8,6 +8,7 @@ public enum AnonymousUsageEvent: String, Codable, Sendable {
     case manualConverted
     case correctionAccepted
     case correctionUndone
+    case v4Evaluated
 }
 
 public struct AnonymousUsageStatistics: Codable, Equatable, Sendable {
