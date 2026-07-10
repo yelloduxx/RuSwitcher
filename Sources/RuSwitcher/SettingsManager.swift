@@ -1,4 +1,5 @@
 import Foundation
+import RuSwitcherCore
 import ServiceManagement
 
 /// Централизованное хранение настроек через UserDefaults
@@ -35,6 +36,9 @@ final class SettingsManager: @unchecked Sendable {
         static let deniedAppsRemoved = "com.ruswitcher.deniedAppsRemoved"
         static let deniedWords = "com.ruswitcher.deniedWords"
         static let alwaysConvertWords = "com.ruswitcher.alwaysConvertWords"
+        static let adaptiveRules = "com.ruswitcher.adaptiveRules.v1"
+        static let smartEngineV2 = "com.ruswitcher.smartEngineV2"
+        static let smartEngineV3 = "com.ruswitcher.smartEngineV3"
     }
 
     private init() {}
@@ -148,6 +152,24 @@ final class SettingsManager: @unchecked Sendable {
         set { defaults.set(newValue, forKey: Keys.autoConvert) }
     }
 
+    /// Hidden rollback switch for the new engine. It defaults to enabled; support can
+    /// temporarily disable it with `defaults` without replacing the application.
+    var smartEngineV2: Bool {
+        get {
+            if defaults.object(forKey: Keys.smartEngineV2) == nil { return true }
+            return defaults.bool(forKey: Keys.smartEngineV2)
+        }
+        set { defaults.set(newValue, forKey: Keys.smartEngineV2) }
+    }
+
+    var smartEngineV3: Bool {
+        get {
+            if defaults.object(forKey: Keys.smartEngineV3) == nil { return true }
+            return defaults.bool(forKey: Keys.smartEngineV3)
+        }
+        set { defaults.set(newValue, forKey: Keys.smartEngineV3) }
+    }
+
     /// issue #10: показывать флаг раскладки у текстовой каретки (бета). По умолчанию ВЫКЛ.
     var caretFlag: Bool {
         get { defaults.bool(forKey: Keys.caretFlag) }
@@ -226,6 +248,52 @@ final class SettingsManager: @unchecked Sendable {
         set { defaults.set(newValue, forKey: Keys.alwaysConvertWords) }
     }
     var alwaysConvertWordsSet: Set<String> { Set(alwaysConvertWords.map { $0.lowercased() }) }
+
+    var adaptiveRuleBook: AdaptiveRuleBook {
+        get {
+            guard let data = defaults.data(forKey: Keys.adaptiveRules),
+                  let book = try? JSONDecoder().decode(AdaptiveRuleBook.self, from: data) else {
+                return AdaptiveRuleBook()
+            }
+            return book
+        }
+        set {
+            guard let data = try? JSONEncoder().encode(newValue) else { return }
+            defaults.set(data, forKey: Keys.adaptiveRules)
+        }
+    }
+
+    func adaptiveBias(original: String, converted: String, appBundleID: String?) -> Double {
+        adaptiveRuleBook.bias(original: original, converted: converted, appBundleID: appBundleID)
+    }
+
+    func isAdaptiveConfirmed(original: String, converted: String, appBundleID: String?) -> Bool {
+        adaptiveRuleBook.isConfirmed(original: original, converted: converted, appBundleID: appBundleID)
+    }
+
+    func recordAdaptivePositive(original: String, converted: String, appBundleID: String?) {
+        var book = adaptiveRuleBook
+        book.recordPositive(original: original, converted: converted, appBundleID: appBundleID)
+        adaptiveRuleBook = book
+    }
+
+    func recordAdaptiveNegative(original: String, converted: String, appBundleID: String?) {
+        var book = adaptiveRuleBook
+        book.recordNegative(original: original, converted: converted, appBundleID: appBundleID)
+        adaptiveRuleBook = book
+    }
+
+    func recordAdaptiveConfirmed(original: String, converted: String) {
+        var book = adaptiveRuleBook
+        // Explicit manual intent is portable across applications. Undo removes
+        // confirmation before adding an app-scoped negative signal.
+        book.recordConfirmed(original: original, converted: converted, appBundleID: nil)
+        adaptiveRuleBook = book
+    }
+
+    func clearAdaptiveRules() {
+        defaults.removeObject(forKey: Keys.adaptiveRules)
+    }
 
     var donateURL: String { "https://boosty.to/ruswitcher" }
     var contactEmail: String { "xrashid@gmail.com" }

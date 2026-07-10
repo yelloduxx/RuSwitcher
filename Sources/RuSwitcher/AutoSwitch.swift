@@ -19,60 +19,6 @@ enum Dict {
     }
 }
 
-enum LayoutVerdict { case switchToConverted, keep, undecided }
-
-/// Решает, набрано ли слово в неправильной раскладке. Точность важнее полноты:
-/// при любой неуверенности → .undecided (ничего не делаем). Ручной триггер остаётся.
-enum LayoutDetector {
-    @MainActor
-    static func decide(typed: String, converted: String, currentLang: String, otherLang: String, capsLock: Bool) -> LayoutVerdict {
-        // always-convert — ЯВНЫЙ override: матчим по СКОНВЕРТИРОВАННОЙ (целевой) форме.
-        // В список кладётся целевое слово (напр. «жоппа»); так правильно набранное слово
-        // не даёт пинг-понг. Жёсткие гейты (secure/denied-app/never) проверены ДО decide.
-        if AutoSwitchPolicy.isAlwaysConvert(converted) { return .switchToConverted }
-
-        // --- мягкие вето (дёшево, до словаря) ---
-        guard typed.count >= 3 else { return .undecided }                  // 1–2 буквы: слишком много коллизий между раскладками
-        guard typed.allSatisfy({ $0.isLetter }) else { return .undecided } // цифры/пунктуация/URL/код/почта
-        // Под Caps Lock весь текст в ВЕРХНЕМ регистре — это НЕ акроним и НЕ camelCase,
-        // поэтому эти два вето применяем только когда Caps Lock выключен.
-        if !capsLock {
-            if isAllCaps(typed) { return .undecided }                      // акронимы
-            if looksLikeCodeIdentifier(typed) { return .undecided }        // camelCase / смешанные алфавиты
-        }
-
-        let cur = String(currentLang.prefix(2))
-        let oth = String(otherLang.prefix(2))
-
-        // Словарь — без учёта регистра (Caps Lock не должен мешать определению слова).
-        guard Dict.isAvailable(oth) else { return .undecided }
-        guard Dict.isValidWord(converted.lowercased(), lang: oth) else { return .keep }
-        if Dict.isAvailable(cur), Dict.isValidWord(typed.lowercased(), lang: cur) {
-            return .keep
-        }
-        return .switchToConverted
-    }
-
-    private static func isAllCaps(_ s: String) -> Bool {
-        s == s.uppercased() && s != s.lowercased()
-    }
-
-    /// Похоже на программный идентификатор: внутренняя заглавная (camelCase/PascalCase)
-    /// или смешение латиницы и кириллицы в одном токене → почти всегда код, не слово.
-    private static func looksLikeCodeIdentifier(_ s: String) -> Bool {
-        for (i, c) in s.enumerated() where i > 0 && c.isUppercase { return true }
-        var hasLatin = false, hasCyrillic = false
-        for u in s.unicodeScalars {
-            switch u.value {
-            case 0x41...0x5A, 0x61...0x7A: hasLatin = true
-            case 0x0400...0x04FF: hasCyrillic = true
-            default: break
-            }
-        }
-        return hasLatin && hasCyrillic
-    }
-}
-
 /// Политика безопасности авто-конвертации.
 enum AutoSwitchPolicy {
     /// Активен ли защищённый ввод (поле пароля, Secure Keyboard Entry в терминале) —

@@ -64,6 +64,14 @@ enum L10n {
     static var settingsExceptionsNever: String { s("settings.exceptions.never") }
     static var settingsExceptionsAlways: String { s("settings.exceptions.always") }
     static var settingsAddWordPrompt: String { s("settings.exceptions.addWordPrompt") }
+    static var settingsClearLearning: String { s("settings.learning.clear") }
+    static var settingsClearLearningConfirm: String { s("settings.learning.clearConfirm") }
+    static var settingsSmartEngine: String { s("settings.smartEngine") }
+    static var statusActive: String { s("status.active") }
+    static var statusDisabled: String { s("status.disabled") }
+    static var statusSecureInput: String { s("status.secureInput") }
+    static var statusDeniedApp: String { s("status.deniedApp") }
+    static var statusPermissions: String { s("status.permissions") }
     static var commonAdd: String { s("common.add") }
     static var commonCancel: String { s("common.cancel") }
     static func learnQuestion(_ word: String) -> String { String(format: s("learn.question"), word) }
@@ -173,23 +181,31 @@ enum L10n {
             "settings.triggerRightOnly": "Right key only",
             "settings.triggerDoubleTap": "Double tap",
             "settings.triggerHint": "Tap the chosen key by itself, without other keys.",
-            "menu.autoConvert": "Automatic conversion (beta)",
+            "menu.autoConvert": "Automatic conversion",
             "menu.keySound": "Layout sound (beta)",
             "menu.caretFlag": "Flag at cursor (beta)",
             "menu.monoIcon": "Monochrome icon",
             "settings.caretFlag": "Show layout flag at the text cursor (beta)",
             "settings.caretFlag.hint": "Briefly shows the layout flag next to the text cursor after a switch. Not available in all apps.",
             "menu.remoteDesktop": "Remote Desktop mode (beta)",
-            "settings.autoConvert": "Automatic conversion (beta)",
-            "settings.autoConvert.hint": "Detects words typed in the wrong layout and converts them automatically. Off by default.",
+            "settings.autoConvert": "Automatic conversion",
+            "settings.autoConvert.hint": "Detects wrong-layout words, including common short words and trailing punctuation. Off by default.",
             "onboard.autoConvert.title": "Automatic layout conversion",
-            "onboard.autoConvert.text": "RuSwitcher can fix the keyboard layout automatically as you type. It's off by default. The manual trigger (Option) always works and undoes a fix. Enable automatic conversion now?",
+            "onboard.autoConvert.text": "RuSwitcher can fix the keyboard layout automatically as you type, including common short words and punctuation. It's off by default. The manual trigger (Option) always works and undoes a fix. Enable automatic conversion now?",
             "settings.tab.exceptions": "Auto-conversion",
             "settings.remoteDesktop.hint": "For Apple Screen Sharing: run RuSwitcher on the remote Mac too and enable this on both.",
             "settings.exceptions.apps": "Don’t auto-convert in these apps",
             "settings.exceptions.never": "Never convert these words",
             "settings.exceptions.always": "Always convert these words",
             "settings.exceptions.addWordPrompt": "Enter a word:",
+            "settings.learning.clear": "Reset learned corrections",
+            "settings.learning.clearConfirm": "Reset all corrections learned from manual fixes and undo actions?",
+            "settings.smartEngine": "Smart Engine %@ · language model %@",
+            "status.active": "Smart conversion is active",
+            "status.disabled": "Automatic conversion is disabled",
+            "status.secureInput": "Paused: secure input is active",
+            "status.deniedApp": "Paused in this application",
+            "status.permissions": "Paused: permissions are missing",
             "common.add": "Add",
             "common.cancel": "Cancel",
             "learn.question": "Always leave “%@” unchanged?",
@@ -262,23 +278,31 @@ enum L10n {
             "settings.triggerRightOnly": "Только правая клавиша",
             "settings.triggerDoubleTap": "Двойной тап",
             "settings.triggerHint": "Нажимайте выбранную клавишу отдельно, без других клавиш.",
-            "menu.autoConvert": "Автоматическая конверсия (бета)",
+            "menu.autoConvert": "Автоматическая конверсия",
             "menu.keySound": "Звук раскладки (бета)",
             "menu.caretFlag": "Флаг у курсора (бета)",
             "menu.monoIcon": "Монохромная иконка",
             "settings.caretFlag": "Показывать флаг раскладки у курсора (бета)",
             "settings.caretFlag.hint": "После переключения ненадолго показывает флаг раскладки рядом с курсором. Доступно не во всех приложениях.",
             "menu.remoteDesktop": "Режим удалённого стола (бета)",
-            "settings.autoConvert": "Автоматическая конверсия (бета)",
-            "settings.autoConvert.hint": "Определяет слова в неправильной раскладке и конвертирует их сама. По умолчанию выкл.",
+            "settings.autoConvert": "Автоматическая конверсия",
+            "settings.autoConvert.hint": "Исправляет слова в неправильной раскладке, включая частые короткие слова и пунктуацию в конце. По умолчанию выкл.",
             "onboard.autoConvert.title": "Автоматическая конверсия раскладки",
-            "onboard.autoConvert.text": "RuSwitcher может исправлять раскладку автоматически по ходу набора. По умолчанию выключено. Ручной триггер (Option) всегда работает — им же отменяется замена. Включить автозамену сейчас?",
+            "onboard.autoConvert.text": "RuSwitcher может исправлять раскладку автоматически по ходу набора, включая частые короткие слова и пунктуацию. По умолчанию выключено. Ручной триггер (Option) всегда работает — им же отменяется замена. Включить автозамену сейчас?",
             "settings.tab.exceptions": "Автоконверсия",
             "settings.remoteDesktop.hint": "Для Apple Screen Sharing: запустите RuSwitcher и на удалённом Mac, включив этот режим на обоих.",
             "settings.exceptions.apps": "Не конвертировать в этих приложениях",
             "settings.exceptions.never": "Никогда не конвертировать эти слова",
             "settings.exceptions.always": "Всегда конвертировать эти слова",
             "settings.exceptions.addWordPrompt": "Введите слово:",
+            "settings.learning.clear": "Сбросить выученные исправления",
+            "settings.learning.clearConfirm": "Сбросить все правила, выученные по ручным исправлениям и отменам?",
+            "settings.smartEngine": "Smart Engine %@ · языковая модель %@",
+            "status.active": "Умная конверсия работает",
+            "status.disabled": "Автоматическая конверсия выключена",
+            "status.secureInput": "Приостановлено: защищённый ввод",
+            "status.deniedApp": "Приостановлено в этом приложении",
+            "status.permissions": "Приостановлено: не выданы разрешения",
             "common.add": "Добавить",
             "common.cancel": "Отмена",
             "learn.question": "Всегда оставлять «%@» без замены?",

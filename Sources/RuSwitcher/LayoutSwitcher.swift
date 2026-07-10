@@ -86,13 +86,18 @@ enum LayoutSwitcher {
 
     /// Коды языков текущей и противоположной раскладок (для авто-детекта раскладки).
     static func currentAndOppositeLanguage() -> (current: String, opposite: String)? {
+        languagePair(sourceLayoutID: currentLayoutID())
+    }
+
+    /// Language pair for the layout captured with a token. The current system
+    /// layout may already have changed by the time a token is evaluated.
+    static func languagePair(sourceLayoutID: String) -> (current: String, opposite: String)? {
         let settings = SettingsManager.shared
         let sources = installedLayouts()
-        let currentID = currentLayoutID()
         let id1 = settings.layout1ID.isEmpty ? autoDetectID1(from: sources) : settings.layout1ID
         let id2 = settings.layout2ID.isEmpty ? autoDetectID2(from: sources) : settings.layout2ID
-        let targetID = (currentID == id1) ? id2 : id1
-        guard let cur = sources.first(where: { sourceID($0) == currentID }),
+        let targetID = (sourceLayoutID == id1) ? id2 : id1
+        guard let cur = sources.first(where: { sourceID($0) == sourceLayoutID }),
               let tgt = sources.first(where: { sourceID($0) == targetID }),
               let curLang = languageCode(cur), let tgtLang = languageCode(tgt) else {
             return nil

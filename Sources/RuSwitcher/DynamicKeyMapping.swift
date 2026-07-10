@@ -1,5 +1,6 @@
 import Carbon
 import Foundation
+import RuSwitcherCore
 
 /// Динамический маппинг keycode↔символ для любой пары раскладок через UCKeyTranslate
 enum DynamicKeyMapping {
@@ -100,9 +101,68 @@ enum DynamicKeyMapping {
         return String(text.map { map[$0] ?? $0 })
     }
 
+    /// Manual selection is old document text, so the currently active layout is
+    /// not a reliable source direction. Infer it from the dominant script and map
+    /// using the configured layout pair.
+    static func convertSelectedText(_ text: String) -> (
+        converted: String,
+        sourceLanguage: String,
+        targetLanguage: String,
+        targetLayoutID: String?
+    )? {
+        guard text.contains(where: \.isLetter) else { return nil }
+        let direction = ScriptDirection.dominant(in: text)
+        let dominant = direction?.sourceLanguage
+
+        let layouts = LayoutSwitcher.installedLayouts()
+        let settings = SettingsManager.shared
+        let id1 = settings.layout1ID.isEmpty ? LayoutSwitcher.autoDetectID1(from: layouts) : settings.layout1ID
+        let id2 = settings.layout2ID.isEmpty ? LayoutSwitcher.autoDetectID2(from: layouts) : settings.layout2ID
+        let pair = [id1, id2].compactMap { id -> (String, TISInputSource)? in
+            guard let source = layouts.first(where: { LayoutSwitcher.sourceID($0) == id }),
+                  let language = LayoutSwitcher.languageCode(source) else { return nil }
+            return (String(language.lowercased().prefix(2)), source)
+        }
+        let sourceEntry = dominant.flatMap { language in pair.first(where: { $0.0 == language }) }
+            ?? pair.first(where: { LayoutSwitcher.sourceID($0.1) == LayoutSwitcher.currentLayoutID() })
+        guard let sourceEntry,
+              let targetEntry = pair.first(where: { LayoutSwitcher.sourceID($0.1) != LayoutSwitcher.sourceID(sourceEntry.1) }) else {
+            let sourceLanguage = dominant ?? (SmartTokenizer.languageHint(for: text) ?? "en")
+            let targetLanguage = sourceLanguage == "ru" ? "en" : "ru"
+            return (KeyMapping.convert(text), sourceLanguage, targetLanguage, nil)
+        }
+        let map = buildMap(from: sourceEntry.1, to: targetEntry.1)
+        guard !map.isEmpty else { return nil }
+        return (
+            String(text.map { map[$0] ?? $0 }).precomposedStringWithCanonicalMapping,
+            sourceEntry.0,
+            targetEntry.0,
+            LayoutSwitcher.sourceID(targetEntry.1)
+        )
+    }
+
     /// Очистить кэш (при смене раскладок в настройках)
     static func clearCache() {
         mapCache.removeAll()
+    }
+
+    /// Returns what the same physical key would produce in the configured opposite
+    /// layout. Used to distinguish real punctuation from a wrong-layout letter.
+    static func oppositeCharacterForKeycode(
+        _ keycode: UInt16,
+        shift: Bool,
+        caps: Bool,
+        sourceLayoutID: String?
+    ) -> Character? {
+        let settings = SettingsManager.shared
+        let layouts = LayoutSwitcher.installedLayouts()
+        let sourceID = sourceLayoutID ?? LayoutSwitcher.currentLayoutID()
+        let layout1ID = settings.layout1ID.isEmpty ? LayoutSwitcher.autoDetectID1(from: layouts) : settings.layout1ID
+        let layout2ID = settings.layout2ID.isEmpty ? LayoutSwitcher.autoDetectID2(from: layouts) : settings.layout2ID
+        let targetID = sourceID == layout1ID ? layout2ID : layout1ID
+        guard let target = layouts.first(where: { LayoutSwitcher.sourceID($0) == targetID }),
+              let targetData = layoutDataForSource(target) else { return nil }
+        return translateKeycode(keycode, layoutData: targetData, shift: shift, caps: caps)
     }
 
     /// Конвертирует набранные keycodes в строки исходной и целевой раскладок —
@@ -120,7 +180,11 @@ enum DynamicKeyMapping {
         }
         let settings = SettingsManager.shared
         let layouts = LayoutSwitcher.installedLayouts()
-        let currentID = LayoutSwitcher.currentLayoutID()
+        let capturedLayoutIDs = Set(keys.compactMap(\.sourceLayoutID))
+        // Mixed-layout words are ambiguous by construction. Do not reconstruct them
+        // against whichever layout happens to be active at decision time.
+        if capturedLayoutIDs.count > 1 { return nil }
+        let currentID = capturedLayoutIDs.first ?? LayoutSwitcher.currentLayoutID()
         let layout1ID = settings.layout1ID.isEmpty ? LayoutSwitcher.autoDetectID1(from: layouts) : settings.layout1ID
         let layout2ID = settings.layout2ID.isEmpty ? LayoutSwitcher.autoDetectID2(from: layouts) : settings.layout2ID
 

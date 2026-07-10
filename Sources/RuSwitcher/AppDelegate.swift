@@ -1,11 +1,17 @@
 import AppKit
 import ApplicationServices
+import RuSwitcherCore
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    private static let healthItemTag = 742
     private var statusItem: NSStatusItem!
     private let keyboardMonitor = KeyboardMonitor()
     private let textConverter = TextConverter()
+    private lazy var conversionCoordinator = ConversionCoordinator(eventReplacer: textConverter)
+    private let languageModel = LanguageModelStore.bundled
+    private let textContextReader = FocusedTextContextReader()
+    private var languageBeliefs: [String: LanguageBelief] = [:]
     private let settingsController = SettingsWindowController()
     private let perAppLayoutManager = PerAppLayoutManager()
     private var permissionCheckTimer: Timer?
@@ -17,6 +23,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var badgeCache: [String: NSImage] = [:]  // монохромные плашки, чтобы не перерисовывать 2с-опросом
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if SettingsManager.shared.smartEngineV3, let languageModel {
+            rslog("engine: v3 model=\(languageModel.metadata.modelVersion) format=\(languageModel.metadata.formatVersion)")
+        } else {
+            rslog("engine: v2-fallback modelUnavailable=\(languageModel == nil)")
+        }
         setupStatusItem()
         setupSettingsCallbacks()
         syncLoginItem()
@@ -52,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         settingsController.onAutoConvertChanged = { [weak self] _ in
             self?.rebuildMenu()  // синхронизировать галочку в меню
+            self?.reconfigureTap() // active tap нужен для атомарной replay-транзакции
         }
         settingsController.onRemoteDesktopChanged = { [weak self] _ in
             self?.reconfigureTap()  // уровень tap зависит от режима
@@ -65,31 +77,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Learn-from-undo (предложить добавить слово в never-convert)
 
-    /// Последняя авто-конвертация: слово (как было набрано) + время. Если пользователь
-    /// сразу откатывает ручным триггером — предлагаем занести слово в исключения.
-    private var lastAutoConverted: (word: String, at: Date)?
-    /// Анти-наг: за сессию про одно слово спрашиваем один раз.
-    private var offeredExceptionWords: Set<String> = []
+    private struct AutoLearningEvent {
+        let original: String
+        let converted: String
+        let appBundleID: String?
+        let at: Date
+    }
 
-    private func offerExceptionAfterUndo() {
-        guard let last = lastAutoConverted, Date().timeIntervalSince(last.at) < 8 else { return }
+    private var lastAutoConverted: AutoLearningEvent?
+    private var sessionNegativePairs: Set<String> = []
+
+    private func learningKey(original: String, converted: String, appBundleID: String?) -> String {
+        [
+            FrequentWordLexicon.normalize(original),
+            FrequentWordLexicon.normalize(converted),
+            appBundleID ?? "*",
+        ].joined(separator: "\u{1f}")
+    }
+
+    private func learnFromUndo() {
+        guard let last = lastAutoConverted, Date().timeIntervalSince(last.at) < 20 else { return }
         lastAutoConverted = nil
-        let word = last.word
-        let key = word.lowercased()
-        guard !offeredExceptionWords.contains(key) else { return }
-        offeredExceptionWords.insert(key)
-        guard !SettingsManager.shared.deniedWordsSet.contains(key) else { return }
+        sessionNegativePairs.insert(learningKey(
+            original: last.original,
+            converted: last.converted,
+            appBundleID: last.appBundleID
+        ))
+        SettingsManager.shared.recordAdaptiveNegative(
+            original: last.original,
+            converted: last.converted,
+            appBundleID: last.appBundleID
+        )
+        rslog("learn: negative originalLen=\(last.original.count) convertedLen=\(last.converted.count)")
+    }
 
-        let alert = NSAlert()
-        alert.messageText = L10n.learnQuestion(word)
-        alert.addButton(withTitle: L10n.learnAdd)
-        alert.addButton(withTitle: L10n.learnNotNow)
-        if alert.runModal() == .alertFirstButtonReturn {
-            var list = SettingsManager.shared.deniedWords
-            list.append(word)
-            SettingsManager.shared.deniedWords = list
-            rslog("learn: added word (len=\(word.count)) to never-convert")
-        }
+    private func reinforcePreviousCorrectionIfNeeded() {
+        guard let last = lastAutoConverted else { return }
+        lastAutoConverted = nil
+        SettingsManager.shared.recordAdaptivePositive(
+            original: last.original,
+            converted: last.converted,
+            appBundleID: last.appBundleID
+        )
+        rslog("learn: positive originalLen=\(last.original.count) convertedLen=\(last.converted.count)")
     }
 
     private func startPerAppLayout() {
@@ -274,14 +304,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     rslog("trigger: local layout switched, conversion handled by controlled instance")
                     return
                 }
+                let frontID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+                if AutoSwitchPolicy.secureInputActive {
+                    rslog("trigger: blocked secure-input")
+                    return
+                }
+                switch self.textConverter.convertSelectedText() {
+                case .converted:
+                    self.finishManualConversion(
+                        frontID: frontID,
+                        targetLayoutID: self.textConverter.lastManualTargetLayoutID
+                    )
+                    return
+                case .failed:
+                    rslog("trigger: selected-text conversion failed; layout unchanged")
+                    return
+                case .none:
+                    break
+                }
                 let keys = self.keyboardMonitor.currentWordKeys
                 let prevKeys = self.keyboardMonitor.prevWordKeys
                 let bc = self.keyboardMonitor.boundaryCount
-                if self.textConverter.convert(wordKeys: keys, prevWordKeys: prevKeys, boundaryCount: bc) {
-                    self.keyboardMonitor.markConverted()
-                    LayoutSwitcher.switchToOpposite()
-                    self.updateStatusIcon()
-                    self.lastAutoConverted = nil
+                if keys.isEmpty, prevKeys.isEmpty, self.keyboardMonitor.shouldReconvert {
+                    if self.textConverter.reconvert(trailingSpaces: bc) {
+                        self.keyboardMonitor.markConverted()
+                        LayoutSwitcher.switchToOpposite()
+                        self.updateStatusIcon()
+                        self.learnFromUndo()
+                    }
+                    return
+                }
+                let outcome = self.textConverter.convert(wordKeys: keys, prevWordKeys: prevKeys, boundaryCount: bc)
+                let allowSwitchedOnly = !AutoSwitchPolicy.isDeniedApp(frontID)
+                if ManualTriggerDecision.shouldSwitchLayout(after: outcome, allowSwitchedOnly: allowSwitchedOnly) {
+                    if outcome == .converted {
+                        self.finishManualConversion(frontID: frontID, targetLayoutID: nil)
+                    } else {
+                        self.keyboardMonitor.markConverted()
+                        LayoutSwitcher.switchToOpposite()
+                        self.updateStatusIcon()
+                    }
+                    if outcome == .switchedOnly { rslog("trigger: switched layout only") }
+                } else if outcome == .switchedOnly {
+                    rslog("trigger: switched-only blocked denied-app \(frontID ?? "?")")
                 }
             },
             onAltReconvert: { [weak self] in
@@ -296,11 +361,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     rslog("trigger: local layout switched, conversion handled by controlled instance")
                     return
                 }
-                if self.textConverter.reconvert() {
+                if self.textConverter.reconvert(trailingSpaces: self.keyboardMonitor.boundaryCount) {
                     self.keyboardMonitor.markConverted()
                     LayoutSwitcher.switchToOpposite()
                     self.updateStatusIcon()
-                    self.offerExceptionAfterUndo()
+                    self.learnFromUndo()
                 }
             }
         ) {
@@ -312,8 +377,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         monitoringActive = true
-        keyboardMonitor.onWordBoundary = { [weak self] in
-            self?.handleAutoConvert()
+        keyboardMonitor.onTokenCompleted = { [weak self] snapshot, proxy in
+            self?.handleAutoConvert(snapshot, proxy: proxy) ?? .passThrough
+        }
+        keyboardMonitor.onCorrectionEdited = { [weak self] in
+            self?.learnFromUndo()
+        }
+        keyboardMonitor.onEditingInvalidated = { [weak self] in
+            self?.textConverter.clearState()
+            self?.lastAutoConverted = nil
         }
         keyboardMonitor.onUserInput = { [weak self] in self?.caretIndicator?.userTyped() }  // issue #10
         updateStatusIcon()        // сначала выставляем флаг меню-бара, пока индикатора ещё нет
@@ -336,27 +408,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         offerAutoConvertIfNeeded()
     }
 
-    /// Авто-конвертация на границе слова: детект неправильной раскладки → конверт + смена.
-    /// Точность-first: при любой неуверенности ничего не делаем. Ручной триггер не трогаем.
-    private func handleAutoConvert() {
+    private func finishManualConversion(frontID: String?, targetLayoutID: String?) {
+        keyboardMonitor.markConverted()
+        if let targetLayoutID {
+            LayoutSwitcher.switchTo(layoutID: targetLayoutID)
+        } else {
+            LayoutSwitcher.switchToOpposite()
+        }
+        updateStatusIcon()
+        guard let pair = textConverter.lastLearningPair else {
+            lastAutoConverted = nil
+            return
+        }
+        if SmartTokenizer.kind(of: pair.original) == .lexical,
+           SmartTokenizer.kind(of: pair.converted) == .lexical {
+            SettingsManager.shared.recordAdaptiveConfirmed(
+                original: pair.original,
+                converted: pair.converted
+            )
+            sessionNegativePairs.remove(learningKey(
+                original: pair.original,
+                converted: pair.converted,
+                appBundleID: frontID
+            ))
+            rslog("learn: confirmed originalLen=\(pair.original.count) convertedLen=\(pair.converted.count)")
+        }
+        lastAutoConverted = AutoLearningEvent(
+            original: pair.original,
+            converted: pair.converted,
+            appBundleID: frontID,
+            at: Date()
+        )
+    }
+
+    /// Smart auto-conversion runs synchronously while the active event tap owns the
+    /// boundary. It only consumes a space after the complete replacement transaction
+    /// has been posted; every early exit passes the original event through unchanged.
+    private func handleAutoConvert(
+        _ snapshot: TokenSnapshot,
+        proxy: CGEventTapProxy
+    ) -> TokenHandlingResult {
         rslog("auto: fired")
-        guard SettingsManager.shared.autoSwitchEnabled else { rslog("auto: bail master-off"); return }
-        guard SettingsManager.shared.autoConvert else { rslog("auto: bail flag-off"); return }
-        guard !AutoSwitchPolicy.secureInputActive else { rslog("auto: bail secure-input"); return }
+        // Reaching the next completed token without Backspace/Undo is a soft
+        // positive signal for the previous correction.
+        reinforcePreviousCorrectionIfNeeded()
+        guard SettingsManager.shared.autoSwitchEnabled else { rslog("auto: bail master-off"); return .passThrough }
+        guard SettingsManager.shared.autoConvert else { rslog("auto: bail flag-off"); return .passThrough }
+        guard !AutoSwitchPolicy.secureInputActive else { rslog("auto: bail secure-input"); return .passThrough }
         let frontID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
         // Удалёнка: НЕ выходим сразу — прогоняем детектор по своему (чистому) буферу, и при
         // «не той раскладке» переключаем СВОЮ раскладку (конверсию делает инстанс на той стороне).
         let deferToRemote = SettingsManager.shared.remoteDesktopMode && AutoSwitchPolicy.isRemoteDesktopClient(frontID)
-        if AutoSwitchPolicy.isDeniedApp(frontID) { rslog("auto: bail denied-app \(frontID ?? "?")"); return }
-        if let captured = keyboardMonitor.prevWordBundleID, captured != frontID {
-            rslog("auto: bail focus-changed"); return  // фокус уехал между пробелом и сейчас
+        if AutoSwitchPolicy.isDeniedApp(frontID) { rslog("auto: bail denied-app \(frontID ?? "?")"); return .passThrough }
+        guard snapshot.focus.bundleID == frontID, snapshot.focus.processID == frontPID else {
+            rslog("auto: bail focus-changed"); return .passThrough
         }
 
-        let keys = keyboardMonitor.prevWordKeys
-        let bc = keyboardMonitor.boundaryCount
-        guard !keys.isEmpty else { rslog("auto: bail empty-keys"); return }  // курсор уехал — небезопасно
-        guard let pair = DynamicKeyMapping.convertKeys(keys) else { rslog("auto: bail convertKeys-nil"); return }
-        if AutoSwitchPolicy.isDeniedWord(pair.original, pair.converted) { rslog("auto: bail denied-word"); return }
+        let keys = snapshot.keys
+        guard !keys.isEmpty else { rslog("auto: bail empty-keys"); return .passThrough }
+        guard let pair = DynamicKeyMapping.convertKeys(keys) else { rslog("auto: bail convertKeys-nil"); return .passThrough }
+        if AutoSwitchPolicy.isDeniedWord(pair.original, pair.converted) {
+            rslog("auto: bail denied-word")
+            return TokenHandlingResult(
+                consumeBoundary: false,
+                resolvedText: pair.original,
+                resolvedLanguage: SmartTokenizer.languageHint(for: pair.original),
+                wasConverted: false
+            )
+        }
 
         // Язык для детектора. Для проброшенного через удалёнку текста (все символы — char)
         // направление определяем по СКРИПТУ набранного, а не по раскладке офисной машины:
@@ -366,35 +486,253 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if keys.allSatisfy({ $0.char != nil }) {
             let typedIsCyrillic = pair.original.unicodeScalars.contains { $0.value >= 0x0400 && $0.value <= 0x04FF }
             langs = typedIsCyrillic ? ("ru", "en") : ("en", "ru")
-        } else if let l = LayoutSwitcher.currentAndOppositeLanguage() {
+        } else if let sourceLayoutID = snapshot.sourceLayoutID,
+                  let l = LayoutSwitcher.languagePair(sourceLayoutID: sourceLayoutID) {
             langs = l
         } else {
-            rslog("auto: bail langs-nil"); return
+            rslog("auto: bail langs-nil"); return .passThrough
         }
 
+        let targetLang = langs.opposite
+        let contextWords = snapshot.context.map(\.text)
+        let beliefKey = self.beliefKey(for: snapshot.focus)
+        let languageBelief = languageBeliefs[beliefKey] ?? snapshot.languageBelief
         let capsLock = keys.contains { $0.caps }
-        let verdict = LayoutDetector.decide(typed: pair.original, converted: pair.converted,
-                                            currentLang: langs.current, otherLang: langs.opposite,
-                                            capsLock: capsLock)
-        rslog("auto: len=\(pair.original.count) \(langs.current)/\(langs.opposite) verdict=\(verdict)")  // слова не логируем (приватность)
-        guard verdict == .switchToConverted else { return }
+        let policy = AutoConvertPolicy(
+            neverConvert: SettingsManager.shared.deniedWordsSet,
+            alwaysConvert: SettingsManager.shared.alwaysConvertWordsSet
+        )
+        let isValidWord: (String, String) -> Bool = { word, lang in
+            !word.isEmpty && Dict.isAvailable(lang) && Dict.isValidWord(word, lang: lang)
+        }
+        let languagePair = Set([String(langs.current.lowercased().prefix(2)), String(targetLang.lowercased().prefix(2))])
+        let decision: AutoConvertDecision
+        let confidenceMargin: Double
+        let evidenceDescription: String
+        if SettingsManager.shared.smartEngineV3,
+           languagePair == Set(["en", "ru"]),
+           let languageModel {
+            let evaluation = LayoutDecoder.evaluate(
+                typed: pair.original,
+                converted: pair.converted,
+                currentLanguage: langs.current,
+                targetLanguage: targetLang,
+                capsLock: capsLock,
+                contextWords: contextWords,
+                languageBelief: languageBelief,
+                integrity: snapshot.integrity,
+                policy: policy,
+                adaptiveBias: { original, converted in
+                    let persisted = SettingsManager.shared.adaptiveBias(
+                        original: original,
+                        converted: converted,
+                        appBundleID: frontID
+                    )
+                    let sessionPenalty = self.sessionNegativePairs.contains(self.learningKey(
+                        original: original,
+                        converted: converted,
+                        appBundleID: frontID
+                    )) ? -12.0 : 0.0
+                    return persisted + sessionPenalty
+                },
+                isConfirmed: { original, converted in
+                    SettingsManager.shared.isAdaptiveConfirmed(
+                        original: original,
+                        converted: converted,
+                        appBundleID: frontID
+                    )
+                },
+                model: languageModel
+            )
+            decision = evaluation.decision
+            confidenceMargin = evaluation.confidenceMargin
+            evidenceDescription = evaluation.evidence.map(String.init(describing:)).joined(separator: ",")
+        } else if SettingsManager.shared.smartEngineV2, languagePair == Set(["en", "ru"]) {
+            let evaluation = SmartAutoConvertEngine.evaluate(
+                typed: pair.original,
+                converted: pair.converted,
+                currentLanguage: langs.current,
+                targetLanguage: targetLang,
+                capsLock: capsLock,
+                contextWords: contextWords,
+                languageState: snapshot.languageState,
+                policy: policy,
+                adaptiveBias: { original, converted in
+                    let persisted = SettingsManager.shared.adaptiveBias(
+                        original: original,
+                        converted: converted,
+                        appBundleID: frontID
+                    )
+                    let sessionPenalty = self.sessionNegativePairs.contains(self.learningKey(
+                        original: original,
+                        converted: converted,
+                        appBundleID: frontID
+                    )) ? -12.0 : 0.0
+                    return persisted + sessionPenalty
+                },
+                isValidWord: isValidWord
+            )
+            decision = evaluation.decision
+            confidenceMargin = evaluation.confidenceMargin
+            evidenceDescription = "v2"
+        } else {
+            let candidate = AutoConvertCandidateGenerator.bestCandidate(
+                typed: pair.original,
+                converted: pair.converted,
+                targetLanguage: targetLang,
+                isValidWord: isValidWord
+            ) ?? AutoConvertCandidate(
+                typedRaw: pair.original,
+                convertedRaw: pair.converted,
+                convertedWord: pair.converted,
+                suffix: "",
+                kind: .directWord
+            )
+            decision = LayoutDetector.decide(
+                candidate: candidate,
+                currentLang: langs.current,
+                otherLang: targetLang,
+                capsLock: capsLock,
+                policy: policy,
+                isCurrentWordValid: isValidWord(SmartTokenizer.lexicalCore(of: pair.original), langs.current),
+                isConvertedWordValid: isValidWord(candidate.convertedWord, targetLang),
+                context: AutoConvertContext(previousWord: contextWords.last)
+            )
+            confidenceMargin = decision.verdict == .switchToConverted ? 1 : -1
+            evidenceDescription = "fallback"
+        }
+        let candidate = decision.candidate
+        rslog("auto: len=\(pair.original.count) ctx=\(contextWords.count) rev=\(snapshot.editRevision) \(langs.current)/\(targetLang) verdict=\(decision.verdict) reason=\(decision.reason) evidence=\(evidenceDescription) kind=\(candidate.kind) wordLen=\(candidate.convertedWord.count) suffix=\(candidate.suffix.count) margin=\(String(format: "%.2f", confidenceMargin))")
+        guard decision.verdict == .switchToConverted else {
+            let finalizeToken: Bool
+            if case .punctuation = snapshot.boundary, decision.verdict == .undecided {
+                // It may be a layout letter inside an unfinished unknown word. Keep
+                // collecting until a non-ambiguous boundary arrives.
+                finalizeToken = false
+            } else {
+                finalizeToken = true
+            }
+            if finalizeToken {
+                observeLanguage(langs.current, converted: false, key: beliefKey)
+            }
+            return TokenHandlingResult(
+                consumeBoundary: false,
+                finalizeToken: finalizeToken,
+                resolvedText: pair.original,
+                resolvedLanguage: langs.current,
+                wasConverted: false
+            )
+        }
 
         if deferToRemote {
             // Удалёнка: текст конвертит офисный инстанс по реальным проброшенным символам.
             // Здесь меняем СВОЮ раскладку — чтобы дальнейший ввод пошёл уже в правильной.
             LayoutSwitcher.switchToOpposite()
             updateStatusIcon()
+            observeLanguage(targetLang, converted: true, key: beliefKey)
             rslog("auto: local layout switched, conversion handled by controlled instance")
-            return
+            return TokenHandlingResult(
+                consumeBoundary: false,
+                resolvedText: candidate.replacement,
+                resolvedLanguage: targetLang,
+                wasConverted: true
+            )
         }
 
-        rslog("auto: convert \(keys.count) keys (+\(bc) sp)")
-        if textConverter.convert(wordKeys: [], prevWordKeys: keys, boundaryCount: bc) {
-            keyboardMonitor.markConverted()
-            LayoutSwitcher.switchToOpposite()
-            updateStatusIcon()
-            lastAutoConverted = (pair.original, Date())
+        let undeliveredCount = snapshot.boundary.isIncludedInTokenKeys ? 1 : 0
+        let expectedSuffix = String(pair.original.dropLast(undeliveredCount))
+        let validation = textContextReader.validate(
+            expectedSuffix: expectedSuffix,
+            focus: snapshot.focus
+        )
+        rslog("auto: ax-validation=\(validation) expectedLen=\(expectedSuffix.count)")
+        if validation == .mismatch || (validation == .unavailable && snapshot.integrity != .clean) {
+            return TokenHandlingResult(
+                consumeBoundary: false,
+                resolvedText: pair.original,
+                resolvedLanguage: langs.current,
+                wasConverted: false,
+                invalidateSession: true
+            )
         }
+
+        let targetLayoutID = oppositeLayoutID(for: snapshot.sourceLayoutID)
+        let transaction = ConversionTransaction(
+            original: pair.original,
+            replacement: candidate.replacement,
+            boundary: snapshot.boundary,
+            focus: snapshot.focus,
+            sourceLayoutID: snapshot.sourceLayoutID,
+            targetLayoutID: targetLayoutID,
+            sequence: snapshot.sequence,
+            editRevision: snapshot.editRevision,
+            expectedOriginalSuffix: expectedSuffix,
+            automatic: true
+        )
+        rslog("auto: transaction keys=\(keys.count) consume=\(snapshot.boundary.shouldConsumeOriginalEvent)")
+        let execution = conversionCoordinator.execute(
+            transaction,
+            keyCount: snapshot.deliveredKeyCount,
+            proxy: proxy
+        )
+        if execution == .committed {
+            if let targetLayoutID {
+                LayoutSwitcher.switchTo(layoutID: targetLayoutID)
+            } else {
+                LayoutSwitcher.switchToOpposite()
+            }
+            updateStatusIcon()
+            observeLanguage(targetLang, converted: true, key: beliefKey)
+            lastAutoConverted = AutoLearningEvent(
+                original: pair.original,
+                converted: candidate.replacement,
+                appBundleID: frontID,
+                at: Date()
+            )
+            return TokenHandlingResult(
+                consumeBoundary: snapshot.boundary.shouldConsumeOriginalEvent,
+                resolvedText: candidate.replacement,
+                resolvedLanguage: targetLang,
+                wasConverted: true
+            )
+        }
+        if execution == .alreadyCommitted {
+            return TokenHandlingResult(
+                consumeBoundary: snapshot.boundary.shouldConsumeOriginalEvent,
+                resolvedText: candidate.replacement,
+                resolvedLanguage: targetLang,
+                wasConverted: false
+            )
+        }
+        return TokenHandlingResult(
+            consumeBoundary: false,
+            resolvedText: pair.original,
+            resolvedLanguage: langs.current,
+            wasConverted: false
+        )
+    }
+
+    private func beliefKey(for focus: FocusedElementIdentity) -> String {
+        [focus.bundleID ?? "?", String(focus.processID), focus.identifier ?? "*"].joined(separator: "\u{1f}")
+    }
+
+    private func observeLanguage(_ language: String, converted: Bool, key: String) {
+        var belief = languageBeliefs[key] ?? .neutral
+        belief.observe(language: language, weight: converted ? 1.4 : 1.0)
+        languageBeliefs[key] = belief
+        if languageBeliefs.count > 100 {
+            languageBeliefs.removeAll(keepingCapacity: true)
+            languageBeliefs[key] = belief
+        }
+    }
+
+    private func oppositeLayoutID(for sourceLayoutID: String?) -> String? {
+        guard let sourceLayoutID else { return nil }
+        let settings = SettingsManager.shared
+        let layouts = LayoutSwitcher.installedLayouts()
+        let id1 = settings.layout1ID.isEmpty ? LayoutSwitcher.autoDetectID1(from: layouts) : settings.layout1ID
+        let id2 = settings.layout2ID.isEmpty ? LayoutSwitcher.autoDetectID2(from: layouts) : settings.layout2ID
+        return sourceLayoutID == id1 ? id2 : id1
     }
 
     /// Предлагает включить автозагрузку при первом запуске (один раз)
@@ -479,6 +817,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let verItem = NSMenuItem(title: "RuSwitcher \(ver)\(devTag)", action: nil, keyEquivalent: "")
         verItem.isEnabled = false
         menu.addItem(verItem)
+        let healthItem = NSMenuItem(title: autoConversionHealthText(), action: nil, keyEquivalent: "")
+        healthItem.isEnabled = false
+        healthItem.tag = Self.healthItemTag
+        menu.addItem(healthItem)
         menu.addItem(NSMenuItem.separator())
 
         // Список раскладок как в системном меню ввода: флаг + имя, галочка на текущей,
@@ -581,6 +923,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// а текущую меняют и мимо нас — системным хоткеем).
     func menuWillOpen(_ menu: NSMenu) {
         guard menu === statusItem.menu else { return }
+        menu.items.first(where: { $0.tag == Self.healthItemTag })?.title = autoConversionHealthText()
         let insertAt = menu.items.firstIndex { $0.tag == Self.layoutItemTag } ?? 2
         for old in menu.items where old.tag == Self.layoutItemTag { menu.removeItem(old) }
         for (offset, item) in layoutMenuItems().enumerated() {
@@ -612,7 +955,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             statusItem.button?.image = nil
             statusItem.button?.title = flag
         }
+        statusItem.button?.toolTip = autoConversionHealthText()
         if changed { caretIndicator?.layoutChanged() }
+    }
+
+    private func autoConversionHealthText() -> String {
+        guard SettingsManager.shared.autoSwitchEnabled, SettingsManager.shared.autoConvert else {
+            return L10n.statusDisabled
+        }
+        guard AXIsProcessTrusted(), CGPreflightListenEventAccess() else { return L10n.statusPermissions }
+        if AutoSwitchPolicy.secureInputActive { return L10n.statusSecureInput }
+        let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        if AutoSwitchPolicy.isDeniedApp(bundleID) { return L10n.statusDeniedApp }
+        return L10n.statusActive
     }
 
     /// Подпись монохромной плашки — родная аббревиатура языка, как у системного индикатора.

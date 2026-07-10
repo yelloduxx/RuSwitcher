@@ -1,9 +1,5 @@
-import Carbon
-
-/// Маппинг keycode → символ для EN и RU раскладок (QWERTY / ЙЦУКЕН)
-enum KeyMapping {
-    // keycode → EN символ
-    static let keycodeToEN: [UInt16: Character] = [
+public enum KeyMapping {
+    public static let keycodeToEN: [UInt16: Character] = [
         0: "a", 1: "s", 2: "d", 3: "f", 4: "h", 5: "g", 6: "z", 7: "x",
         8: "c", 9: "v", 11: "b", 12: "q", 13: "w", 14: "e", 15: "r",
         16: "y", 17: "t", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6",
@@ -14,11 +10,7 @@ enum KeyMapping {
         50: "`",
     ]
 
-    // keycode → RU символ (ЙЦУКЕН)
-    // Верхний ряд: Й Ц У К Е Н Г Ш Щ З Х Ъ
-    // Средний ряд: Ф Ы В А П Р О Л Д Ж Э
-    // Нижний ряд:  Я Ч С М И Т Ь Б Ю .
-    static let keycodeToRU: [UInt16: Character] = [
+    public static let keycodeToRU: [UInt16: Character] = [
         12: "й", 13: "ц", 14: "у", 15: "к", 17: "е", 16: "н",
         32: "г", 34: "ш", 31: "щ", 35: "з", 33: "х", 30: "ъ",
         0: "ф", 1: "ы", 2: "в", 3: "а", 5: "п", 4: "р",
@@ -28,8 +20,7 @@ enum KeyMapping {
         42: "ё", 50: "ё",
     ]
 
-    // EN символ → RU символ (для конвертации текста)
-    static let enToRu: [Character: Character] = [
+    public static let enToRu: [Character: Character] = [
         "q": "й", "w": "ц", "e": "у", "r": "к", "t": "е", "y": "н",
         "u": "г", "i": "ш", "o": "щ", "p": "з", "[": "х", "]": "ъ",
         "a": "ф", "s": "ы", "d": "в", "f": "а", "g": "п", "h": "р",
@@ -46,22 +37,18 @@ enum KeyMapping {
         "|": "Ё", "~": "Ё",
     ]
 
-    // RU символ → EN символ (обратная конвертация)
-    static let ruToEn: [Character: Character] = {
+    public static let ruToEn: [Character: Character] = {
         var map: [Character: Character] = [:]
         for (en, ru) in enToRu {
             map[ru] = en
         }
-        // Явно задаём ё → ` (а не \, чтобы было однозначно)
         map["ё"] = "`"
         map["Ё"] = "~"
         return map
     }()
 
-    /// Конвертирует строку из одной раскладки в другую
-    static func convert(_ text: String) -> String {
+    public static func convert(_ text: String) -> String {
         let isLikelyRussian = text.unicodeScalars.contains { $0.value >= 0x0400 && $0.value <= 0x04FF }
-
         let map = isLikelyRussian ? ruToEn : enToRu
         return String(text.map { map[$0] ?? $0 })
     }

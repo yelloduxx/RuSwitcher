@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import RuSwitcherCore
 
 /// Окно настроек с вкладками
 @MainActor
@@ -375,6 +376,27 @@ final class SettingsWindowController {
         pathLabel.textColor = .tertiaryLabelColor
         pathLabel.isSelectable = true
         view.addSubview(pathLabel)
+        y -= 72
+
+        let engineVersion = SettingsManager.shared.smartEngineV3 && LanguageModelStore.bundled != nil ? "V3" : "V2"
+        let modelVersion = LanguageModelStore.bundled?.metadata.modelVersion ?? "fallback"
+        let engineLabel = NSTextField(
+            labelWithString: String(format: L10n.settingsSmartEngine, engineVersion, modelVersion)
+        )
+        engineLabel.frame = NSRect(x: 20, y: y, width: 420, height: 20)
+        engineLabel.font = .systemFont(ofSize: 12)
+        engineLabel.textColor = .secondaryLabelColor
+        view.addSubview(engineLabel)
+        y -= 38
+
+        let clearLearningBtn = NSButton(
+            title: L10n.settingsClearLearning,
+            target: self,
+            action: #selector(clearAdaptiveLearning)
+        )
+        clearLearningBtn.frame = NSRect(x: 20, y: y, width: 240, height: 32)
+        clearLearningBtn.bezelStyle = .rounded
+        view.addSubview(clearLearningBtn)
 
         item.view = view
         return item
@@ -540,6 +562,16 @@ final class SettingsWindowController {
 
     @objc private func debugLogChanged(_ sender: NSButton) {
         SettingsManager.shared.debugLogEnabled = sender.state == .on
+    }
+
+    @objc private func clearAdaptiveLearning() {
+        let alert = NSAlert()
+        alert.messageText = L10n.settingsClearLearningConfirm
+        alert.addButton(withTitle: L10n.settingsClearLearning)
+        alert.addButton(withTitle: L10n.commonCancel)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        SettingsManager.shared.clearAdaptiveRules()
+        rslog("learn: adaptive rules cleared")
     }
 
     @objc private func openGitHub() {

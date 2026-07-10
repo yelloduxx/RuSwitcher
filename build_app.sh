@@ -55,13 +55,51 @@ echo "→ Stamped Info.plist: CFBundleShortVersionString=$SHORT_VERSION$DEV_TAG 
 # 5. Копируем иконку
 cp "$PROJECT_DIR/RuSwitcher.icns" "$APP_BUNDLE/Contents/Resources/RuSwitcher.icns"
 
+# 5a. Модель полностью локальная. В готовом macOS bundle кладём её в
+# Contents/Resources; Bundle.module остаётся SwiftPM fallback для тестов.
+CORE_RESOURCE_BUNDLE="$BUILD_DIR/RuSwitcher_RuSwitcherCore.bundle"
+if [ ! -d "$CORE_RESOURCE_BUNDLE" ]; then
+    echo "ERROR: RuSwitcherCore resource bundle not found: $CORE_RESOURCE_BUNDLE"
+    exit 1
+fi
+MODEL_RESOURCE="$CORE_RESOURCE_BUNDLE/Contents/Resources/language-model-v1.bin"
+if [ ! -f "$MODEL_RESOURCE" ]; then
+    echo "ERROR: language model not found: $MODEL_RESOURCE"
+    exit 1
+fi
+cp "$MODEL_RESOURCE" "$APP_BUNDLE/Contents/Resources/language-model-v1.bin"
+cp "$PROJECT_DIR/THIRD_PARTY_NOTICES.md" "$APP_BUNDLE/Contents/Resources/THIRD_PARTY_NOTICES.md"
+echo "→ Bundled local language model and third-party notices"
+
 # 6. Создаём PkgInfo
 echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 
-# 7. Подписываем Developer ID (разрешения macOS привязаны к подписи —
-#    при одинаковой подписи разрешения сохраняются между обновлениями)
-SIGN_ID="Developer ID Application: Rashid Nasibulin (9GEWCZ59HK)"
-echo "→ Code signing with Developer ID..."
+# 7. Подписываем стабильной identity. Developer ID сохраняет разрешения между
+#    публичными обновлениями; локальный сертификат сохраняет их между нашими
+#    локальными сборками после одного повторного разрешения в macOS.
+DEV_SIGN_ID="Developer ID Application: Rashid Nasibulin (9GEWCZ59HK)"
+LOCAL_SIGN_ID="RuSwitcher Local Code Signing"
+SIGN_ID="${SIGN_ID:-}"
+SIGN_KIND="explicit identity"
+IDENTITIES=$(security find-identity -v -p codesigning 2>/dev/null || true)
+
+if [ -z "$SIGN_ID" ]; then
+    if echo "$IDENTITIES" | grep -Fq "\"$DEV_SIGN_ID\""; then
+        SIGN_ID="$DEV_SIGN_ID"
+        SIGN_KIND="Developer ID"
+    elif echo "$IDENTITIES" | grep -Fq "\"$LOCAL_SIGN_ID\""; then
+        SIGN_ID="$LOCAL_SIGN_ID"
+        SIGN_KIND="local reusable certificate"
+    else
+        echo "ERROR: no signing identity found."
+        echo "Install either:"
+        echo "  - $DEV_SIGN_ID"
+        echo "  - $LOCAL_SIGN_ID"
+        exit 1
+    fi
+fi
+
+echo "→ Code signing with $SIGN_KIND: $SIGN_ID"
 codesign --force --deep --sign "$SIGN_ID" \
     --options runtime \
     --entitlements "$PROJECT_DIR/RuSwitcher.entitlements" \
