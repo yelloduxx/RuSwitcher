@@ -4,7 +4,7 @@ import XCTest
 final class ConversionTransactionTests: XCTestCase {
     private let focus = FocusedElementIdentity(processID: 7, bundleID: "notes")
 
-    func testSpaceIsReplayedInsideTransaction() {
+    func testSpaceIsReplayedAfterTransaction() {
         let transaction = ConversionTransaction(
             original: "ghbdtn",
             replacement: "привет",
@@ -63,6 +63,8 @@ final class ConversionTransactionTests: XCTestCase {
         let plan = EventReplacementPlan(transaction: transaction, deliveredKeyCount: 6)
 
         XCTAssertEqual(plan.backspaceCount, 6)
+        XCTAssertEqual(plan.replacementText, "привет")
+        XCTAssertEqual(plan.replayText, " ")
         XCTAssertEqual(plan.insertedText, "привет ")
     }
 

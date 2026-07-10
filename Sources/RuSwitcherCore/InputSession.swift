@@ -44,19 +44,14 @@ public enum InputBoundary: Equatable, Sendable {
         }
     }
 
-    /// Space is consumed and replayed as part of the conversion transaction. Enter
-    /// and Tab retain their native application semantics and are passed through.
+    /// Space is consumed and replayed after the replacement. Enter and Tab keep
+    /// their native application semantics and are passed through.
     public var shouldConsumeOriginalEvent: Bool {
-        switch self {
-        case .space, .punctuation:
-            return true
-        case .enter, .tab:
-            return false
-        }
+        if case .space = self { return true }
+        return false
     }
 
-    /// Punctuation already belongs to the token candidate and must not be appended
-    /// twice. A consumed space is external to the token and is replayed explicitly.
+    /// Space is replayed as a separate marked key event after replacement.
     public var replayText: String {
         if case .space = self { return text }
         return ""

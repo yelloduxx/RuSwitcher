@@ -163,7 +163,7 @@ final class KeyboardMonitor: @unchecked Sendable {
 
         guard let tap = CGEvent.tapCreate(
             tap: tapLocation,
-            place: .tailAppendEventTap,
+            place: needsActiveTap ? .headInsertEventTap : .tailAppendEventTap,
             options: options,
             eventsOfInterest: mask,
             callback: keyboardCallback,
@@ -455,24 +455,10 @@ final class KeyboardMonitor: @unchecked Sendable {
             boundaryCount = 0
             prevWordKeys = []
             playLayoutSoundIfArmed()
-            if SettingsManager.shared.autoConvert,
-               let producedCharacter,
-               isTerminalPunctuation(producedCharacter),
-               !PhysicalBoundaryPolicy.shouldDeferTerminalPunctuation(
-                    produced: producedCharacter,
-                    oppositeLayoutCharacter: DynamicKeyMapping.oppositeCharacterForKeycode(
-                        keyCode,
-                        shift: flags.contains(.maskShift),
-                        caps: flags.contains(.maskAlphaShift),
-                        sourceLayoutID: sourceLayoutID
-                    )
-               ),
-               currentWordLength > 1 {
-                wordBeforeBoundaryLength = currentWordLength
-                prevWordKeys = currentWordKeys
-                prevWordBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-                return completeToken(boundary: .punctuation(String(producedCharacter)), proxy: proxy).consumeBoundary
-            }
+            // Keep punctuation in the token until Space, Enter or Tab. Committing
+            // on the first punctuation key changes the layout while repeated marks
+            // and the following boundary are still arriving, which can turn `...`
+            // into `.//` or race the replacement transaction.
         } else {
             // Esc, F-клавиши, и т.д. — полный сброс
             fullReset(invalidated: true)
@@ -530,32 +516,9 @@ final class KeyboardMonitor: @unchecked Sendable {
             boundaryCount = 0
             prevWordKeys = []
             playLayoutSoundIfArmed()
-            let remoteOppositeCharacter: Character? = {
-                let preceding = inputSession.currentKeys.dropLast().compactMap(\.char)
-                let sourceLooksCyrillic = preceding.contains { character in
-                    character.unicodeScalars.contains { (0x0400...0x04FF).contains($0.value) }
-                }
-                return sourceLooksCyrillic ? KeyMapping.ruToEn[ch] : KeyMapping.enToRu[ch]
-            }()
-            if SettingsManager.shared.autoConvert,
-               isTerminalPunctuation(ch),
-               !PhysicalBoundaryPolicy.shouldDeferTerminalPunctuation(
-                    produced: ch,
-                    oppositeLayoutCharacter: remoteOppositeCharacter
-               ),
-               currentWordLength > 1 {
-                wordBeforeBoundaryLength = currentWordLength
-                prevWordKeys = currentWordKeys
-                prevWordBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-                return completeToken(boundary: .punctuation(String(ch)), proxy: proxy).consumeBoundary
-            }
             return false
         }
         return false
-    }
-
-    private func isTerminalPunctuation(_ char: Character) -> Bool {
-        Set(".,!?;:)]}\"'»…”’").contains(char)
     }
 
     /// issue #7: на первой букве после смены раскладки даём короткий звук, зависящий от

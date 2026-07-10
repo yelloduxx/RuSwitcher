@@ -2,6 +2,7 @@ import AppKit
 import Carbon
 import CoreGraphics
 import Foundation
+import RuSwitcherCore
 
 private struct HIDProbeResult: Codable {
     let scenario: String
@@ -15,12 +16,31 @@ private struct HIDProbeScenario {
         let sourceLanguage: String
         let keyCodes: [CGKeyCode]
         let producedText: String?
+        let typedText: String?
 
         init(sourceLanguage: String, keyCodes: [CGKeyCode], producedText: String? = nil) {
             self.sourceLanguage = sourceLanguage
             self.keyCodes = keyCodes
             self.producedText = producedText
+            self.typedText = nil
         }
+
+        init(sourceLanguage: String, typedText: String) {
+            self.sourceLanguage = sourceLanguage
+            self.keyCodes = []
+            self.producedText = nil
+            self.typedText = typedText
+        }
+    }
+
+    private struct Fixture: Decodable {
+        struct FixturePhase: Decodable {
+            let sourceLanguage: String
+            let text: String
+        }
+
+        let name: String
+        let phases: [FixturePhase]
     }
 
     let name: String
@@ -71,6 +91,37 @@ private struct HIDProbeScenario {
             return nil
         }
     }
+
+    static func fixture(at path: String) throws -> HIDProbeScenario {
+        let fixture = try JSONDecoder().decode(
+            Fixture.self,
+            from: Data(contentsOf: URL(fileURLWithPath: path))
+        )
+        guard !fixture.phases.isEmpty else {
+            throw NSError(
+                domain: "RuSwitcher.HIDProbe",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "HID fixture has no phases"]
+            )
+        }
+        return HIDProbeScenario(
+            name: fixture.name,
+            phases: fixture.phases.map {
+                Phase(sourceLanguage: $0.sourceLanguage, typedText: $0.text)
+            }
+        )
+    }
+}
+
+private struct HIDProbeStroke {
+    let keyCode: CGKeyCode
+    let shift: Bool
+    let producedCharacter: Character?
+}
+
+private struct HIDProbePlannedPhase {
+    let sourceLanguage: String
+    let strokes: [HIDProbeStroke]
 }
 
 @MainActor
@@ -82,6 +133,21 @@ enum HIDIntegrationProbe {
             FileHandle.standardError.write(Data("unknown HID probe scenario\n".utf8))
             exit(64)
         }
+        run(scenario: scenario, resultPath: resultPath)
+    }
+
+    static func run(fixturePath: String, resultPath: String?) -> Never {
+        let scenario: HIDProbeScenario
+        do {
+            scenario = try HIDProbeScenario.fixture(at: fixturePath)
+        } catch {
+            FileHandle.standardError.write(Data("invalid HID probe fixture: \(error)\n".utf8))
+            exit(64)
+        }
+        run(scenario: scenario, resultPath: resultPath)
+    }
+
+    private static func run(scenario: HIDProbeScenario, resultPath: String?) -> Never {
         let app = NSApplication.shared
         let delegate = HIDProbeDelegate(scenario: scenario, resultPath: resultPath)
         retainedDelegate = delegate
@@ -99,6 +165,8 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow?
     private var originalLayoutID = ""
     private var didPostKeys = false
+    private var eventSource: CGEventSource?
+    private var plannedPhases: [HIDProbePlannedPhase] = []
 
     init(scenario: HIDProbeScenario, resultPath: String?) {
         self.scenario = scenario
@@ -114,6 +182,12 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.title = "RuSwitcher HID Probe: \(scenario.name)"
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.enabledTextCheckingTypes = 0
+        textView.isContinuousSpellCheckingEnabled = false
         window.contentView = textView
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(textView)
@@ -151,33 +225,107 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             finish(text: "<event-source-unavailable>")
             return
         }
-        didPostKeys = true
         source.userData = 0x52535445 // RSTE: deliberately not RuSwitcher's synthetic marker.
+        var phases: [HIDProbePlannedPhase] = []
         for phase in scenario.phases {
-            guard selectLayout(language: phase.sourceLanguage) else { continue }
-            usleep(80_000)
-            let producedCharacters = phase.producedText.map(Array.init)
-            for (index, keyCode) in phase.keyCodes.enumerated() {
-                let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
-                if let character = producedCharacters?[safe: index] {
-                    let utf16 = Array(String(character).utf16)
-                    utf16.withUnsafeBufferPointer { buffer in
-                        keyDown?.keyboardSetUnicodeString(
-                            stringLength: buffer.count,
-                            unicodeString: buffer.baseAddress
-                        )
-                    }
+            let strokes: [HIDProbeStroke]
+            if let typedText = phase.typedText {
+                guard let planned = physicalStrokes(for: typedText, language: phase.sourceLanguage) else {
+                    finish(text: "<unmappable-fixture-text>")
+                    return
                 }
-                keyDown?.post(tap: .cghidEventTap)
-                usleep(12_000)
-                CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)?.post(tap: .cghidEventTap)
-                usleep(18_000)
+                strokes = planned
+            } else {
+                let producedCharacters = phase.producedText.map(Array.init)
+                strokes = phase.keyCodes.enumerated().map { index, keyCode in
+                    HIDProbeStroke(
+                        keyCode: keyCode,
+                        shift: false,
+                        producedCharacter: producedCharacters?[safe: index]
+                    )
+                }
             }
-            usleep(120_000)
+            phases.append(HIDProbePlannedPhase(sourceLanguage: phase.sourceLanguage, strokes: strokes))
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-            guard let self else { return }
-            self.finish(text: self.textView.string)
+        didPostKeys = true
+        eventSource = source
+        plannedPhases = phases
+        postPhase(at: 0)
+    }
+
+    private func postPhase(at phaseIndex: Int) {
+        guard plannedPhases.indices.contains(phaseIndex) else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self else { return }
+                self.finish(text: self.textView.string)
+            }
+            return
+        }
+        let phase = plannedPhases[phaseIndex]
+        guard selectLayout(language: phase.sourceLanguage) else {
+            finish(text: "<layout-unavailable>")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            self?.postStroke(phaseIndex: phaseIndex, strokeIndex: 0)
+        }
+    }
+
+    private func postStroke(phaseIndex: Int, strokeIndex: Int) {
+        guard plannedPhases.indices.contains(phaseIndex), let source = eventSource else { return }
+        let phase = plannedPhases[phaseIndex]
+        guard phase.strokes.indices.contains(strokeIndex) else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.postPhase(at: phaseIndex + 1)
+            }
+            return
+        }
+        let stroke = phase.strokes[strokeIndex]
+        if stroke.shift {
+            let shiftDown = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: 56,
+                keyDown: true
+            )
+            shiftDown?.flags = [.maskShift]
+            shiftDown?.post(tap: .cghidEventTap)
+        }
+        let keyDown = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: stroke.keyCode,
+            keyDown: true
+        )
+        if stroke.shift { keyDown?.flags = [.maskShift] }
+        if let producedCharacter = stroke.producedCharacter {
+            let utf16 = Array(String(producedCharacter).utf16)
+            utf16.withUnsafeBufferPointer { buffer in
+                keyDown?.keyboardSetUnicodeString(
+                    stringLength: buffer.count,
+                    unicodeString: buffer.baseAddress
+                )
+            }
+        }
+        keyDown?.post(tap: .cghidEventTap)
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
+            guard let self, let source = self.eventSource else { return }
+            let keyUp = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: stroke.keyCode,
+                keyDown: false
+            )
+            if stroke.shift { keyUp?.flags = [.maskShift] }
+            keyUp?.post(tap: .cghidEventTap)
+            if stroke.shift {
+                CGEvent(
+                    keyboardEventSource: source,
+                    virtualKey: 56,
+                    keyDown: false
+                )?.post(tap: .cghidEventTap)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) { [weak self] in
+                self?.postStroke(phaseIndex: phaseIndex, strokeIndex: strokeIndex + 1)
+            }
         }
     }
 
@@ -201,22 +349,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func selectLayout(language targetLanguage: String) -> Bool {
-        let layouts = LayoutSwitcher.installedLayouts()
-        let source: TISInputSource?
-        if targetLanguage == "en" {
-            source = layouts.first {
-                let id = LayoutSwitcher.sourceID($0)
-                return LayoutSwitcher.languageCode($0).map { String($0.lowercased().prefix(2)) } == "en"
-                    && (id.contains("ABC") || id.contains("US") || id.contains("British"))
-            } ?? layouts.first {
-                LayoutSwitcher.languageCode($0).map { String($0.lowercased().prefix(2)) } == "en"
-            }
-        } else {
-            source = layouts.first {
-                LayoutSwitcher.languageCode($0).map { String($0.lowercased().prefix(2)) } == targetLanguage
-            }
-        }
-        guard let source else { return false }
+        guard let source = inputSource(for: targetLanguage) else { return false }
         TISEnableInputSource(source)
         guard TISSelectInputSource(source) == noErr else { return false }
         let expectedID = LayoutSwitcher.sourceID(source)
@@ -225,6 +358,47 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             usleep(10_000)
         }
         return false
+    }
+
+    private func physicalStrokes(for text: String, language: String) -> [HIDProbeStroke]? {
+        guard let layout = inputSource(for: language) else { return nil }
+        return text.map { character in
+            physicalStroke(for: character, layout: layout)
+        }.reduce(into: Optional<[HIDProbeStroke]>([])) { result, stroke in
+            guard result != nil, let stroke else {
+                result = nil
+                return
+            }
+            result?.append(stroke)
+        }
+    }
+
+    private func physicalStroke(for character: Character, layout: TISInputSource) -> HIDProbeStroke? {
+        if character == " " { return HIDProbeStroke(keyCode: 49, shift: false, producedCharacter: nil) }
+        if character == "\t" { return HIDProbeStroke(keyCode: 48, shift: false, producedCharacter: nil) }
+        if character == "\n" { return HIDProbeStroke(keyCode: 36, shift: false, producedCharacter: nil) }
+        guard let physical = DynamicKeyMapping.physicalKey(for: character, layout: layout) else { return nil }
+        return HIDProbeStroke(
+            keyCode: CGKeyCode(physical.keyCode),
+            shift: physical.shift,
+            producedCharacter: nil
+        )
+    }
+
+    private func inputSource(for targetLanguage: String) -> TISInputSource? {
+        let layouts = LayoutSwitcher.installedLayouts()
+        if targetLanguage == "en" {
+            return layouts.first {
+                let id = LayoutSwitcher.sourceID($0)
+                return LayoutSwitcher.languageCode($0).map { String($0.lowercased().prefix(2)) } == "en"
+                    && (id.contains("ABC") || id.contains("US") || id.contains("British"))
+            } ?? layouts.first {
+                LayoutSwitcher.languageCode($0).map { String($0.lowercased().prefix(2)) } == "en"
+            }
+        }
+        return layouts.first {
+            LayoutSwitcher.languageCode($0).map { String($0.lowercased().prefix(2)) } == targetLanguage
+        }
     }
 }
 

@@ -1,0 +1,38 @@
+{
+  "name": "mixed-layout-corpus-batch",
+  "sourceFile": "mixed_word_layout_stress_test_pairs_5000.tsv",
+  "sourceIDs": [
+    "mixed-layout-00653",
+    "mixed-layout-00926",
+    "mixed-layout-02466"
+  ],
+  "sourceSelections": [
+    "mixed-layout-00653 tokens 1-5",
+    "mixed-layout-00926 tokens 1-5",
+    "mixed-layout-02466 tokens 1-9"
+  ],
+  "phases": [
+    {"sourceLanguage": "en", "text": "login?! "},
+    {"sourceLanguage": "ru", "text": "(куыгде; "},
+    {"sourceLanguage": "en", "text": "{xnj} "},
+    {"sourceLanguage": "ru", "text": "что. "},
+    {"sourceLanguage": "en", "text": "(nf,kbwf} "},
+
+    {"sourceLanguage": "en", "text": "(dyenhb\" "},
+    {"sourceLanguage": "ru", "text": "вудуеу... "},
+    {"sourceLanguage": "en", "text": "ghjdthrf. "},
+    {"sourceLanguage": "ru", "text": "ыгзздшук.  "},
+    {"sourceLanguage": "en", "text": "en-US "},
+
+    {"sourceLanguage": "en", "text": "ghfdbkmysq "},
+    {"sourceLanguage": "en", "text": "\"tckb! "},
+    {"sourceLanguage": "ru", "text": "щдв "},
+    {"sourceLanguage": "en", "text": "test@example.com "},
+    {"sourceLanguage": "en", "text": "njdfh. "},
+    {"sourceLanguage": "en", "text": "ddjl "},
+    {"sourceLanguage": "en", "text": "send "},
+    {"sourceLanguage": "en", "text": "gthtrk.xtybt! "},
+    {"sourceLanguage": "en", "text": "afqk- "}
+  ],
+  "expectedText": "login?! (result; {что} что. (таблица} (внутри\" delete... проверка. supplier.  en-US правильный \"если! old test@example.com товар. ввод send переключение! файл- "
+}

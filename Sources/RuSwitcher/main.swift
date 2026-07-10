@@ -1,6 +1,7 @@
 import AppKit
 
-if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--hid-probe" {
+if CommandLine.arguments.count >= 3,
+   CommandLine.arguments[1] == "--hid-probe" || CommandLine.arguments[1] == "--hid-probe-file" {
     let resultPath: String?
     if let index = CommandLine.arguments.firstIndex(of: "--result"),
        CommandLine.arguments.indices.contains(index + 1) {
@@ -8,7 +9,11 @@ if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--hid-probe" {
     } else {
         resultPath = nil
     }
-    HIDIntegrationProbe.run(scenarioName: CommandLine.arguments[2], resultPath: resultPath)
+    if CommandLine.arguments[1] == "--hid-probe-file" {
+        HIDIntegrationProbe.run(fixturePath: CommandLine.arguments[2], resultPath: resultPath)
+    } else {
+        HIDIntegrationProbe.run(scenarioName: CommandLine.arguments[2], resultPath: resultPath)
+    }
 } else {
     let app = NSApplication.shared
     let delegate = AppDelegate()

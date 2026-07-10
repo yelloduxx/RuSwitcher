@@ -18,6 +18,23 @@ enum DynamicKeyMapping {
         return translateKeycode(keycode, layoutData: layoutData, shift: false)
     }
 
+    /// Finds the real keycode and Shift state that produce a character in a
+    /// concrete installed layout. HID integration tests use this instead of
+    /// Unicode injection so they exercise the same path as physical typing.
+    static func physicalKey(for character: Character, layout: TISInputSource) -> (keyCode: UInt16, shift: Bool)? {
+        guard let layoutData = layoutDataForSource(layout) else { return nil }
+        for shift in [false, true] {
+            for keyCode in allKeycodes where translateKeycode(
+                keyCode,
+                layoutData: layoutData,
+                shift: shift
+            ) == character {
+                return (keyCode, shift)
+            }
+        }
+        return nil
+    }
+
     /// Проверяет, является ли keycode "буквой" в любой из двух раскладок
     static func isLetterKeycode(_ keycode: UInt16) -> Bool {
         let settings = SettingsManager.shared

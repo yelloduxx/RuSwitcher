@@ -98,10 +98,14 @@ public struct ConversionExecutionGate: Equatable, Sendable {
 /// and keeps insertion to exactly one text payload.
 public struct EventReplacementPlan: Equatable, Sendable {
     public let backspaceCount: Int
-    public let insertedText: String
+    public let replacementText: String
+    public let replayText: String
+
+    public var insertedText: String { replacementText + replayText }
 
     public init(transaction: ConversionTransaction, deliveredKeyCount: Int) {
         backspaceCount = max(0, deliveredKeyCount)
-        insertedText = transaction.insertedText
+        replacementText = transaction.replacement
+        replayText = transaction.boundary.replayText
     }
 }

@@ -224,7 +224,7 @@ final class TextConverter {
     func execute(
         _ transaction: ConversionTransaction,
         keyCount: Int,
-        proxy: CGEventTapProxy
+        proxy _: CGEventTapProxy
     ) -> Bool {
         guard keyCount > 0, !isConverting else { return false }
         guard let front = NSWorkspace.shared.frontmostApplication,
@@ -245,10 +245,25 @@ final class TextConverter {
 
         isConverting = true
         recordCommittedTransaction(transaction)
-        for event in events { event.tapPostEvent(proxy) }
+        for event in events {
+            event.postToPid(pid_t(transaction.focus.processID))
+        }
+        for character in plan.replayText where character == " " {
+            postKey(keyCode: KC.space, to: transaction.focus.processID)
+        }
         isConverting = false
-        rslog("transaction: events posted keys=\(plan.backspaceCount) boundary=\(transaction.boundary)")
+        rslog("transaction: targeted events posted count=\(events.count) boundary=\(transaction.boundary)")
         return true
+    }
+
+    private func postKey(keyCode: UInt16, to processID: Int32) {
+        guard let source = makeSource(),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else {
+            return
+        }
+        down.postToPid(pid_t(processID))
+        up.postToPid(pid_t(processID))
     }
 
     nonisolated private func replacementEvents(for plan: EventReplacementPlan) -> [CGEvent]? {
@@ -263,12 +278,12 @@ final class TextConverter {
             events.append(down)
             events.append(up)
         }
-        guard !plan.insertedText.isEmpty,
+        guard !plan.replacementText.isEmpty,
               let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
               let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
             return nil
         }
-        let utf16 = Array(plan.insertedText.utf16)
+        let utf16 = Array(plan.replacementText.utf16)
         utf16.withUnsafeBufferPointer { buffer in
             down.keyboardSetUnicodeString(stringLength: buffer.count, unicodeString: buffer.baseAddress)
         }
