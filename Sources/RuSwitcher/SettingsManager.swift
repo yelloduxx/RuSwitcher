@@ -5,6 +5,12 @@ import ServiceManagement
 /// Централизованное хранение настроек через UserDefaults
 /// Настройки приложения. Свойства thread-safe через UserDefaults.
 final class SettingsManager: @unchecked Sendable {
+    struct LearnedCorrectionsImportResult {
+        let imported: Int
+        let added: Int
+        let total: Int
+    }
+
     static let shared = SettingsManager()
     static let learningResetNotification = Notification.Name("com.ruswitcher.learningReset")
 
@@ -331,6 +337,30 @@ final class SettingsManager: @unchecked Sendable {
         defaults.removeObject(forKey: Keys.adaptiveRules)
         defaults.removeObject(forKey: Keys.personalizationAdapterV4)
         NotificationCenter.default.post(name: Self.learningResetNotification, object: nil)
+    }
+
+    func exportLearnedCorrections() throws -> Data {
+        try LearnedCorrectionsArchive(ruleBook: adaptiveRuleBook).encoded()
+    }
+
+    func importLearnedCorrections(_ data: Data) throws -> LearnedCorrectionsImportResult {
+        let importedBook = try LearnedCorrectionsArchive.decode(data).ruleBook
+        var current = adaptiveRuleBook
+        let previousRules = current.rules
+        current.merge(importedBook)
+        adaptiveRuleBook = current
+        let added = current.rules.filter { rule in
+            !previousRules.contains {
+                $0.original == rule.original
+                    && $0.converted == rule.converted
+                    && $0.appBundleID == rule.appBundleID
+            }
+        }.count
+        return LearnedCorrectionsImportResult(
+            imported: importedBook.rules.count,
+            added: added,
+            total: current.rules.count
+        )
     }
 
     var donateURL: String { "https://boosty.to/ruswitcher" }

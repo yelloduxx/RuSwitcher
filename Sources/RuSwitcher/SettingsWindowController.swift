@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import RuSwitcherCore
+import UniformTypeIdentifiers
 
 /// Окно настроек с вкладками
 @MainActor
@@ -344,8 +345,8 @@ final class SettingsWindowController {
         let item = NSTabViewItem()
         item.label = L10n.settingsTabAdvanced
 
-        let view = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 360))
-        var y: CGFloat = 310
+        let view = NSView(frame: NSRect(x: 0, y: 0, width: 460, height: 600))
+        var y: CGFloat = 550
 
         // Debug log
         let debugCheckbox = NSButton(checkboxWithTitle: L10n.settingsDebugLog, target: self, action: #selector(debugLogChanged))
@@ -414,6 +415,25 @@ final class SettingsWindowController {
         statisticsHint.textColor = .secondaryLabelColor
         view.addSubview(statisticsHint)
         y -= 48
+
+        let exportLearningBtn = NSButton(
+            title: L10n.settingsExportLearning,
+            target: self,
+            action: #selector(exportAdaptiveLearning)
+        )
+        exportLearningBtn.frame = NSRect(x: 20, y: y, width: 200, height: 32)
+        exportLearningBtn.bezelStyle = .rounded
+        view.addSubview(exportLearningBtn)
+
+        let importLearningBtn = NSButton(
+            title: L10n.settingsImportLearning,
+            target: self,
+            action: #selector(importAdaptiveLearning)
+        )
+        importLearningBtn.frame = NSRect(x: 230, y: y, width: 200, height: 32)
+        importLearningBtn.bezelStyle = .rounded
+        view.addSubview(importLearningBtn)
+        y -= 42
 
         let clearLearningBtn = NSButton(
             title: L10n.settingsClearLearning,
@@ -607,6 +627,63 @@ final class SettingsWindowController {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         SettingsManager.shared.clearAdaptiveRules()
         rslog("learn: adaptive rules cleared")
+    }
+
+    @objc private func exportAdaptiveLearning() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = "RuSwitcher-Learned-Corrections-\(Self.exportDateString()).json"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try SettingsManager.shared.exportLearnedCorrections()
+            try data.write(to: url, options: .atomic)
+            let count = SettingsManager.shared.adaptiveRuleBook.rules.count
+            showLearningAlert(
+                title: L10n.settingsExportLearning,
+                detail: String(format: L10n.settingsExportLearningSuccess, count)
+            )
+        } catch {
+            showLearningAlert(title: L10n.settingsLearningFileError, detail: error.localizedDescription)
+        }
+    }
+
+    @objc private func importAdaptiveLearning() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            let result = try SettingsManager.shared.importLearnedCorrections(data)
+            showLearningAlert(
+                title: L10n.settingsImportLearning,
+                detail: String(
+                    format: L10n.settingsImportLearningSuccess,
+                    result.imported,
+                    result.added,
+                    result.total
+                )
+            )
+            rslog("learn: imported=\(result.imported) added=\(result.added) total=\(result.total)")
+        } catch {
+            showLearningAlert(title: L10n.settingsLearningFileError, detail: error.localizedDescription)
+        }
+    }
+
+    private func showLearningAlert(title: String, detail: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.runModal()
+    }
+
+    private static func exportDateString() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: Date())
     }
 
     @objc private func openGitHub() {

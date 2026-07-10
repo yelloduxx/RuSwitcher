@@ -80,10 +80,15 @@ public enum LayoutDecoder {
             return (targetCanonical == "en" && model.isExtendedEnglishWord(word))
                 || (targetCanonical == "ru" && model.isExtendedRussianWord(word))
         }
+        let confirmedCandidates = generated.filter { candidate in
+            isConfirmed(typed, candidate.replacement)
+        }
         // Frequency evidence dominates spelling-only membership, which in turn
         // dominates character-only interpretations of the same physical keys.
         let candidates: [AutoConvertCandidate]
-        if !frequentCandidates.isEmpty {
+        if !confirmedCandidates.isEmpty {
+            candidates = confirmedCandidates
+        } else if !frequentCandidates.isEmpty {
             candidates = frequentCandidates
         } else if !spellingCandidates.isEmpty {
             candidates = spellingCandidates
@@ -189,11 +194,11 @@ public enum LayoutDecoder {
         if always {
             return fixed(baseCandidate, verdict: .switchToConverted, reason: .alwaysConvert, evidence: [.frequent])
         }
-        if adaptiveBias <= -10 {
-            return fixed(baseCandidate, verdict: .keep, reason: .blockedLearned, evidence: [.blockedContext])
-        }
         if confirmed {
             return fixed(baseCandidate, verdict: .switchToConverted, reason: .confirmedByUser, evidence: [.confirmedByUser])
+        }
+        if adaptiveBias <= -10 {
+            return fixed(baseCandidate, verdict: .keep, reason: .blockedLearned, evidence: [.blockedContext])
         }
 
         let sourceKnown = model.wordLogProbability(literal, language: currentCanonical)

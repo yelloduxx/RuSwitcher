@@ -118,6 +118,27 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
         prune()
     }
 
+    /// Merges a portable backup without multiplying counters when the same file is
+    /// imported more than once.
+    public mutating func merge(_ imported: AdaptiveRuleBook) {
+        for importedRule in imported.rules {
+            if let index = rules.firstIndex(where: {
+                $0.original == importedRule.original
+                    && $0.converted == importedRule.converted
+                    && $0.appBundleID == importedRule.appBundleID
+            }) {
+                rules[index].positiveCount = max(rules[index].positiveCount, importedRule.positiveCount)
+                rules[index].negativeCount = max(rules[index].negativeCount, importedRule.negativeCount)
+                rules[index].confirmed = rules[index].confirmed || importedRule.confirmed
+                rules[index].lastUsed = max(rules[index].lastUsed, importedRule.lastUsed)
+            } else {
+                rules.append(importedRule)
+            }
+        }
+        modelVersion = max(modelVersion, imported.modelVersion)
+        prune()
+    }
+
     private mutating func update(original: String, converted: String, appBundleID: String?, positive: Bool) {
         if let index = rules.firstIndex(where: {
             $0.matches(original: original, converted: converted, appBundleID: appBundleID)

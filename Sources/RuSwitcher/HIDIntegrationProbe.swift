@@ -9,6 +9,8 @@ private struct HIDProbeResult: Codable {
     let text: String
     let layoutID: String
     let postEventAccess: Bool
+    let manualText: String?
+    let learningConfirmed: Bool?
 }
 
 private struct HIDProbeScenario {
@@ -45,6 +47,13 @@ private struct HIDProbeScenario {
 
     let name: String
     let phases: [Phase]
+    let manualLearningSource: String?
+
+    init(name: String, phases: [Phase], manualLearningSource: String? = nil) {
+        self.name = name
+        self.phases = phases
+        self.manualLearningSource = manualLearningSource
+    }
 
     static func named(_ name: String) -> HIDProbeScenario? {
         switch name {
@@ -87,6 +96,13 @@ private struct HIDProbeScenario {
             return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [13, 31, 15, 37, 2, 47, 49])])
         case "privet-period-from-english":
             return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [5, 4, 11, 2, 17, 45, 47, 49])])
+        case "manual-learning-double-shift":
+            let source = "qazwsxedc"
+            return HIDProbeScenario(
+                name: name,
+                phases: [Phase(sourceLanguage: "en", typedText: source + " ")],
+                manualLearningSource: source
+            )
         default:
             return nil
         }
@@ -167,6 +183,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     private var didPostKeys = false
     private var eventSource: CGEventSource?
     private var plannedPhases: [HIDProbePlannedPhase] = []
+    private var manualObservedText: String?
 
     init(scenario: HIDProbeScenario, resultPath: String?) {
         self.scenario = scenario
@@ -195,6 +212,10 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         self.window = window
 
         originalLayoutID = LayoutSwitcher.currentLayoutID()
+        if let source = scenario.manualLearningSource {
+            startManualLearningProbe(source: source)
+            return
+        }
         guard let firstPhase = scenario.phases.first,
               selectLayout(language: firstPhase.sourceLanguage) else {
             finish(text: "<layout-unavailable>")
@@ -203,6 +224,51 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             self?.postPhysicalKeys()
+        }
+    }
+
+    private func startManualLearningProbe(source: String) {
+        guard selectLayout(language: "en") else {
+            finish(text: "<layout-unavailable>")
+            return
+        }
+        textView.string = source
+        textView.setSelectedRange(NSRange(location: 0, length: (source as NSString).length))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.postDoubleShift()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self else { return }
+            self.manualObservedText = self.textView.string
+            self.textView.string = ""
+            self.textView.setSelectedRange(NSRange(location: 0, length: 0))
+            self.window?.makeFirstResponder(self.textView)
+            self.postPhysicalKeys()
+        }
+    }
+
+    private func postDoubleShift() {
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            finish(text: "<event-source-unavailable>")
+            return
+        }
+        source.userData = 0x52535445
+        postShiftTap(source: source) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
+                self?.postShiftTap(source: source, completion: {})
+            }
+        }
+    }
+
+    private func postShiftTap(source: CGEventSource, completion: @escaping () -> Void) {
+        let down = CGEvent(keyboardEventSource: source, virtualKey: 56, keyDown: true)
+        down?.flags = [.maskShift]
+        down?.post(tap: .cghidEventTap)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+            let up = CGEvent(keyboardEventSource: source, virtualKey: 56, keyDown: false)
+            up?.flags = []
+            up?.post(tap: .cghidEventTap)
+            completion()
         }
     }
 
@@ -336,7 +402,15 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             scenario: scenario.name,
             text: text,
             layoutID: resultingLayoutID,
-            postEventAccess: CGPreflightPostEventAccess()
+            postEventAccess: CGPreflightPostEventAccess(),
+            manualText: manualObservedText,
+            learningConfirmed: scenario.manualLearningSource.map { source in
+                SettingsManager.shared.isAdaptiveConfirmed(
+                    original: source,
+                    converted: KeyMapping.convert(source),
+                    appBundleID: nil
+                )
+            }
         )
         let data = try! JSONEncoder().encode(result)
         if let resultPath {

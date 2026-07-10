@@ -40,4 +40,72 @@ final class AdaptiveRuleBookTests: XCTestCase {
         XCTAssertLessThan(book.bias(original: "brand", converted: "икфтв", appBundleID: "chat.one"), 0)
         XCTAssertEqual(book.bias(original: "brand", converted: "икфтв", appBundleID: "chat.two"), 0)
     }
+
+    func testLearnedCorrectionsArchiveRoundTrip() throws {
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let book = AdaptiveRuleBook(rules: [
+            AdaptiveRule(
+                original: "qazwsxedc",
+                converted: "йфяцычувс",
+                positiveCount: 3,
+                negativeCount: 1,
+                confirmed: true,
+                lastUsed: date
+            ),
+            AdaptiveRule(
+                original: "brand",
+                converted: "икфтв",
+                appBundleID: "com.example.editor",
+                negativeCount: 2,
+                lastUsed: date
+            ),
+        ])
+
+        let data = try LearnedCorrectionsArchive(ruleBook: book, exportedAt: date).encoded()
+        let decoded = try LearnedCorrectionsArchive.decode(data)
+
+        XCTAssertEqual(decoded.ruleBook, book)
+        XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("qazwsxedc"))
+    }
+
+    func testImportMergeIsIdempotentAndPreservesConfirmation() {
+        let oldDate = Date(timeIntervalSince1970: 1_600_000_000)
+        let newDate = Date(timeIntervalSince1970: 1_700_000_000)
+        var current = AdaptiveRuleBook(rules: [
+            AdaptiveRule(
+                original: "qazwsxedc",
+                converted: "йфяцычувс",
+                positiveCount: 2,
+                negativeCount: 3,
+                lastUsed: oldDate
+            ),
+        ])
+        let imported = AdaptiveRuleBook(rules: [
+            AdaptiveRule(
+                original: "qazwsxedc",
+                converted: "йфяцычувс",
+                positiveCount: 5,
+                negativeCount: 1,
+                confirmed: true,
+                lastUsed: newDate
+            ),
+        ])
+
+        current.merge(imported)
+        current.merge(imported)
+
+        XCTAssertEqual(current.rules.count, 1)
+        XCTAssertEqual(current.rules[0].positiveCount, 5)
+        XCTAssertEqual(current.rules[0].negativeCount, 3)
+        XCTAssertTrue(current.rules[0].confirmed)
+        XCTAssertEqual(current.rules[0].lastUsed, newDate)
+    }
+
+    func testLearnedCorrectionsArchiveRejectsAnotherFormat() {
+        let data = Data(#"{"format":"OtherApp","formatVersion":1,"exportedAt":"2026-07-10T10:00:00Z","modelVersion":3,"rules":[]}"#.utf8)
+
+        XCTAssertThrowsError(try LearnedCorrectionsArchive.decode(data)) { error in
+            XCTAssertEqual(error as? LearnedCorrectionsArchiveError, .invalidFormat)
+        }
+    }
 }

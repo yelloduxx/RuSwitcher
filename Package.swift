@@ -24,6 +24,7 @@ let package = Package(
                 .linkedFramework("Carbon"),
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("ServiceManagement"),
+                .linkedFramework("UniformTypeIdentifiers"),
             ]
         ),
         .executableTarget(

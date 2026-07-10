@@ -14,10 +14,12 @@ installed build changes.
 - Automatic conversion is off by default until the user enables it.
 - Primary repository: `rashn/RuSwitcher`; local branch used for this work:
   `codex/caramba-autoconvert`.
-- As of 2026-07-10, the current version is `4.0.0` build `68`; its functional
+- As of 2026-07-10, the current version is `4.0.0` build `70`; its functional
   baseline commit is `321ee73` (`fix: make continuous input transactions deterministic`).
 - The installed app is `/Applications/RuSwitcher.app`, signed with the reusable
   identity `RuSwitcher Local Code Signing`.
+- Installed build-70 executable SHA-256:
+  `8ba83c8cb2b732e8d48111dd3610f9d6c567c650d255a8231f25d74349015980`.
 
 ## User Requirements
 
@@ -171,9 +173,13 @@ Adaptive learning behavior:
 - Simple switch-only actions do not train.
 - Rules and the V4 personalization adapter persist in `UserDefaults`.
 - Advanced settings can reset learned corrections.
-- Export/import UI is not implemented yet. The intended future format is a
-  versioned JSON containing confirmed pairs, counters, always/never lists and,
-  optionally, adapter weights. It must never contain typed text or context.
+- Advanced settings can export and import learned word rules as a versioned,
+  human-readable JSON archive. Import merges by normalized source, target and
+  app scope; it is idempotent, preserves confirmations and keeps the larger
+  counters/newer timestamp. The archive contains adaptive pairs/counters only,
+  never typed context, general settings, always/never lists or adapter weights.
+- Archive validation is atomic: reject foreign/unsupported formats, files over
+  5 MB, more than 2,000 rules and invalid fields without changing current rules.
 
 ## Models and Provenance
 
@@ -206,7 +212,7 @@ downloads and no network inference.
 - Anonymous statistics are opt-in and contain aggregate outcomes/buckets only,
   never text or app IDs.
 - Debug logging was disabled and the temporary debug log removed after build-68
-  verification.
+  verification; build 70 preserves the user's existing logging preference.
 
 ## Test Corpus and Current Results
 
@@ -239,8 +245,14 @@ bash scripts/run_randomized_layout_suite.sh
 bash scripts/verify_simulator_negative_control.sh
 ```
 
-Last results: 145/145 unit tests, 11,128/11,128 built-in simulator checks,
+Last results: 150/150 unit tests, 11,128/11,128 built-in simulator checks,
 38/38 randomized checks, and a passing intentional negative control.
+
+Learned-rule persistence is tested by `scripts/run_manual_learning_test.sh`: an
+unknown pair stays unchanged before training, selected-text double Shift creates
+a confirmation, the next physical-key input converts, and the conversion still
+works after restarting RuSwitcher. The script restores the complete preferences
+domain afterward, so it does not pollute the user's dictionary.
 
 Real CGEvent tests, without Computer Use:
 

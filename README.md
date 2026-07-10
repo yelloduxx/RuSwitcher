@@ -48,7 +48,7 @@ Russian spelling evidence uses an offline-expanded LibreOffice Hunspell dictiona
 
 The input state is revision-based: Backspace updates the current physical token, while word deletion, navigation, Cut/Paste/Undo, mouse clicks and focus changes invalidate stale state. Before an automatic replacement RuSwitcher performs a read-only Accessibility check when the target supports it, then posts one ordered replacement transaction. This prevents stale selection, duplicate insertion and deletion at the wrong caret.
 
-Undoing an automatic correction or immediately editing it teaches RuSwitcher locally. V4 stores only a small 192-value personalization adapter and counters, never the typed context; manually converted pairs remain explicit local confirmations. Learned state stays on this Mac and can be reset in **Settings → Advanced**. The explicit **Always convert** and **Never convert** lists remain hard overrides.
+Undoing an automatic correction or immediately editing it teaches RuSwitcher locally. V4 stores only a small 192-value personalization adapter and counters, never the typed context; manually converted pairs remain explicit local confirmations. Learned word pairs and their counters can be exported to a versioned JSON backup and merged back through **Settings → Advanced**. Reimporting the same file is safe and does not duplicate rules. Learned state can also be reset there. The explicit **Always convert** and **Never convert** lists remain hard overrides.
 
 **Three exception lists** let you tune it (Settings → Auto-conversion):
 - **Apps** — where auto-conversion stays off (terminals, IDEs and password managers are pre-filled; password managers can't be removed).
@@ -151,7 +151,7 @@ Access via the menu bar icon → **Settings** (⌘,).
 - **General** — conversion trigger (single key or combo), per-app layout memory, launch at login, interface language, layout pair.
 - **Auto-conversion** — automatic conversion, **Remote Desktop mode (beta)**, and the three exception lists (apps, never-convert, always-convert).
 - **About** — version, donate, contact, check updates.
-- **Advanced** — Smart Engine/model version, learned-correction reset, debug logging and log management.
+- **Advanced** — Smart Engine/model version, learned-word export/import/reset, debug logging and log management.
 
 The menu-bar menu also has quick toggles for Automatic conversion, Layout sound, Flag at cursor and Remote Desktop mode.
 

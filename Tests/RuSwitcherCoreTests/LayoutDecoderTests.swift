@@ -11,7 +11,8 @@ final class LayoutDecoderTests: XCTestCase {
         context: [String] = [],
         belief: LanguageBelief = .neutral,
         integrity: EditorIntegrity = .clean,
-        confirmed: Bool = false
+        confirmed: Bool = false,
+        adaptiveBias: Double = 0
     ) -> LayoutDecoderEvaluation {
         LayoutDecoder.evaluate(
             typed: typed,
@@ -23,6 +24,7 @@ final class LayoutDecoderTests: XCTestCase {
             languageBelief: belief,
             integrity: integrity,
             policy: .empty,
+            adaptiveBias: { _, _ in adaptiveBias },
             isConfirmed: { _, _ in confirmed },
             model: model
         )
@@ -402,6 +404,33 @@ final class LayoutDecoderTests: XCTestCase {
 
     func testConfirmedPairOverridesLexicalMiss() {
         let result = evaluate("cegthcgbyf", confirmed: true)
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+        XCTAssertEqual(result.decision.reason, .confirmedByUser)
+    }
+
+    func testConfirmedPairOverridesPriorNegativeBias() {
+        let result = evaluate("cegthcgbyf", confirmed: true, adaptiveBias: -20)
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+        XCTAssertEqual(result.decision.reason, .confirmedByUser)
+    }
+
+    func testConfirmedCandidateIsNotFilteredByFrequentAlternative() {
+        let typed = "yt,"
+        let converted = KeyMapping.convert(typed)
+        let confirmedReplacement = converted
+        let result = LayoutDecoder.evaluate(
+            typed: typed,
+            converted: converted,
+            currentLanguage: "en",
+            targetLanguage: "ru",
+            capsLock: false,
+            contextWords: [],
+            languageBelief: .neutral,
+            policy: .empty,
+            isConfirmed: { _, replacement in replacement == confirmedReplacement },
+            model: model
+        )
+        XCTAssertEqual(result.decision.candidate.replacement, confirmedReplacement)
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
         XCTAssertEqual(result.decision.reason, .confirmedByUser)
     }

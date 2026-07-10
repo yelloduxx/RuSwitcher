@@ -66,6 +66,11 @@ enum L10n {
     static var settingsAddWordPrompt: String { s("settings.exceptions.addWordPrompt") }
     static var settingsClearLearning: String { s("settings.learning.clear") }
     static var settingsClearLearningConfirm: String { s("settings.learning.clearConfirm") }
+    static var settingsExportLearning: String { s("settings.learning.export") }
+    static var settingsImportLearning: String { s("settings.learning.import") }
+    static var settingsExportLearningSuccess: String { s("settings.learning.exportSuccess") }
+    static var settingsImportLearningSuccess: String { s("settings.learning.importSuccess") }
+    static var settingsLearningFileError: String { s("settings.learning.fileError") }
     static var settingsSmartEngine: String { s("settings.smartEngine") }
     static var settingsAnonymousStatistics: String { s("settings.statistics.anonymous") }
     static var settingsAnonymousStatisticsHint: String { s("settings.statistics.anonymousHint") }
@@ -202,6 +207,11 @@ enum L10n {
             "settings.exceptions.addWordPrompt": "Enter a word:",
             "settings.learning.clear": "Reset learned corrections",
             "settings.learning.clearConfirm": "Reset all corrections learned from manual fixes and undo actions?",
+            "settings.learning.export": "Export learned words…",
+            "settings.learning.import": "Import learned words…",
+            "settings.learning.exportSuccess": "Exported %d learned rules.",
+            "settings.learning.importSuccess": "Imported %d rules; %d new. Total: %d.",
+            "settings.learning.fileError": "Learned words file error",
             "settings.smartEngine": "Smart Engine %@ · language model %@",
             "settings.statistics.anonymous": "Share anonymous quality statistics",
             "settings.statistics.anonymousHint": "Off by default. Sends only aggregate outcomes and length buckets; never words, nearby text, or app names.",
@@ -301,6 +311,11 @@ enum L10n {
             "settings.exceptions.addWordPrompt": "Введите слово:",
             "settings.learning.clear": "Сбросить выученные исправления",
             "settings.learning.clearConfirm": "Сбросить все правила, выученные по ручным исправлениям и отменам?",
+            "settings.learning.export": "Экспорт выученных слов…",
+            "settings.learning.import": "Импорт выученных слов…",
+            "settings.learning.exportSuccess": "Экспортировано правил: %d.",
+            "settings.learning.importSuccess": "Импортировано: %d; новых: %d. Всего: %d.",
+            "settings.learning.fileError": "Ошибка файла выученных слов",
             "settings.smartEngine": "Smart Engine %@ · языковая модель %@",
             "settings.statistics.anonymous": "Отправлять анонимную статистику качества",
             "settings.statistics.anonymousHint": "По умолчанию выключено. Только итоги и диапазоны длины; без слов, соседнего текста и названий приложений.",
