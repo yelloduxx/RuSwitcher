@@ -37,6 +37,24 @@ public enum AutoConvertCandidateGenerator {
                 )
             )
         }
+
+        // In the reverse RU→EN direction a Cyrillic letter may live on an
+        // English punctuation key: гыуб → use,. Treat punctuation produced only
+        // after conversion as a suffix candidate too.
+        for suffixLength in 1...maxSuffix {
+            let convertedSuffix = convertedChars.suffix(suffixLength)
+            guard convertedSuffix.allSatisfy(isTrailingPunctuation) else { continue }
+            let convertedWordChars = convertedChars.dropLast(suffixLength)
+            guard !convertedWordChars.isEmpty else { continue }
+            let candidate = AutoConvertCandidate(
+                typedRaw: typed,
+                convertedRaw: converted,
+                convertedWord: String(convertedWordChars),
+                suffix: String(convertedSuffix),
+                kind: .trailingPunctuation
+            )
+            if !result.contains(candidate) { result.append(candidate) }
+        }
         return result
     }
 

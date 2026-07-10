@@ -198,9 +198,14 @@ public enum LayoutDecoder {
         }
         if currentCanonical == "ru", targetCanonical == "en",
            sourceKnown == nil, targetKnown == nil {
-            // An unknown Cyrillic word must never flip to unknown Latin text on
-            // character/script plausibility alone.
-            return fixed(baseCandidate, verdict: .keep, reason: .blockedContext, evidence: [.blockedContext])
+            // Unknown English words can still be clear layout mistakes (афиду →
+            // fable). Permit them only when the character model has a strong
+            // advantage and the recent language state is not distinctly Russian.
+            let characterAdvantage = model.characterLogProbability(converted, language: targetCanonical)
+                - model.characterLogProbability(literal, language: currentCanonical)
+            if converted.count < 5 || characterAdvantage < 2.2 || currentProbability >= 0.62 {
+                return fixed(baseCandidate, verdict: .keep, reason: .blockedContext, evidence: [.blockedContext])
+            }
         }
 
         let margin = convertedScore - literalScore

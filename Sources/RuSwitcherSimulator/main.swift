@@ -325,8 +325,35 @@ private func builtInFixtures(model: LanguageModelStore, limit: Int) -> [Fixture]
         Fixture(id: "privetulki", typed: "ghbdtnekmrb", currentLanguage: "en", targetLanguage: "ru", context: ["это"], expected: .switchLayout, expectedReplacement: "приветульки"),
         Fixture(id: "superback", typed: "cegthcgbyf", currentLanguage: "en", targetLanguage: "ru", context: ["это"], expected: .switchLayout, expectedReplacement: "суперспина"),
         Fixture(id: "hello", typed: "руддщ", currentLanguage: "ru", targetLanguage: "en", context: ["this"], expected: .switchLayout, expectedReplacement: "hello"),
+        Fixture(id: "reverse-comma", typed: "гыуб", currentLanguage: "ru", targetLanguage: "en", context: ["this"], expected: .switchLayout, expectedReplacement: "use,"),
+        Fixture(id: "unknown-english", typed: "афиду", currentLanguage: "ru", targetLanguage: "en", context: ["this"], expected: .switchLayout, expectedReplacement: "fable"),
     ]
     var generated = regressions
+    var generatedUnknownEnglish = 0
+    for stem in model.trainingWords(language: "en", limit: min(limit, 1_000)) {
+        for suffix in ["able", "less", "ish", "like"] {
+            let intended = stem + suffix
+            let mistyped = KeyMapping.convert(intended)
+            let advantage = model.characterLogProbability(intended, language: "en")
+                - model.characterLogProbability(mistyped, language: "ru")
+            guard intended.count >= 5,
+                  model.wordLogProbability(intended, language: "en") == nil,
+                  model.wordLogProbability(mistyped, language: "ru") == nil,
+                  advantage >= 2.2 else { continue }
+            generated.append(Fixture(
+                id: "generated-unknown-en-\(generatedUnknownEnglish)",
+                typed: mistyped,
+                currentLanguage: "ru",
+                targetLanguage: "en",
+                context: ["this", "text"],
+                expected: .switchLayout,
+                expectedReplacement: intended
+            ))
+            generatedUnknownEnglish += 1
+            if generatedUnknownEnglish == 250 { break }
+        }
+        if generatedUnknownEnglish == 250 { break }
+    }
     for (current, target, context) in [("en", "ru", ["это", "текст"]), ("ru", "en", ["this", "text"])] {
         for word in model.trainingWords(language: current, limit: limit) {
             generated.append(Fixture(

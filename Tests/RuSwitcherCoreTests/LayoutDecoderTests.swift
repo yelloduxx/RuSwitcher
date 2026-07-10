@@ -123,6 +123,32 @@ final class LayoutDecoderTests: XCTestCase {
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
     }
 
+    func testReverseConversionKeepsProducedEnglishComma() {
+        let result = evaluate("гыуб", current: "ru", target: "en")
+        XCTAssertEqual(result.decision.candidate.replacement, "use,")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testPlausibleUnknownEnglishWordConvertsFromRussianLayout() {
+        let result = evaluate("афиду", current: "ru", target: "en")
+        XCTAssertEqual(result.decision.candidate.replacement, "fable")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testPlausibleUnknownEnglishWordStaysBlockedInStrongRussianContext() {
+        var russianBelief = LanguageBelief.neutral
+        russianBelief.observe(language: "ru")
+        russianBelief.observe(language: "ru")
+        let result = evaluate(
+            "афиду",
+            current: "ru",
+            target: "en",
+            context: ["это", "текст"],
+            belief: russianBelief
+        )
+        XCTAssertEqual(result.decision.verdict, .keep)
+    }
+
     func testKnownEnglishWordCanStartAfterRussianContext() {
         var russianBelief = LanguageBelief.neutral
         russianBelief.observe(language: "ru")

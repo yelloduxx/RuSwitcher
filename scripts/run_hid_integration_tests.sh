@@ -21,6 +21,8 @@ expected = {
     "revolution": "революция ",
     "privetulki": "приветульки ",
     "hello-from-russian": "hello ",
+    "use-comma-from-russian": "use, ",
+    "fable-from-russian": "fable ",
 }
 
 failed = False

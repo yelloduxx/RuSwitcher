@@ -43,6 +43,10 @@ private struct HIDProbeScenario {
             return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [5, 4, 11, 2, 17, 45, 14, 40, 46, 15, 11, 49])])
         case "hello-from-russian":
             return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [4, 14, 37, 37, 31, 49])])
+        case "use-comma-from-russian":
+            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [32, 1, 14, 43, 49])])
+        case "fable-from-russian":
+            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [3, 0, 11, 37, 14, 49])])
         default:
             return nil
         }

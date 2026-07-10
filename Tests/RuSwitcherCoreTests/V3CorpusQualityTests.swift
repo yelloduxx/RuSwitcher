@@ -117,4 +117,36 @@ final class V3CorpusQualityTests: XCTestCase {
         }.count
         XCTAssertGreaterThanOrEqual(Double(hits) / Double(intended.count), 0.9)
     }
+
+    func testGeneratedUnknownEnglishFormsGeneralizeWithoutWordOverrides() {
+        var eligible = 0
+        var hits = 0
+        for stem in model.trainingWords(language: "en", limit: 1_000) {
+            for suffix in ["able", "less", "ish", "like"] {
+                let intended = stem + suffix
+                let mistyped = KeyMapping.convert(intended)
+                let advantage = model.characterLogProbability(intended, language: "en")
+                    - model.characterLogProbability(mistyped, language: "ru")
+                guard intended.count >= 5,
+                      model.wordLogProbability(intended, language: "en") == nil,
+                      model.wordLogProbability(mistyped, language: "ru") == nil,
+                      advantage >= 2.2 else { continue }
+                eligible += 1
+                let result = evaluate(
+                    mistyped,
+                    current: "ru",
+                    target: "en",
+                    context: ["this", "text"],
+                    beliefLanguage: "en"
+                )
+                if result.decision.verdict == .switchToConverted,
+                   result.decision.candidate.replacement == intended {
+                    hits += 1
+                }
+            }
+        }
+
+        XCTAssertGreaterThanOrEqual(eligible, 100)
+        XCTAssertGreaterThanOrEqual(Double(hits) / Double(eligible), 0.98)
+    }
 }

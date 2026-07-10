@@ -2,6 +2,13 @@ import XCTest
 @testable import RuSwitcherCore
 
 final class AutoConvertCandidateGeneratorTests: XCTestCase {
+    func testReverseConversionRecognizesProducedPunctuation() {
+        let candidates = AutoConvertCandidateGenerator.candidates(typed: "гыуб", converted: "use,")
+        XCTAssertTrue(candidates.contains {
+            $0.convertedWord == "use" && $0.suffix == "," && $0.replacement == "use,"
+        })
+    }
+
     func testBestCandidateKeepsLayoutLetterTailForLongFrequentWord() {
         let converted = KeyMapping.convert("ghbdtncnde.")
 
