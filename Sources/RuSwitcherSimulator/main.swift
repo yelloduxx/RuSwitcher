@@ -28,17 +28,67 @@ private struct Result: Codable, Sendable {
     let reason: String
 }
 
+private struct PhraseStep: Codable, Sendable {
+    let typed: String
+    let manualLanguage: String?
+    let separator: String
+    let expected: ExpectedVerdict
+    let expectedResolved: String
+
+    init(
+        _ typed: String,
+        manualLanguage: String? = nil,
+        separator: String = " ",
+        expected: ExpectedVerdict = .keep,
+        expectedResolved: String? = nil
+    ) {
+        self.typed = typed
+        self.manualLanguage = manualLanguage
+        self.separator = separator
+        self.expected = expected
+        self.expectedResolved = expectedResolved ?? typed
+    }
+}
+
+private struct PhraseFixture: Codable, Sendable {
+    let id: String
+    let initialLanguage: String
+    let steps: [PhraseStep]
+    let expectedText: String
+}
+
+private struct PhraseStepResult: Codable, Sendable {
+    let typed: String
+    let sourceLanguage: String
+    let verdict: String
+    let resolved: String
+    let passed: Bool
+}
+
+private struct PhraseResult: Codable, Sendable {
+    let id: String
+    let passed: Bool
+    let expectedText: String
+    let actualText: String
+    let steps: [PhraseStepResult]
+}
+
 private struct Summary: Codable {
     let total: Int
     let passed: Int
     let failed: Int
+    let phraseTotal: Int
+    let phrasePassed: Int
     let elapsedMilliseconds: Int
     let workers: Int
     let failures: [Result]
+    let phraseFailures: [PhraseResult]
+    let phraseSamples: [PhraseResult]
 }
 
 private struct Options {
     var inputPath: String?
+    var phraseInputPath: String?
     var outputPath: String?
     var learnOutputPath: String?
     var jobs = max(1, ProcessInfo.processInfo.activeProcessorCount)
@@ -66,6 +116,27 @@ private final class ResultStore: @unchecked Sendable {
     }
 }
 
+private final class PhraseResultStore: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [PhraseResult?]
+
+    init(count: Int) {
+        values = Array(repeating: nil, count: count)
+    }
+
+    func set(_ result: PhraseResult, at index: Int) {
+        lock.lock()
+        values[index] = result
+        lock.unlock()
+    }
+
+    func completed() -> [PhraseResult] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values.compactMap { $0 }
+    }
+}
+
 private func parseOptions() -> Options {
     var options = Options()
     var index = 1
@@ -81,12 +152,13 @@ private func parseOptions() -> Options {
         }
         switch argument {
         case "--input": options.inputPath = value()
+        case "--phrase-input": options.phraseInputPath = value()
         case "--output": options.outputPath = value()
         case "--learn-output": options.learnOutputPath = value()
         case "--jobs": options.jobs = max(1, Int(value()) ?? 1)
         case "--limit": options.generatedLimit = max(1, Int(value()) ?? 2_500)
         case "--help":
-            print("RuSwitcherSimulator [--input fixtures.jsonl] [--output report.json] [--learn-output rules.json] [--jobs N] [--limit N]")
+            print("RuSwitcherSimulator [--input words.jsonl] [--phrase-input phrases.jsonl] [--output report.json] [--learn-output rules.json] [--jobs N] [--limit N]")
             exit(0)
         default:
             FileHandle.standardError.write(Data("unknown argument: \(argument)\n".utf8))
@@ -95,6 +167,125 @@ private func parseOptions() -> Options {
         index += 1
     }
     return options
+}
+
+private func loadPhraseJSONL(_ path: String) throws -> [PhraseFixture] {
+    let text = try String(contentsOfFile: path, encoding: .utf8)
+    return try text.split(whereSeparator: \.isNewline).enumerated().map { line, value in
+        do {
+            return try JSONDecoder().decode(PhraseFixture.self, from: Data(value.utf8))
+        } catch {
+            throw NSError(
+                domain: "RuSwitcherSimulator",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "invalid phrase JSONL at line \(line + 1): \(error)"]
+            )
+        }
+    }
+}
+
+private func builtInPhraseFixtures(model: LanguageModelStore, limit: Int) -> [PhraseFixture] {
+    var fixtures = [
+        PhraseFixture(
+            id: "ru-en-wrong-ru",
+            initialLanguage: "ru",
+            steps: [
+                PhraseStep("это"),
+                PhraseStep("обычный"),
+                PhraseStep("use,", manualLanguage: "en"),
+                PhraseStep("ghbdtn", expected: .switchLayout, expectedResolved: "привет"),
+                PhraseStep("и"),
+                PhraseStep("текст", separator: ""),
+            ],
+            expectedText: "это обычный use, привет и текст"
+        ),
+        PhraseFixture(
+            id: "en-ru-wrong-en",
+            initialLanguage: "en",
+            steps: [
+                PhraseStep("this"),
+                PhraseStep("feature"),
+                PhraseStep("привет", manualLanguage: "ru"),
+                PhraseStep("руддщ", expected: .switchLayout, expectedResolved: "hello"),
+                PhraseStep("world", separator: ""),
+            ],
+            expectedText: "this feature привет hello world"
+        ),
+        PhraseFixture(
+            id: "protected-plan-b",
+            initialLanguage: "ru",
+            steps: [
+                PhraseStep("сегодня"),
+                PhraseStep("plan", manualLanguage: "en"),
+                PhraseStep("B"),
+                PhraseStep("готов", manualLanguage: "ru", separator: ""),
+            ],
+            expectedText: "сегодня plan B готов"
+        ),
+        PhraseFixture(
+            id: "punctuation-and-language-return",
+            initialLanguage: "en",
+            steps: [
+                PhraseStep("ghbdtn,", expected: .switchLayout, expectedResolved: "привет,"),
+                PhraseStep("мир"),
+                PhraseStep("use,", manualLanguage: "en", separator: ""),
+            ],
+            expectedText: "привет, мир use,"
+        ),
+        PhraseFixture(
+            id: "unknown-compound-in-sentence",
+            initialLanguage: "ru",
+            steps: [
+                PhraseStep("новая"),
+                PhraseStep("cegthcgbyf", manualLanguage: "en", expected: .switchLayout, expectedResolved: "суперспина"),
+                PhraseStep("работает", separator: ""),
+            ],
+            expectedText: "новая суперспина работает"
+        ),
+        PhraseFixture(
+            id: "long-layout-letter-and-english",
+            initialLanguage: "en",
+            steps: [
+                PhraseStep("htdjk.wbz", expected: .switchLayout, expectedResolved: "революция"),
+                PhraseStep("началась"),
+                PhraseStep("online", manualLanguage: "en", separator: ""),
+            ],
+            expectedText: "революция началась online"
+        ),
+    ]
+
+    let generatedPerDirection = min(500, max(1, limit / 5))
+    let configurations: [(source: String, target: String, targetContext: [String], sourceContext: [String])] = [
+        ("en", "ru", ["это", "новый"], ["this", "new"]),
+        ("ru", "en", ["this", "new"], ["это", "новый"]),
+    ]
+    for configuration in configurations {
+        var added = 0
+        for intended in model.trainingWords(language: configuration.target, limit: limit) where intended.count >= 2 {
+            let mistyped = KeyMapping.convert(intended)
+            guard SmartTokenizer.languageHint(for: mistyped) == configuration.source,
+                  model.wordLogProbability(
+                    SmartTokenizer.lexicalCore(of: mistyped),
+                    language: configuration.source
+                  ) == nil else { continue }
+            let steps = [
+                PhraseStep(configuration.targetContext[0]),
+                PhraseStep(configuration.targetContext[1]),
+                PhraseStep(configuration.sourceContext[0], manualLanguage: configuration.source),
+                PhraseStep(configuration.sourceContext[1]),
+                PhraseStep(mistyped, separator: "", expected: .switchLayout, expectedResolved: intended),
+            ]
+            fixtures.append(PhraseFixture(
+                id: "generated-\(configuration.target)-\(added)",
+                initialLanguage: configuration.target,
+                steps: steps,
+                expectedText: (configuration.targetContext + configuration.sourceContext + [intended]).joined(separator: " ")
+            ))
+            added += 1
+            if added == generatedPerDirection { break }
+        }
+    }
+    return fixtures
 }
 
 private func loadJSONL(_ path: String) throws -> [Fixture] {
@@ -195,6 +386,58 @@ private func evaluate(_ fixture: Fixture, model: LanguageModelStore) -> Result {
     )
 }
 
+private func evaluatePhrase(_ fixture: PhraseFixture, model: LanguageModelStore) -> PhraseResult {
+    var currentLanguage = fixture.initialLanguage
+    var context: [String] = []
+    var belief = LanguageBelief.neutral
+    var output = ""
+    var stepResults: [PhraseStepResult] = []
+
+    for step in fixture.steps {
+        if let manualLanguage = step.manualLanguage { currentLanguage = manualLanguage }
+        let targetLanguage = currentLanguage == "ru" ? "en" : "ru"
+        let evaluation = LayoutDecoder.evaluate(
+            typed: step.typed,
+            converted: KeyMapping.convert(step.typed),
+            currentLanguage: currentLanguage,
+            targetLanguage: targetLanguage,
+            capsLock: step.typed == step.typed.uppercased() && step.typed != step.typed.lowercased(),
+            contextWords: context,
+            languageBelief: belief,
+            policy: .empty,
+            model: model
+        )
+        let switched = evaluation.decision.verdict == .switchToConverted
+        let resolved = switched ? evaluation.decision.candidate.replacement : step.typed
+        let resolvedLanguage = switched ? targetLanguage : currentLanguage
+        let expectedSwitch = step.expected == .switchLayout
+        let passed = switched == expectedSwitch && resolved == step.expectedResolved
+        stepResults.append(PhraseStepResult(
+            typed: step.typed,
+            sourceLanguage: currentLanguage,
+            verdict: String(describing: evaluation.decision.verdict),
+            resolved: resolved,
+            passed: passed
+        ))
+        output += resolved + step.separator
+        let contextToken = SmartTokenizer.lexicalCore(of: resolved)
+        if !contextToken.isEmpty {
+            context.append(contextToken)
+            if context.count > 5 { context.removeFirst(context.count - 5) }
+            belief.observe(language: resolvedLanguage, weight: switched ? 1.4 : 1.0)
+        }
+        if switched { currentLanguage = targetLanguage }
+    }
+
+    return PhraseResult(
+        id: fixture.id,
+        passed: output == fixture.expectedText && stepResults.allSatisfy(\.passed),
+        expectedText: fixture.expectedText,
+        actualText: output,
+        steps: stepResults
+    )
+}
+
 private func run() -> Never {
     let options = parseOptions()
     guard let model = LanguageModelStore.bundled else {
@@ -203,8 +446,11 @@ private func run() -> Never {
     }
 
     let fixtures: [Fixture]
+    let phraseFixtures: [PhraseFixture]
     do {
         fixtures = try options.inputPath.map(loadJSONL) ?? builtInFixtures(model: model, limit: options.generatedLimit)
+        phraseFixtures = try options.phraseInputPath.map(loadPhraseJSONL)
+            ?? builtInPhraseFixtures(model: model, limit: options.generatedLimit)
     } catch {
         FileHandle.standardError.write(Data("\(error.localizedDescription)\n".utf8))
         exit(65)
@@ -212,6 +458,7 @@ private func run() -> Never {
 
     let started = Date()
     let results = ResultStore(count: fixtures.count)
+    let phraseResults = PhraseResultStore(count: phraseFixtures.count)
     let queue = DispatchQueue(label: "com.ruswitcher.simulator", attributes: .concurrent)
     let group = DispatchGroup()
     let semaphore = DispatchSemaphore(value: options.jobs)
@@ -224,17 +471,32 @@ private func run() -> Never {
             group.leave()
         }
     }
+    for index in phraseFixtures.indices {
+        semaphore.wait()
+        group.enter()
+        queue.async {
+            phraseResults.set(evaluatePhrase(phraseFixtures[index], model: model), at: index)
+            semaphore.signal()
+            group.leave()
+        }
+    }
     group.wait()
 
     let completed = results.completed()
     let failures = completed.filter { !$0.passed }
+    let completedPhrases = phraseResults.completed()
+    let phraseFailures = completedPhrases.filter { !$0.passed }
     let summary = Summary(
-        total: completed.count,
-        passed: completed.count - failures.count,
-        failed: failures.count,
+        total: completed.count + completedPhrases.count,
+        passed: completed.count - failures.count + completedPhrases.count - phraseFailures.count,
+        failed: failures.count + phraseFailures.count,
+        phraseTotal: completedPhrases.count,
+        phrasePassed: completedPhrases.count - phraseFailures.count,
         elapsedMilliseconds: Int(Date().timeIntervalSince(started) * 1_000),
         workers: options.jobs,
-        failures: Array(failures.prefix(100))
+        failures: Array(failures.prefix(100)),
+        phraseFailures: phraseFailures,
+        phraseSamples: Array(completedPhrases.prefix(6))
     )
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -258,7 +520,7 @@ private func run() -> Never {
         try! data.write(to: URL(fileURLWithPath: learnOutputPath), options: .atomic)
     }
 
-    exit(failures.isEmpty ? 0 : 1)
+    exit(failures.isEmpty && phraseFailures.isEmpty ? 0 : 1)
 }
 
 run()
