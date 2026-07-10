@@ -322,6 +322,29 @@ private func builtInPhraseFixtures(model: LanguageModelStore, limit: Int) -> [Ph
             ],
             expectedText: "это here"
         ),
+        PhraseFixture(
+            id: "extended-english-inside-russian",
+            initialLanguage: "ru",
+            steps: [
+                PhraseStep("обсудим"),
+                PhraseStep("codex", manualLanguage: "en"),
+                PhraseStep("и", manualLanguage: "ru"),
+                PhraseStep("cyst", manualLanguage: "en", separator: ""),
+            ],
+            expectedText: "обсудим codex и cyst"
+        ),
+        PhraseFixture(
+            id: "unknown-russian-words-in-sentence",
+            initialLanguage: "ru",
+            steps: [
+                PhraseStep("нужно"),
+                PhraseStep("ghjnthtnm", manualLanguage: "en", expected: .switchLayout, expectedResolved: "протереть"),
+                PhraseStep("и"),
+                PhraseStep("pflybwf", manualLanguage: "en", expected: .switchLayout, expectedResolved: "задница"),
+                PhraseStep("gblh", manualLanguage: "en", separator: "", expected: .switchLayout, expectedResolved: "пидр"),
+            ],
+            expectedText: "нужно протереть и задница пидр"
+        ),
     ]
 
     let generatedPerDirection = min(500, max(1, limit / 5))
@@ -333,11 +356,15 @@ private func builtInPhraseFixtures(model: LanguageModelStore, limit: Int) -> [Ph
         var added = 0
         for intended in model.trainingWords(language: configuration.target, limit: limit) where intended.count >= 2 {
             let mistyped = KeyMapping.convert(intended)
+            let sourceCore = SmartTokenizer.lexicalCore(of: mistyped)
             guard SmartTokenizer.languageHint(for: mistyped) == configuration.source,
                   model.wordLogProbability(
-                    SmartTokenizer.lexicalCore(of: mistyped),
+                    sourceCore,
                     language: configuration.source
-                  ) == nil else { continue }
+                  ) == nil,
+                  configuration.source != "en"
+                    || EnglishSourceClassifier.classify(sourceCore, model: model) == .unlikely
+                  else { continue }
             let steps = [
                 PhraseStep(configuration.targetContext[0]),
                 PhraseStep(configuration.targetContext[1]),
@@ -395,6 +422,12 @@ private func builtInFixtures(model: LanguageModelStore, limit: Int) -> [Fixture]
             expectedReplacement: nil
         ),
         Fixture(id: "keep-ambiguous-here", typed: "here", currentLanguage: "en", targetLanguage: "ru", context: ["это"], expected: .keep, expectedReplacement: nil),
+        Fixture(id: "extended-en-cyst", typed: "cyst", currentLanguage: "en", targetLanguage: "ru", context: ["это", "текст"], expected: .keep, expectedReplacement: nil),
+        Fixture(id: "extended-en-juju", typed: "juju", currentLanguage: "en", targetLanguage: "ru", context: ["это", "текст"], expected: .keep, expectedReplacement: nil),
+        Fixture(id: "extended-en-codex", typed: "codex", currentLanguage: "en", targetLanguage: "ru", context: ["это", "текст"], expected: .keep, expectedReplacement: nil),
+        Fixture(id: "oov-ru-wipe", typed: "ghjnthtnm", currentLanguage: "en", targetLanguage: "ru", context: ["нужно"], expected: .switchLayout, expectedReplacement: "протереть"),
+        Fixture(id: "oov-ru-butt", typed: "pflybwf", currentLanguage: "en", targetLanguage: "ru", context: ["болит"], expected: .switchLayout, expectedReplacement: "задница"),
+        Fixture(id: "oov-ru-slur", typed: "gblh", currentLanguage: "en", targetLanguage: "ru", context: ["он"], expected: .switchLayout, expectedReplacement: "пидр"),
     ]
     var generated = regressions
     var generatedUnknownEnglish = 0
@@ -437,13 +470,17 @@ private func builtInFixtures(model: LanguageModelStore, limit: Int) -> [Fixture]
         for intended in model.trainingWords(language: target, limit: limit) where intended.count >= 2 {
             let mistyped = KeyMapping.convert(intended)
             guard SmartTokenizer.languageHint(for: mistyped) == current else { continue }
+            let sourceCore = SmartTokenizer.lexicalCore(of: mistyped)
             // Two real words on the same physical keys are intrinsically ambiguous.
             // Production deliberately keeps the literal form unless the user has
             // explicitly taught that pair.
             guard model.wordLogProbability(
-                SmartTokenizer.lexicalCore(of: mistyped),
+                sourceCore,
                 language: current
-            ) == nil else { continue }
+            ) == nil,
+                current != "en"
+                    || EnglishSourceClassifier.classify(sourceCore, model: model) == .unlikely
+            else { continue }
             generated.append(Fixture(
                 id: "wrong-\(current)-\(generated.count)",
                 typed: mistyped,

@@ -17,6 +17,18 @@ The application ships only the derived frequency tables required for local
 language scoring. It does not contain source texts and never downloads model
 data at runtime.
 
+## English Speller Database / SCOWL
+
+The source-only English plausibility lexicon in `language-model-v1.bin` is
+derived from the English Speller Database (formerly SCOWL), release
+`rel-2026.02.25`, commit `7e99edab8e32f9f9ea2b15f249ca8d4d67237410`.
+RuSwitcher uses the level-60 American/British word list only to protect valid
+English source words; it is not treated as target-word frequency evidence.
+
+- Source: https://github.com/en-wl/wordlist
+- Copyright: 2000-2026 Kevin Atkinson
+- Full notice: `SCOWL_COPYRIGHT.txt`
+
 `LayoutRerankerV4.mlmodelc` is a derived model trained from those aggregate
 word and phrase frequencies plus synthetic keyboard-layout corruptions. The
 checked bootstrap artifact does not contain Wikipedia, Tatoeba, user text, or

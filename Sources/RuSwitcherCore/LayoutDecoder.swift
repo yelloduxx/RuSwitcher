@@ -15,6 +15,10 @@ public enum DecoderEvidence: Equatable, Sendable {
     case punctuationPath
     case personalized
     case abstained
+    case englishSourceFrequent
+    case englishSourceDictionary
+    case englishSourcePlausible
+    case englishSourceUnlikely
 }
 
 public struct LayoutDecoderEvaluation: Equatable, Sendable {
@@ -140,6 +144,9 @@ public enum LayoutDecoder {
 
         let sourceKnown = model.wordLogProbability(literal, language: currentCanonical)
         let targetKnown = targetKnownForShape
+        let englishSourceConfidence: EnglishSourceConfidence? = currentCanonical == "en" && targetCanonical == "ru"
+            ? EnglishSourceClassifier.classify(literal, model: model)
+            : nil
         let strongScriptMismatch = LayoutDetector.hasStrongScriptMismatch(
             typed: candidate.typedRaw,
             converted: converted,
@@ -149,6 +156,22 @@ public enum LayoutDecoder {
             - model.characterLogProbability(literal, language: currentCanonical)
         if literal.count >= 2, sourceKnown != nil, targetKnown != nil {
             return fixed(baseCandidate, verdict: .keep, reason: .blockedContext, evidence: [.blockedContext])
+        }
+        if literal.count >= 2, englishSourceConfidence == .frequent {
+            return fixed(
+                baseCandidate,
+                verdict: .keep,
+                reason: .keepCurrentWord,
+                evidence: [.englishSourceFrequent]
+            )
+        }
+        if literal.count >= 2, englishSourceConfidence == .dictionary {
+            return fixed(
+                baseCandidate,
+                verdict: .keep,
+                reason: .keepCurrentWord,
+                evidence: [.englishSourceDictionary]
+            )
         }
         // A compound is evidence only when the literal hypothesis is not itself a
         // known word. This protects ordinary English prose from productive Russian
@@ -173,6 +196,12 @@ public enum LayoutDecoder {
         }
 
         if sourceKnown != nil { literalScore += 2.2 }
+        if englishSourceConfidence == .plausibleOOV {
+            literalScore += model.thresholds.englishSourcePlausibleBonus
+            evidence.append(.englishSourcePlausible)
+        } else if englishSourceConfidence == .unlikely {
+            evidence.append(.englishSourceUnlikely)
+        }
         if targetKnown != nil {
             convertedScore += 3.0
             evidence.append(.frequent)

@@ -100,6 +100,23 @@ final class V3CorpusQualityTests: XCTestCase {
         }
     }
 
+    func testFiftyThousandExtendedEnglishWordsStayUnchanged() {
+        let words = model.trainingExtendedEnglishWords(limit: 50_000)
+        XCTAssertEqual(words.count, 50_000)
+        var falsePositives = 0
+        for word in words {
+            let result = evaluate(
+                word,
+                current: "en",
+                target: "ru",
+                context: ["это", "текст"],
+                beliefLanguage: "ru"
+            )
+            if result.decision.verdict == .switchToConverted { falsePositives += 1 }
+        }
+        XCTAssertEqual(falsePositives, 0)
+    }
+
     func testUnknownCompoundRecallGate() {
         let intended = [
             "суперспина", "мегапроект", "киберспорт", "нейросвязь", "автосистема",

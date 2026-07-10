@@ -62,9 +62,9 @@ public enum ContextualLayoutDecoder {
 
         let current = LocalLanguageModel.canonical(currentLanguage)
         let target = LocalLanguageModel.canonical(targetLanguage)
-        let literalKnown = lexicalModel.wordLogProbability(
-            SmartTokenizer.lexicalCore(of: typed), language: current
-        ) != nil
+        let literalCore = SmartTokenizer.lexicalCore(of: typed)
+        let literalKnown = lexicalModel.wordLogProbability(literalCore, language: current) != nil
+            || (current == "en" && lexicalModel.isExtendedEnglishWord(literalCore))
         let targetKnown = hypotheses.dropFirst().contains {
             lexicalModel.wordLogProbability($0.lexicalCore, language: target) != nil
         }

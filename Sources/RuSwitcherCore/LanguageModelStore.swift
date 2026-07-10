@@ -16,6 +16,8 @@ public struct LanguageModelThresholds: Codable, Equatable, Sendable {
     public let englishContext: Double
     public let russianOOVNeutral: Double
     public let russianOOVEnglishLong: Double
+    public let englishSourceCharacterFloor: Double
+    public let englishSourcePlausibleBonus: Double
     public let compoundBonus: Double
     public let confirmedBonus: Double
 }
@@ -45,6 +47,7 @@ public final class LanguageModelStore: @unchecked Sendable {
         case enTrigrams = 9
         case productive = 10
         case thresholds = 11
+        case extendedEnglish = 12
     }
 
     public static var bundledResourceURL: URL? {
@@ -63,6 +66,7 @@ public final class LanguageModelStore: @unchecked Sendable {
     public let thresholds: LanguageModelThresholds
     public let productiveRussianParts: Set<String>
     public let productiveRussianSuffixes: Set<String>
+    private let extendedEnglishWords: Set<String>
 
     private let words: [String: [String: Double]]
     private let characters: [String: [String: Double]]
@@ -136,10 +140,21 @@ public final class LanguageModelStore: @unchecked Sendable {
             "ru": try decode([String: Double].self, section: .ruTrigrams),
             "en": try decode([String: Double].self, section: .enTrigrams),
         ]
+        extendedEnglishWords = Set(try decode([String].self, section: .extendedEnglish))
     }
 
     public func contains(_ word: String, language: String) -> Bool {
         wordLogProbability(word, language: language) != nil
+    }
+
+    public func isExtendedEnglishWord(_ word: String) -> Bool {
+        extendedEnglishWords.contains(Self.normalize(word))
+    }
+
+    public func trainingExtendedEnglishWords(limit: Int? = nil) -> [String] {
+        let values = extendedEnglishWords.sorted()
+        guard let limit else { return values }
+        return Array(values.prefix(max(0, limit)))
     }
 
     public func wordLogProbability(_ word: String, language: String) -> Double? {

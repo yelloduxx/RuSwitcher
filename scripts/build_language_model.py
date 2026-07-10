@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import hashlib
 import json
 import math
@@ -41,7 +42,11 @@ SECTION = {
     "en_trigrams": 9,
     "productive": 10,
     "thresholds": 11,
+    "en_extended": 12,
 }
+
+SCOWL_ARCHIVE = Path("scripts/data/scowl60-en.txt.gz")
+SCOWL_ARCHIVE_SHA256 = "a15fcf72ca0cb6dbb83420513e0cd6e5d60755635a4bad5f51609c6b279385d5"
 
 PRODUCTIVE_RU = [
     "авиа", "авто", "агро", "аэро", "био", "видео", "гипер", "инфо",
@@ -107,6 +112,18 @@ def read_words(path: Path, language: str, curated: list[str]) -> dict[str, float
     return {word: round(math.log(freq / peak), 6) for word, freq in frequencies.items()}
 
 
+def read_extended_english(path: Path, frequent: dict[str, float]) -> list[str]:
+    if sha256(path) != SCOWL_ARCHIVE_SHA256:
+        raise RuntimeError(f"SHA-256 mismatch for {path}")
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        words = {
+            word.strip().lower()
+            for word in handle
+            if is_language_word(word.strip().lower(), "en") and len(word.strip()) >= 3
+        }
+    return sorted(words.difference(frequent))
+
+
 def character_model(words: dict[str, float], limit: int = 30000) -> dict[str, float]:
     counts: Counter[str] = Counter()
     for word, log_frequency in words.items():
@@ -162,18 +179,20 @@ def main() -> None:
     parser.add_argument("--source-dir", type=Path)
     parser.add_argument("--cache-dir", type=Path, default=Path(".build/language-model-source"))
     parser.add_argument("--output", type=Path, default=Path("Sources/RuSwitcherCore/Resources/language-model-v1.bin"))
+    parser.add_argument("--english-wordlist", type=Path, default=SCOWL_ARCHIVE)
     args = parser.parse_args()
 
     paths = {key: source_path(key, args.source_dir, args.cache_dir) for key in SOURCES}
     ru_words = read_words(paths["ngrams/1grams_russian.csv"], "ru", CURATED_RU)
     en_words = read_words(paths["ngrams/1grams_english.csv"], "en", CURATED_EN)
+    en_extended = read_extended_english(args.english_wordlist, en_words)
     metadata = {
         "formatVersion": 1,
-        "modelVersion": "2026.07-v3-oov2",
+        "modelVersion": "2026.07-v4-english-source1",
         "source": "orgtre/google-books-ngram-frequency",
         "sourceRevision": REVISION,
         "license": "CC BY 3.0",
-        "wordCounts": {"ru": len(ru_words), "en": len(en_words)},
+        "wordCounts": {"ru": len(ru_words), "en": len(en_words), "enExtended": len(en_extended)},
     }
     thresholds = {
         "short": 3.0,
@@ -182,6 +201,8 @@ def main() -> None:
         "englishContext": 3.8,
         "russianOOVNeutral": 1.55,
         "russianOOVEnglishLong": 3.2,
+        "englishSourceCharacterFloor": -12.0,
+        "englishSourcePlausibleBonus": 2.4,
         "compoundBonus": 4.8,
         "confirmedBonus": 20.0,
     }
@@ -197,6 +218,7 @@ def main() -> None:
         "en_trigrams": read_phrases(paths["ngrams/3grams_english.csv"], "en", 3),
         "productive": PRODUCTIVE_RU + ["-" + suffix for suffix in PRODUCTIVE_RU_SUFFIXES],
         "thresholds": thresholds,
+        "en_extended": en_extended,
     }
     write_model(args.output, [(SECTION[name], json_bytes(values[name])) for name in SECTION])
     print(f"wrote {args.output} ({args.output.stat().st_size} bytes, sha256={sha256(args.output)})")

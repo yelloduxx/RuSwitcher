@@ -26,6 +26,9 @@ expected = {
     "wipe-from-english": "протереть ",
     "butt-from-english": "задница ",
     "slur-from-english": "пидр ",
+    "cyst-stays-english": "cyst ",
+    "juju-stays-english": "juju ",
+    "codex-stays-english": "codex ",
 }
 
 failed = False

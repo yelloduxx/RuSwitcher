@@ -8,6 +8,8 @@ final class LanguageModelStoreTests: XCTestCase {
         XCTAssertEqual(model.metadata.sourceRevision, "e20471c15a758be3362b16d07870b34df4f7ccc3")
         XCTAssertGreaterThan(model.metadata.wordCounts["ru"] ?? 0, 9_000)
         XCTAssertGreaterThan(model.metadata.wordCounts["en"] ?? 0, 9_000)
+        XCTAssertGreaterThan(model.metadata.wordCounts["enExtended"] ?? 0, 80_000)
+        XCTAssertGreaterThan(model.trainingExtendedEnglishWords().count, 80_000)
     }
 
     func testCompoundIsDiscoveredFromPartsRatherThanWholeWord() throws {

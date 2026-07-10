@@ -17,6 +17,6 @@
   "temperature": 0.5,
   "trainingGroups": 42099,
   "trainingSeed": 20260710,
-  "trainingSourceManifestSHA256": "c84bdb6cc582c741d3ecf2559f7c8c295d54dc0eaa35176ef4f2c8e15275d70e",
+  "trainingSourceManifestSHA256": "36da5bee79a8d56167af18b22bee22de7ae077a5b16e2abc7b36c0f6d84100e6",
   "weightPrecision": "fp16"
 }

@@ -3,10 +3,20 @@
   "seed": 20260710,
   "bootstrapSource": {
     "path": "Sources/RuSwitcherCore/Resources/language-model-v1.bin",
-    "sha256": "a8e0fec3769a698d7f9f6c3ff67ff06788c977062972899dc09fbdabc3cad182",
+    "sha256": "49d88b1e2a5e7c57c9113c7269f2748dba4f13e62a47c4a36f263f2b4022158",
     "license": "CC BY 3.0",
     "upstream": "https://github.com/orgtre/google-books-ngram-frequency",
     "revision": "e20471c15a758be3362b16d07870b34df4f7ccc3"
+  },
+  "englishSourceLexicon": {
+    "name": "English Speller Database / SCOWL level 60",
+    "upstream": "https://github.com/en-wl/wordlist",
+    "revision": "7e99edab8e32f9f9ea2b15f249ca8d4d67237410",
+    "tag": "rel-2026.02.25",
+    "parameters": "word-list 60 A,B,Z 1 --deaccent; lowercase; ASCII words length >= 3",
+    "archive": "scripts/data/scowl60-en.txt.gz",
+    "archiveSHA256": "a15fcf72ca0cb6dbb83420513e0cd6e5d60755635a4bad5f51609c6b279385d5",
+    "licenseNotice": "scripts/data/SCOWL_COPYRIGHT.txt"
   },
   "optionalContextCorpora": [
     {
@@ -27,7 +37,8 @@
     "groups": 42099,
     "epochs": 3,
     "precision": "fp16",
+    "trainingInputLanguageModelSHA256": "cc40a62e2be0d9ae4d3f2f9476552e49273951f343b24ccaaa15270ab36f6e55",
     "coreMLSHA256": "98dad88031e4f29589c1364550800a2f2dfc52a0fd376ce55cb5b060a09d4da6",
-    "note": "int8 export was rejected by the active simulator after quantizer scale warnings; shadow rollout remains mandatory"
+    "note": "int8 export was rejected by the active simulator after quantizer scale warnings; shadow rollout remains mandatory. The SCOWL source lexicon is a deterministic runtime gate and was not used to train this Core ML artifact."
   }
 }

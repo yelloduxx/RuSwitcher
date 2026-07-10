@@ -90,7 +90,25 @@ final class LayoutDecoderTests: XCTestCase {
             belief: russianBelief
         )
         XCTAssertEqual(result.decision.verdict, .keep)
-        XCTAssertEqual(result.decision.candidate.replacement, "гыу,")
+    }
+
+    func testExtendedEnglishDictionaryProtectsOOVWordsInRussianContext() {
+        var russianBelief = LanguageBelief.neutral
+        russianBelief.observe(language: "ru")
+        russianBelief.observe(language: "ru")
+        for word in ["cyst", "juju", "codex"] {
+            XCTAssertFalse(model.contains(word, language: "en"), word)
+            XCTAssertTrue(model.isExtendedEnglishWord(word), word)
+            let result = evaluate(
+                word,
+                current: "en",
+                target: "ru",
+                context: ["это", "текст"],
+                belief: russianBelief
+            )
+            XCTAssertEqual(result.decision.verdict, .keep, word)
+            XCTAssertTrue(result.evidence.contains(.englishSourceDictionary), word)
+        }
     }
 
     func testShortConjunctionAndPlanBAreDisambiguatedByContext() {
