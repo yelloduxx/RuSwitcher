@@ -6,6 +6,7 @@ final class LayoutDecoderTests: XCTestCase {
 
     private func evaluate(
         _ typed: String,
+        converted: String? = nil,
         current: String = "en",
         target: String = "ru",
         context: [String] = [],
@@ -16,7 +17,7 @@ final class LayoutDecoderTests: XCTestCase {
     ) -> LayoutDecoderEvaluation {
         LayoutDecoder.evaluate(
             typed: typed,
-            converted: KeyMapping.convert(typed),
+            converted: converted ?? KeyMapping.convert(typed),
             currentLanguage: current,
             targetLanguage: target,
             capsLock: typed == typed.uppercased() && typed != typed.lowercased(),
@@ -149,15 +150,42 @@ final class LayoutDecoderTests: XCTestCase {
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
     }
 
-    func testLiteralTypedCommaBeatsConvertedQuestionMark() {
+    func testPunctuationTranslatesWithPhysicalKeyWhenBothSidesArePunctuation() {
         let result = evaluate(
             "ыцшесрштп,",
             current: "ru",
             target: "en",
             context: ["this", "text"]
         )
-        XCTAssertEqual(result.decision.candidate.replacement, "switching,")
+        XCTAssertEqual(result.decision.candidate.replacement, "switching?")
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testEnglishQuestionKeyBecomesRussianCommaWithConvertedWord() {
+        let result = evaluate(
+            "ghbitk?",
+            converted: "пришел,",
+            context: ["он"]
+        )
+        XCTAssertEqual(result.decision.candidate.replacement, "пришел,")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testEnglishAmpersandKeyBecomesRussianQuestionMarkWithConvertedWord() {
+        let result = evaluate(
+            "ghbitk&",
+            converted: "пришел?",
+            context: ["он"]
+        )
+        XCTAssertEqual(result.decision.candidate.replacement, "пришел?")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testSingleUppercaseCyrillicLetterStaysUnchanged() {
+        let result = evaluate("А", current: "ru", target: "en")
+        XCTAssertEqual(result.decision.verdict, .keep)
+        XCTAssertEqual(result.decision.candidate.replacement, "F")
+        XCTAssertEqual(result.decision.reason, .blockedCodeLike)
     }
 
     func testWrappingPunctuationIsPreservedAroundConvertedWord() {

@@ -14,12 +14,13 @@ installed build changes.
 - Automatic conversion is off by default until the user enables it.
 - Primary repository: `rashn/RuSwitcher`; local branch used for this work:
   `codex/caramba-autoconvert`.
-- As of 2026-07-10, the current version is `4.0.0` build `70`; its functional
-  baseline commit is `321ee73` (`fix: make continuous input transactions deterministic`).
+- As of 2026-07-12, the installed version is `4.0.0` build `73`. The latest
+  committed baseline is `ec0c605` (`fix: make learned corrections global with
+  app exceptions`); the build-73 punctuation/uppercase fix is pending commit.
 - The installed app is `/Applications/RuSwitcher.app`, signed with the reusable
   identity `RuSwitcher Local Code Signing`.
-- Installed build-70 executable SHA-256:
-  `8ba83c8cb2b732e8d48111dd3610f9d6c567c650d255a8231f25d74349015980`.
+- Installed build-73 executable SHA-256:
+  `54e38c9ca18f8ea623839c93b5ddf2da01f5e7b9d3674e33e75815e1f652e8cb`.
 
 ## User Requirements
 
@@ -90,12 +91,18 @@ back to V3/keep rather than performing a late edit.
 
 - Candidate generation preserves leading/trailing wrappers and explores the
   physical-key interpretation of punctuation keys.
-- Typed punctuation wins when both interpretations are valid unless phrase
-  context strongly resolves the ambiguity.
+- A single punctuation key that produces punctuation in both layouts follows
+  the target physical-key interpretation when the word converts. This fixes an
+  English-layout `?` intended as a Russian comma and `&` intended as a Russian
+  question mark. Multi-mark suffixes such as `?!` and `...` remain literal.
+- Typed punctuation remains literal when the opposite layout would turn it into
+  a letter and the punctuation candidate is the valid word, as in `ghbdtn,`.
 - Examples covered by tests:
   - `b` -> `и` in Russian context, but `plan B` stays unchanged.
   - `ghbdtncnde.` -> `приветствую` when the final physical period is Russian `ю`.
   - `ghbdtn, ` -> `привет, `.
+  - `ghbitk? ` -> `пришел, `.
+  - `ghbitk& ` -> `пришел? `.
   - `гыуб ` -> `use, `.
   - `афиду ` -> `fable `.
   - `дщщыут ` -> `loosen `.
@@ -114,6 +121,7 @@ Hard blockers remain authoritative:
 - URL, email and code/identifier shapes;
 - mixed-script identifiers, camelCase and ALL-CAPS acronyms;
 - single uppercase Latin letters;
+- single uppercase Cyrillic letters;
 - `neverConvert` rules;
 - stale focus/revision/editor integrity.
 
@@ -245,7 +253,7 @@ bash scripts/run_randomized_layout_suite.sh
 bash scripts/verify_simulator_negative_control.sh
 ```
 
-Last results: 150/150 unit tests, 11,128/11,128 built-in simulator checks,
+Last results: 161/161 unit tests, 11,128/11,128 built-in simulator checks,
 38/38 randomized checks, and a passing intentional negative control.
 
 Learned-rule persistence is tested by `scripts/run_manual_learning_test.sh`: an
@@ -271,6 +279,11 @@ bash scripts/run_hid_batch_tests.sh
   state, punctuation damage, missed Backspaces and duplicate insertion.
 - Do not run multiple CGEvent UI probes in parallel: macOS has one focus/layout
   event stream. The pure simulator may use parallel workers.
+- `Tests/Fixtures/HID/punctuation-and-uppercase-regression.json` covers the
+  build-73 punctuation and uppercase regressions in one continuous window. Its
+  2026-07-12 run was inconclusive because the probe process lacked Accessibility
+  event-posting access (`postEventAccess=false`, `focus-unavailable`); do not
+  report it as passed until that host permission is restored.
 
 ## Build, Signing and Installation
 

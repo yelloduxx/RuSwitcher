@@ -118,6 +118,11 @@ public enum LayoutDecoder {
             if lhsHasPhraseEvidence != rhsHasPhraseEvidence {
                 return !lhsHasPhraseEvidence && rhsHasPhraseEvidence
             }
+            let lhsUsesTranslatedSuffix = usesTranslatedPunctuationSuffix(lhs.decision.candidate)
+            let rhsUsesTranslatedSuffix = usesTranslatedPunctuationSuffix(rhs.decision.candidate)
+            if lhsUsesTranslatedSuffix != rhsUsesTranslatedSuffix {
+                return !lhsUsesTranslatedSuffix && rhsUsesTranslatedSuffix
+            }
             let lhsPreservesTypedSuffix = preservesTypedSuffix(lhs.decision.candidate)
             let rhsPreservesTypedSuffix = preservesTypedSuffix(rhs.decision.candidate)
             if lhsPreservesTypedSuffix != rhsPreservesTypedSuffix {
@@ -144,6 +149,19 @@ public enum LayoutDecoder {
 
     private static func preservesTypedSuffix(_ candidate: AutoConvertCandidate) -> Bool {
         !candidate.suffix.isEmpty && candidate.typedRaw.hasSuffix(candidate.suffix)
+    }
+
+    /// When the same physical key is punctuation in both layouts, its target
+    /// interpretation belongs to the converted token. Literal preservation is
+    /// still preferred when the other layout would turn punctuation into a
+    /// letter, as in `ghbdtn,` -> `привет,`.
+    private static func usesTranslatedPunctuationSuffix(_ candidate: AutoConvertCandidate) -> Bool {
+        guard candidate.suffix.count == 1,
+              candidate.convertedRaw.hasSuffix(candidate.suffix),
+              !candidate.typedRaw.hasSuffix(candidate.suffix) else { return false }
+        let typedSuffix = candidate.typedRaw.suffix(candidate.suffix.count)
+        return typedSuffix.allSatisfy(isPunctuation)
+            && candidate.suffix.allSatisfy(isPunctuation)
     }
 
     private static func evaluateCandidate(
@@ -182,7 +200,7 @@ public enum LayoutDecoder {
         let sourceShapeIsProtected = shape.kind.blocksAutomaticConversion
             && !(convertedShape.kind == .lexical
                 && (targetKnownForShape != nil || targetExtendedEnglish || targetExtendedRussian))
-        if Self.isSingleUppercaseLatin(candidate.typedRaw)
+        if SmartTokenizer.isSingleUppercaseLetter(candidate.typedRaw)
             || sourceShapeIsProtected
             || (convertedShape.kind.blocksAutomaticConversion
                 && candidate.kind != .trailingPunctuation
@@ -445,12 +463,6 @@ public enum LayoutDecoder {
             kind: .directWord
         )
         return fixed(candidate, verdict: .undecided, reason: .undecided, evidence: [])
-    }
-
-    private static func isSingleUppercaseLatin(_ text: String) -> Bool {
-        let letters = text.filter(\.isLetter)
-        guard letters.count == 1, let character = letters.first else { return false }
-        return character.isUppercase && character.unicodeScalars.allSatisfy { (0x41...0x5A).contains(Int($0.value)) }
     }
 
     private static func isPunctuation(_ character: Character) -> Bool {

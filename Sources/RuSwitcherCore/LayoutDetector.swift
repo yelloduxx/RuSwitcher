@@ -87,7 +87,7 @@ public enum LayoutDetector {
         if policy.alwaysConvert.contains(converted) {
             return AutoConvertDecision(verdict: .switchToConverted, reason: .alwaysConvert, candidate: candidate)
         }
-        if isSingleUppercaseLatinLetter(candidate.typedRaw) {
+        if SmartTokenizer.isSingleUppercaseLetter(candidate.typedRaw) {
             return AutoConvertDecision(verdict: .undecided, reason: .blockedCodeLike, candidate: candidate)
         }
         if !capsLock, isCodeLike(candidate.typedRaw) {
@@ -179,12 +179,6 @@ public enum LayoutDetector {
         default:
             return false
         }
-    }
-
-    private static func isSingleUppercaseLatinLetter(_ s: String) -> Bool {
-        let letters = convertedLetters(s)
-        guard letters.count == 1, let scalar = letters.first else { return false }
-        return isLatin(scalar) && Character(scalar).isUppercase
     }
 
     private static func dominantScript(_ s: String) -> Script? {

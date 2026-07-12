@@ -1,0 +1,31 @@
+{
+  "name": "punctuation-and-uppercase-regression",
+  "sourceIDs": [
+    "reported-punctuation",
+    "uppercase-safety",
+    "existing-regressions"
+  ],
+  "phases": [
+    {
+      "sourceLanguage": "en",
+      "text": "ghbitk? "
+    },
+    {
+      "sourceLanguage": "en",
+      "text": "ghbitk& "
+    },
+    {
+      "sourceLanguage": "ru",
+      "text": "А "
+    },
+    {
+      "sourceLanguage": "en",
+      "text": "ghbdtn, "
+    },
+    {
+      "sourceLanguage": "en",
+      "text": "htpekmnfn?! "
+    }
+  ],
+  "expectedText": "пришел, пришел? А привет, результат?! "
+}

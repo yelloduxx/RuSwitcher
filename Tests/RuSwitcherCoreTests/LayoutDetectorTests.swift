@@ -94,6 +94,27 @@ final class LayoutDetectorTests: XCTestCase {
         XCTAssertEqual(decision.reason, .blockedCodeLike)
     }
 
+    func testSingleUppercaseCyrillicLetterDoesNotConvertToLatin() {
+        let candidate = AutoConvertCandidate(
+            typedRaw: "А",
+            convertedRaw: "F",
+            convertedWord: "F",
+            suffix: "",
+            kind: .directWord
+        )
+        let result = LayoutDetector.decide(
+            candidate: candidate,
+            currentLang: "ru",
+            otherLang: "en",
+            capsLock: false,
+            policy: .empty,
+            isCurrentWordValid: true,
+            isConvertedWordValid: true
+        )
+        XCTAssertNotEqual(result.verdict, .switchToConverted)
+        XCTAssertEqual(result.reason, .blockedCodeLike)
+    }
+
     func testSingleLowercaseLatinLetterDoesNotConvertAfterLatinWord() {
         let candidate = AutoConvertCandidate(
             typedRaw: "b",

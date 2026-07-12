@@ -82,7 +82,7 @@ public enum SmartAutoConvertEngine {
         if adaptiveBias <= -10 {
             return fixed(candidate, verdict: .keep, reason: .blockedLearned)
         }
-        if isSingleUppercaseLatin(candidate.typedRaw) || typedShape.kind.blocksAutomaticConversion {
+        if SmartTokenizer.isSingleUppercaseLetter(candidate.typedRaw) || typedShape.kind.blocksAutomaticConversion {
             return fixed(candidate, verdict: .keep, reason: .blockedCodeLike)
         }
         if convertedShape.kind.blocksAutomaticConversion
@@ -190,11 +190,4 @@ public enum SmartAutoConvertEngine {
         return fixed(candidate, verdict: .undecided, reason: .undecided)
     }
 
-    private static func isSingleUppercaseLatin(_ text: String) -> Bool {
-        let letters = text.filter(\.isLetter)
-        guard letters.count == 1, let char = letters.first else { return false }
-        return char.isUppercase && char.unicodeScalars.allSatisfy {
-            (0x0041...0x005A).contains(Int($0.value))
-        }
-    }
 }

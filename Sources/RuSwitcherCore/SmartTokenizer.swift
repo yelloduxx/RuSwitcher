@@ -92,6 +92,12 @@ public enum SmartTokenizer {
         return nil
     }
 
+    public static func isSingleUppercaseLetter(_ text: String) -> Bool {
+        let letters = text.filter(\.isLetter)
+        guard letters.count == 1, let letter = letters.first else { return false }
+        return letter.isUppercase
+    }
+
     private static func looksLikeIdentifier(_ raw: String) -> Bool {
         if raw.contains("/") || raw.contains("\\") || raw.contains("_") { return true }
         if raw.unicodeScalars.contains(where: CharacterSet.decimalDigits.contains) { return true }
