@@ -24,9 +24,19 @@ private enum ReplacementVerification: Sendable {
     case unavailable
 }
 
+private typealias SelectedTextConversion = (
+    converted: String,
+    sourceLanguage: String,
+    targetLanguage: String,
+    targetLayoutID: String?
+)
+
 /// Конвертация текста между раскладками
 @MainActor
 final class TextConverter {
+    private static let transientPasteboardType = NSPasteboard.PasteboardType(
+        "org.nspasteboard.TransientType"
+    )
     private var savedClipboardItems: [NSPasteboardItem]?
     private var clipboardRestoreWork: DispatchWorkItem?
     private var clipboardTemporaryChangeCount: Int?
@@ -37,11 +47,13 @@ final class TextConverter {
     nonisolated private let manualQueue = DispatchQueue(label: "com.ruswitcher.manual-ax", qos: .userInitiated)
 
     private final class SelectionSnapshot: @unchecked Sendable {
+        let processID: pid_t
         let element: AXUIElement
         let range: CFRange
         let text: String
 
-        init(element: AXUIElement, range: CFRange, text: String) {
+        init(processID: pid_t, element: AXUIElement, range: CFRange, text: String) {
+            self.processID = processID
             self.element = element
             self.range = range
             self.text = text
@@ -79,7 +91,10 @@ final class TextConverter {
 
     // MARK: - Public API
 
-    func convertSelectedText(completion: @escaping (SelectedTextConversionOutcome) -> Void) {
+    func convertSelectedText(
+        allowClipboardFallback: Bool = true,
+        completion: @escaping (SelectedTextConversionOutcome) -> Void
+    ) {
         guard !isConverting else {
             completion(.failed)
             return
@@ -95,13 +110,18 @@ final class TextConverter {
             guard let self else { return }
             let result = Self.readSelection(processID: processID)
             Task { @MainActor [weak self] in
-                self?.handleSelectionRead(result, completion: completion)
+                self?.handleSelectionRead(
+                    result,
+                    allowClipboardFallback: allowClipboardFallback,
+                    completion: completion
+                )
             }
         }
     }
 
     private func handleSelectionRead(
         _ result: SelectionReadResult,
+        allowClipboardFallback: Bool,
         completion: ManualCompletionBox
     ) {
         switch result {
@@ -109,6 +129,11 @@ final class TextConverter {
             isConverting = false
             completion.callback(.none)
         case let .fallback(selectionKnown, snapshot):
+            guard allowClipboardFallback else {
+                isConverting = false
+                completion.callback(.none)
+                return
+            }
             convertSelectionViaClipboardAsync(
                 selectionKnown: selectionKnown,
                 snapshot: snapshot,
@@ -125,46 +150,101 @@ final class TextConverter {
                 converted: conversion.converted,
                 targetLanguage: conversion.targetLanguage
             )
-            manualQueue.async { [weak self] in
-                guard let self else { return }
-                let setResult = AXUIElementSetAttributeValue(
-                    snapshot.element,
-                    kAXSelectedTextAttribute as CFString,
-                    replacement as CFString
+            if snapshot.processID == ProcessInfo.processInfo.processIdentifier {
+                // AX dispatches an in-process NSTextView mutation directly into AppKit.
+                // AppKit requires that mutation on its main queue and traps otherwise.
+                finishSelectedTextReplacement(
+                    verification: setAndVerifySelectedText(
+                        snapshot: snapshot,
+                        replacement: replacement,
+                        pollForDelayedCommit: false
+                    ),
+                    snapshot: snapshot,
+                    replacement: replacement,
+                    targetLayoutID: conversion.targetLayoutID,
+                    completion: completion
                 )
-                let verification: ReplacementVerification
-                if setResult == .success {
-                    verification = self.verifyReplacement(
-                        replacement,
-                        original: snapshot.text,
-                        originalRange: snapshot.range,
-                        element: snapshot.element
-                    )
-                } else {
-                    verification = .unchanged
-                }
-                Task { @MainActor [weak self] in
+            } else {
+                manualQueue.async { [weak self] in
                     guard let self else { return }
-                    switch verification {
-                    case .match:
-                        self.lastManualTargetLayoutID = conversion.targetLayoutID
-                        self.lastLearningPair = (snapshot.text, replacement)
-                        self.lastWasBuffer = false
-                        self.isConverting = false
-                        completion.callback(.converted)
-                    case .unchanged:
-                        self.convertSelectionViaClipboardAsync(
-                            selectionKnown: true,
+                    let verification = self.setAndVerifySelectedText(
+                        snapshot: snapshot,
+                        replacement: replacement,
+                        pollForDelayedCommit: true
+                    )
+                    Task { @MainActor [weak self] in
+                        self?.finishSelectedTextReplacement(
+                            verification: verification,
                             snapshot: snapshot,
+                            replacement: replacement,
+                            targetLayoutID: conversion.targetLayoutID,
                             completion: completion
                         )
-                    case .mismatch, .unavailable:
-                        self.lastLearningPair = nil
-                        self.isConverting = false
-                        completion.callback(.failed)
                     }
                 }
             }
+        }
+    }
+
+    nonisolated private func setAndVerifySelectedText(
+        snapshot: SelectionSnapshot,
+        replacement: String,
+        pollForDelayedCommit: Bool
+    ) -> ReplacementVerification {
+        let setResult = AXUIElementSetAttributeValue(
+            snapshot.element,
+            kAXSelectedTextAttribute as CFString,
+            replacement as CFString
+        )
+        guard setResult == .success else { return .unchanged }
+        if !pollForDelayedCommit {
+            return verifyReplacement(
+                replacement,
+                original: snapshot.text,
+                originalRange: snapshot.range,
+                element: snapshot.element
+            )
+        }
+
+        let deadline = Date().addingTimeInterval(0.25)
+        var verification: ReplacementVerification = .unavailable
+        repeat {
+            verification = verifyReplacement(
+                replacement,
+                original: snapshot.text,
+                originalRange: snapshot.range,
+                element: snapshot.element
+            )
+            if verification == .match || verification == .mismatch { break }
+            if Date() < deadline { usleep(5_000) }
+        } while Date() < deadline
+        return verification
+    }
+
+    private func finishSelectedTextReplacement(
+        verification: ReplacementVerification,
+        snapshot: SelectionSnapshot,
+        replacement: String,
+        targetLayoutID: String?,
+        completion: ManualCompletionBox
+    ) {
+        switch verification {
+        case .match:
+            lastManualTargetLayoutID = targetLayoutID
+            lastLearningPair = (snapshot.text, replacement)
+            lastWasBuffer = false
+            isConverting = false
+            completion.callback(.converted)
+        case .unchanged:
+            convertSelectionViaClipboardAsync(
+                selectionKnown: true,
+                snapshot: snapshot,
+                completion: completion
+            )
+        case .mismatch, .unavailable:
+            lastLearningPair = nil
+            isConverting = false
+            completion.callback(.failed)
         }
     }
 
@@ -205,7 +285,12 @@ final class TextConverter {
         ) == .success, let text = textRaw as? String, !text.isEmpty else {
             return .fallback(selectionKnown: true, snapshot: nil)
         }
-        return .selected(SelectionSnapshot(element: element, range: range, text: text))
+        return .selected(SelectionSnapshot(
+            processID: processID,
+            element: element,
+            range: range,
+            text: text
+        ))
     }
 
     func prepareBufferedConversion(keys: [TypedKey]) -> BufferedManualConversion? {
@@ -405,73 +490,126 @@ final class TextConverter {
         clipboardTemporaryChangeCount = pasteboard.changeCount
         let clearedCount = pasteboard.changeCount
         simKey(keyCode: KC.letterC, flags: .maskCommand)
-        let delay = attempt == 0 ? 0.08 : 0.12
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self else { return }
-            if pasteboard.changeCount != clearedCount,
-               let text = pasteboard.string(forType: .string), !text.isEmpty,
-               let conversion = DynamicKeyMapping.convertSelectedText(text) {
-                let replacement = self.manualReplacement(
-                    typed: text,
-                    converted: conversion.converted,
-                    targetLanguage: conversion.targetLanguage
-                )
-                pasteboard.clearContents()
-                pasteboard.setString(replacement, forType: .string)
-                self.clipboardTemporaryChangeCount = pasteboard.changeCount
-                self.simKey(keyCode: KC.letterV, flags: .maskCommand)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                    guard let self else { return }
-                    guard let snapshot else {
-                        self.lastLearningPair = nil
-                        self.lastManualTargetLayoutID = nil
-                        self.isConverting = false
-                        self.scheduleClipboardRestore()
-                        completion.callback(.postedUnverified)
-                        return
-                    }
-                    self.manualQueue.async { [weak self] in
-                        guard let self else { return }
-                        let verified = self.verifyReplacement(
-                            replacement,
-                            original: text,
-                            originalRange: snapshot.range,
-                            element: snapshot.element
-                        )
-                        Task { @MainActor [weak self] in
-                            guard let self else { return }
-                            if verified == .match {
-                                self.lastManualTargetLayoutID = conversion.targetLayoutID
-                                self.lastLearningPair = (text, replacement)
-                                self.lastWasBuffer = false
-                                self.isConverting = false
-                                self.scheduleClipboardRestore()
-                                completion.callback(.converted)
-                            } else {
-                                self.lastLearningPair = nil
-                                self.lastManualTargetLayoutID = nil
-                                self.isConverting = false
-                                self.restoreClipboardNow()
-                                completion.callback(.failed)
-                            }
-                        }
-                    }
-                }
-                return
-            }
-            if attempt < 2 {
-                self.attemptClipboardCopy(
-                    attempt: attempt + 1,
+        pollClipboardCopy(
+            clearedCount: clearedCount,
+            deadline: Date().addingTimeInterval(attempt == 0 ? 0.08 : 0.12),
+            attempt: attempt,
+            selectionKnown: selectionKnown,
+            snapshot: snapshot,
+            completion: completion
+        )
+    }
+
+    private func pollClipboardCopy(
+        clearedCount: Int,
+        deadline: Date,
+        attempt: Int,
+        selectionKnown: Bool,
+        snapshot: SelectionSnapshot?,
+        completion: ManualCompletionBox
+    ) {
+        let pasteboard = NSPasteboard.general
+        if pasteboard.changeCount != clearedCount,
+           let text = pasteboard.string(forType: .string), !text.isEmpty,
+           let conversion = DynamicKeyMapping.convertSelectedText(text) {
+            markPasteboardTransient(pasteboard)
+            finishClipboardConversion(
+                text: text,
+                conversion: conversion,
+                snapshot: snapshot,
+                completion: completion
+            )
+            return
+        }
+        if Date() < deadline {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) { [weak self] in
+                self?.pollClipboardCopy(
+                    clearedCount: clearedCount,
+                    deadline: deadline,
+                    attempt: attempt,
                     selectionKnown: selectionKnown,
                     snapshot: snapshot,
                     completion: completion
                 )
-            } else {
+            }
+            return
+        }
+        if attempt < 2 {
+            attemptClipboardCopy(
+                attempt: attempt + 1,
+                selectionKnown: selectionKnown,
+                snapshot: snapshot,
+                completion: completion
+            )
+        } else {
+            isConverting = false
+            restoreClipboardNow()
+            completion.callback(selectionKnown ? .failed : .none)
+        }
+    }
+
+    private func finishClipboardConversion(
+        text: String,
+        conversion: SelectedTextConversion,
+        snapshot: SelectionSnapshot?,
+        completion: ManualCompletionBox
+    ) {
+        let replacement = manualReplacement(
+            typed: text,
+            converted: conversion.converted,
+            targetLanguage: conversion.targetLanguage
+        )
+        let pasteboard = NSPasteboard.general
+        let item = NSPasteboardItem()
+        item.setString(replacement, forType: .string)
+        item.setData(Data(), forType: Self.transientPasteboardType)
+        pasteboard.clearContents()
+        pasteboard.writeObjects([item])
+        clipboardTemporaryChangeCount = pasteboard.changeCount
+        simKey(keyCode: KC.letterV, flags: .maskCommand)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self else { return }
+            guard let snapshot else {
+                self.lastLearningPair = nil
+                self.lastManualTargetLayoutID = nil
                 self.isConverting = false
-                self.restoreClipboardNow()
-                completion.callback(selectionKnown ? .failed : .none)
+                self.scheduleClipboardRestore()
+                completion.callback(.postedUnverified)
+                return
+            }
+            self.manualQueue.async { [weak self] in
+                guard let self else { return }
+                let verified = self.verifyReplacement(
+                    replacement,
+                    original: text,
+                    originalRange: snapshot.range,
+                    element: snapshot.element
+                )
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if verified == .match {
+                        self.lastManualTargetLayoutID = conversion.targetLayoutID
+                        self.lastLearningPair = (text, replacement)
+                        self.lastWasBuffer = false
+                        self.isConverting = false
+                        self.scheduleClipboardRestore()
+                        completion.callback(.converted)
+                    } else {
+                        self.lastLearningPair = nil
+                        self.lastManualTargetLayoutID = nil
+                        self.isConverting = false
+                        self.restoreClipboardNow()
+                        completion.callback(.failed)
+                    }
+                }
             }
         }
+    }
+
+    private func markPasteboardTransient(_ pasteboard: NSPasteboard) {
+        pasteboard.addTypes([Self.transientPasteboardType], owner: nil)
+        pasteboard.setData(Data(), forType: Self.transientPasteboardType)
+        clipboardTemporaryChangeCount = pasteboard.changeCount
     }
 
     /// Стирает n символов (Backspace × n) — для движка перепечатки.

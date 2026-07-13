@@ -47,8 +47,8 @@ public enum ContextualLayoutDecoder {
             || fallback.evidence.contains(.blockedCode)
             || fallback.evidence.contains(.blockedEditing)
             || (fallback.evidence.contains(.blockedContext)
-                && LocalLanguageModel.canonical(currentLanguage) == "ru"
-                && LocalLanguageModel.canonical(targetLanguage) == "en") {
+                && LanguageCode.canonical(currentLanguage) == "ru"
+                && LanguageCode.canonical(targetLanguage) == "en") {
             return V4Evaluation(
                 outcome: .keep,
                 selectedIndex: 0,
@@ -61,8 +61,8 @@ public enum ContextualLayoutDecoder {
             )
         }
 
-        let current = LocalLanguageModel.canonical(currentLanguage)
-        let target = LocalLanguageModel.canonical(targetLanguage)
+        let current = LanguageCode.canonical(currentLanguage)
+        let target = LanguageCode.canonical(targetLanguage)
         let literalCore = SmartTokenizer.lexicalCore(of: typed)
         let literalKnown = isLexicallyKnown(literalCore, language: current, model: lexicalModel)
         let targetKnown = hypotheses.dropFirst().contains {
@@ -258,7 +258,7 @@ public enum ContextualLayoutDecoder {
     }
 
     private static func isCodeSwitch(_ context: ContextSnapshot) -> Bool {
-        Set(context.tokenLanguages.compactMap { $0.map(LocalLanguageModel.canonical) }).count > 1
+        Set(context.tokenLanguages.compactMap { $0.map(LanguageCode.canonical) }).count > 1
     }
 
     private static func isLexicallyKnown(

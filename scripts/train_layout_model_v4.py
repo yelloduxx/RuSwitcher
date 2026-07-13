@@ -421,7 +421,11 @@ def main() -> None:
     parser.add_argument("--model", type=Path, default=Path("Sources/RuSwitcherCore/Resources/language-model-v1.bin"))
     parser.add_argument("--corpus-jsonl", type=Path, action="append", default=[])
     parser.add_argument("--output-dir", type=Path, default=Path(".build/v4-model"))
-    parser.add_argument("--resource-dir", type=Path, default=Path("Sources/RuSwitcherCore/Resources"))
+    parser.add_argument(
+        "--resource-dir",
+        type=Path,
+        default=Path("Experimental/V4/Sources/RuSwitcherExperimentalV4/Resources"),
+    )
     parser.add_argument("--source-manifest", type=Path, default=Path("scripts/v4_training_sources.json"))
     parser.add_argument("--word-limit", type=int, default=5000)
     parser.add_argument("--epochs", type=int, default=2)

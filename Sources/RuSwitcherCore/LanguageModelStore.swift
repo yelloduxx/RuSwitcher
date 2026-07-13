@@ -215,7 +215,7 @@ public final class LanguageModelStore: @unchecked Sendable {
     }
 
     private static func canonical(_ language: String) -> String {
-        LocalLanguageModel.canonical(language)
+        LanguageCode.canonical(language)
     }
 
     private static func normalize(_ text: String) -> String {

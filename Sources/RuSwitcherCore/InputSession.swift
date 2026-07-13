@@ -103,7 +103,6 @@ public struct TokenSnapshot: Equatable, Sendable {
     public let focus: FocusedElementIdentity
     public let sequence: UInt64
     public let capturedAt: Date
-    public let languageState: TypingLanguageState
     public let languageBelief: LanguageBelief
     public let editRevision: UInt64
     public let integrity: EditorIntegrity
@@ -129,7 +128,6 @@ public struct TokenSnapshot: Equatable, Sendable {
         focus: FocusedElementIdentity,
         sequence: UInt64,
         capturedAt: Date = Date(),
-        languageState: TypingLanguageState = .neutral,
         languageBelief: LanguageBelief = .neutral,
         editRevision: UInt64 = 0,
         integrity: EditorIntegrity = .clean
@@ -140,7 +138,6 @@ public struct TokenSnapshot: Equatable, Sendable {
         self.focus = focus
         self.sequence = sequence
         self.capturedAt = capturedAt
-        self.languageState = languageState
         self.languageBelief = languageBelief
         self.editRevision = editRevision
         self.integrity = integrity
@@ -152,7 +149,6 @@ public struct TokenDraft: Equatable, Sendable {
     public let context: [InputContextToken]
     public let focus: FocusedElementIdentity
     public let sequence: UInt64
-    public let languageState: TypingLanguageState
     public let languageBelief: LanguageBelief
     public let editRevision: UInt64
     public let integrity: EditorIntegrity
@@ -162,7 +158,6 @@ public struct TokenDraft: Equatable, Sendable {
         context: [InputContextToken],
         focus: FocusedElementIdentity,
         sequence: UInt64,
-        languageState: TypingLanguageState,
         languageBelief: LanguageBelief,
         editRevision: UInt64,
         integrity: EditorIntegrity
@@ -171,7 +166,6 @@ public struct TokenDraft: Equatable, Sendable {
         self.context = context
         self.focus = focus
         self.sequence = sequence
-        self.languageState = languageState
         self.languageBelief = languageBelief
         self.editRevision = editRevision
         self.integrity = integrity
@@ -227,7 +221,6 @@ public struct InputSession: Equatable, Sendable {
     public private(set) var currentKeys: [TypedKey] = []
     public private(set) var context: [InputContextToken] = []
     public private(set) var sequence: UInt64 = 0
-    public private(set) var languageState: TypingLanguageState = .neutral
     public private(set) var languageBelief: LanguageBelief = .neutral
     public private(set) var editRevision: UInt64 = 0
     public private(set) var integrity: EditorIntegrity = .clean
@@ -246,7 +239,6 @@ public struct InputSession: Equatable, Sendable {
             context: context,
             focus: focus,
             sequence: sequence,
-            languageState: languageState,
             languageBelief: languageBelief,
             editRevision: editRevision,
             integrity: integrity
@@ -307,7 +299,6 @@ public struct InputSession: Equatable, Sendable {
         state = .invalidated(revision: editRevision)
         if clearContext {
             context.removeAll(keepingCapacity: true)
-            languageState = .neutral
             languageBelief = .neutral
         }
     }
@@ -326,7 +317,6 @@ public struct InputSession: Equatable, Sendable {
             boundary: boundary,
             focus: focus,
             sequence: sequence,
-            languageState: languageState,
             languageBelief: languageBelief,
             editRevision: editRevision,
             integrity: integrity
@@ -402,7 +392,6 @@ public struct InputSession: Equatable, Sendable {
         state = .idle(revision: editRevision)
         if !keepContext {
             context.removeAll(keepingCapacity: true)
-            languageState = .neutral
             languageBelief = .neutral
         }
     }
@@ -422,7 +411,6 @@ public struct InputSession: Equatable, Sendable {
                 context.removeFirst(context.count - contextLimit)
             }
         }
-        languageState.observe(language: language, weight: wasConverted ? 1.4 : 1.0)
         languageBelief.observe(language: language, weight: wasConverted ? 1.4 : 1.0)
     }
 }

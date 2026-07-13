@@ -11,6 +11,10 @@ private struct HIDProbeResult: Codable {
     let postEventAccess: Bool
     let manualText: String?
     let learningConfirmed: Bool?
+    let pasteboardChangeCountDelta: Int
+    let postedAutomaticReplacementCount: Int
+    let verifiedAutomaticReplacementCount: Int
+    let unexpectedInputEventCount: Int
     let layoutMismatchStrokes: [String]
     let boundaryDeliveryTimeouts: [Int]
 }
@@ -39,11 +43,21 @@ private struct HIDProbeScenario {
     let name: String
     let phases: [Phase]
     let manualLearningSource: String?
+    let triggerAfterTyping: Bool
+    let autoConvertEnabled: Bool
 
-    init(name: String, phases: [Phase], manualLearningSource: String? = nil) {
+    init(
+        name: String,
+        phases: [Phase],
+        manualLearningSource: String? = nil,
+        triggerAfterTyping: Bool = false,
+        autoConvertEnabled: Bool = true
+    ) {
         self.name = name
         self.phases = phases
         self.manualLearningSource = manualLearningSource
+        self.triggerAfterTyping = triggerAfterTyping
+        self.autoConvertEnabled = autoConvertEnabled
     }
 
     static func named(_ name: String) -> HIDProbeScenario? {
@@ -54,6 +68,25 @@ private struct HIDProbeScenario {
                 name: name,
                 phases: [Phase(sourceLanguage: "en", typedText: source + " ")],
                 manualLearningSource: source
+            )
+        case "manual-buffer-double-shift":
+            return HIDProbeScenario(
+                name: name,
+                phases: [
+                    Phase(sourceLanguage: "ru", typedText: "сегодня я "),
+                    Phase(sourceLanguage: "en", typedText: "ghbdtn"),
+                ],
+                triggerAfterTyping: true
+            )
+        case "manual-previous-word-double-shift":
+            return HIDProbeScenario(
+                name: name,
+                phases: [
+                    Phase(sourceLanguage: "ru", typedText: "сегодня я "),
+                    Phase(sourceLanguage: "en", typedText: "ghbdtn "),
+                ],
+                triggerAfterTyping: true,
+                autoConvertEnabled: false
             )
         default:
             return nil
@@ -128,6 +161,15 @@ enum HIDIntegrationProbe {
         resultPath: String?,
         startProductionMonitoring: Bool = true
     ) -> Never {
+        var textServiceOverrides = UserDefaults.standard.volatileDomain(
+            forName: UserDefaults.argumentDomain
+        )
+        textServiceOverrides["NSAutomaticPeriodSubstitutionEnabled"] = false
+        textServiceOverrides["NSAutomaticCapitalizationEnabled"] = false
+        UserDefaults.standard.setVolatileDomain(
+            textServiceOverrides,
+            forName: UserDefaults.argumentDomain
+        )
         let app = NSApplication.shared
         let delegate = HIDProbeDelegate(
             scenario: scenario,
@@ -155,6 +197,10 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     private var layoutMismatchStrokes: [String] = []
     private var boundaryDeliveryTimeouts: [Int] = []
     private var didStartProductionMonitoring = false
+    private var didPostTrailingTrigger = false
+    private var initialPasteboardChangeCount = 0
+    private var unexpectedInputEventCount = 0
+    private var localEventMonitor: Any?
     private let productionDelegate = AppDelegate()
     private let startProductionMonitoring: Bool
 
@@ -169,6 +215,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        initialPasteboardChangeCount = NSPasteboard.general.changeCount
         NSApp.setActivationPolicy(.regular)
         let window = NSWindow(
             contentRect: NSRect(x: 120, y: 120, width: 640, height: 180),
@@ -184,6 +231,13 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         textView.isAutomaticTextCompletionEnabled = false
         textView.enabledTextCheckingTypes = 0
         textView.isContinuousSpellCheckingEnabled = false
+        localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            let marker = event.cgEvent?.getIntegerValueField(.eventSourceUserData) ?? 0
+            if marker != 0x52535445, marker != kRuSwitcherEventMarker {
+                self?.unexpectedInputEventCount += 1
+            }
+            return event
+        }
         window.contentView = textView
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(textView)
@@ -282,9 +336,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         didStartProductionMonitoring = true
         let settings = SettingsManager.shared
         settings.autoSwitchEnabled = true
-        settings.autoConvert = true
-        settings.smartEngineV2 = true
-        settings.smartEngineV3 = true
+        settings.autoConvert = scenario.autoConvertEnabled
         settings.triggerKey = "shift"
         settings.triggerRightOnly = false
         settings.triggerDoubleTap = true
@@ -367,6 +419,18 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
 
     private func postPhase(at phaseIndex: Int) {
         guard plannedPhases.indices.contains(phaseIndex) else {
+            if scenario.triggerAfterTyping, !didPostTrailingTrigger {
+                didPostTrailingTrigger = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.postDoubleShift()
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                    guard let self else { return }
+                    self.manualObservedText = self.textView.string
+                    self.finish(text: self.textView.string)
+                }
+                return
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 guard let self else { return }
                 self.finish(text: self.textView.string)
@@ -436,6 +500,10 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
 
     private func finish(text: String) {
         releaseModifiers()
+        if let localEventMonitor {
+            NSEvent.removeMonitor(localEventMonitor)
+            self.localEventMonitor = nil
+        }
         let resultingLayoutID = LayoutSwitcher.currentLayoutID()
         if !originalLayoutID.isEmpty { LayoutSwitcher.switchTo(layoutID: originalLayoutID) }
         let result = HIDProbeResult(
@@ -451,6 +519,11 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
                     appBundleID: nil
                 )
             },
+            pasteboardChangeCountDelta: NSPasteboard.general.changeCount
+                - initialPasteboardChangeCount,
+            postedAutomaticReplacementCount: productionDelegate.postedAutomaticReplacementCount,
+            verifiedAutomaticReplacementCount: productionDelegate.verifiedAutomaticReplacementCount,
+            unexpectedInputEventCount: unexpectedInputEventCount,
             layoutMismatchStrokes: layoutMismatchStrokes,
             boundaryDeliveryTimeouts: boundaryDeliveryTimeouts
         )

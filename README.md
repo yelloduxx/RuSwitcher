@@ -127,20 +127,26 @@ The app adds itself to the permission lists automatically — you only need to f
 - `CGEvent.keyboardSetUnicodeString` to type the converted text directly — no clipboard, no pasteboard side effects.
 - `CGEventSource.userData` marker to filter the app's own simulated events.
 - A memory-mapped, versioned local RU/EN language model generated from pinned Google Books n-gram frequency data.
-- An optional Core ML V4 experiment isolated in a separate simulator target; it is not linked into the production application.
+- A Core ML V4 research package under `Experimental/V4`; it is absent from the normal package graph and production application.
 - Read-only `AXUIElement` range probes for focus and suffix validation; selected-text conversion uses AX first and preserves every pasteboard type in its fallback.
 - `SMAppService` for login item management.
 - No hardcoded layout tables — works with any installed layouts.
 
 ### Simulation and quality testing
 
-`RuSwitcherSimulator` runs the real decoder against generated or JSONL fixtures in parallel, without Accessibility permissions or keyboard emulation:
+`RuSwitcherSimulator` runs the V3 decoder against generated or JSONL fixtures in parallel, without Accessibility permissions or keyboard emulation:
 
 ```bash
-swift run -c release RuSwitcherSimulator --engine v3 --jobs 8 --output simulation.json
+swift run -c release RuSwitcherSimulator --jobs 8 --output simulation.json
 ```
 
-Use `--engine v3` for the production decoder; `v4-shadow` and `v4-active` are simulator-only experiments. `--input fixtures.jsonl` accepts custom words, `--phrase-input phrases.jsonl` accepts stateful mixed-language phrases, and `--phrase-results results.jsonl` writes a complete step trace. Pure decoder simulations need no HID. `scripts/run_hid_batch_tests.sh` and `scripts/run_hid_stress_tests.sh` type uninterrupted mixed-layout phrases in one native window to catch stale state, dead-key punctuation damage and duplicate insertion.
+`--input fixtures.jsonl` accepts custom words, `--phrase-input phrases.jsonl` accepts stateful mixed-language phrases, and `--phrase-results results.jsonl` writes a complete step trace. `scripts/run_headless_typing_simulator.sh` additionally replays physical-key-style event streams through `InputSession`, V3 and replacement transactions without opening a window or stealing focus. Independent phrases can run in parallel while events inside each phrase remain ordered:
+
+```bash
+python3 scripts/run_mixed_layout_event_stream_suite.py corpus.tsv --jobs 8
+```
+
+This catches decoder, stale-state, punctuation and duplicate-transaction errors and applies explicit false-positive/recall gates. Native CGEvent/AX delivery still requires the separate visible host or an isolated macOS user/VM. V4 is tested only with `swift test --package-path Experimental/V4`.
 
 RuSwitcher contains no usage-statistics reporter or endpoint.
 
@@ -273,20 +279,20 @@ cp -R RuSwitcher.app /Applications/
 - `CGEvent.keyboardSetUnicodeString` для прямой печати конвертированного текста — без буфера обмена и побочных эффектов с pasteboard.
 - Маркер `CGEventSource.userData` для фильтрации собственных симулированных событий.
 - Версионированная memory-mapped RU/EN-модель, воспроизводимо собранная из закреплённой версии частотных Google Books n-gram data.
-- Экспериментальная Core ML-модель V4 изолирована в отдельном target симулятора и не линкуется в production-приложение.
+- Исследовательская Core ML-модель V4 находится в отдельном пакете `Experimental/V4`; её нет в обычном графе сборки и production-приложении.
 - Read-only `AXUIElement` range probes для проверки фокуса и хвоста перед кареткой; ручная замена выделения сначала использует AX, а fallback сохраняет все типы pasteboard.
 - `SMAppService` для управления автозапуском.
 - Без захардкоженных таблиц — работает с любыми установленными раскладками.
 
 ### Симуляция и проверка качества
 
-Отдельный `RuSwitcherSimulator` параллельно прогоняет настоящий decoder по сгенерированным или JSONL-сценариям без Accessibility и эмуляции клавиатуры:
+Отдельный `RuSwitcherSimulator` параллельно прогоняет V3 по сгенерированным или JSONL-сценариям без Accessibility и эмуляции клавиатуры:
 
 ```bash
-swift run -c release RuSwitcherSimulator --engine v3 --jobs 8 --output simulation.json
+swift run -c release RuSwitcherSimulator --jobs 8 --output simulation.json
 ```
 
-`--engine v3` запускает production decoder; `v4-shadow` и `v4-active` оставлены только для экспериментов симулятора. `--input fixtures.jsonl` принимает тесты слов, `--phrase-input phrases.jsonl` — последовательные смешанные фразы, а `--phrase-results results.jsonl` сохраняет полный пошаговый отчёт. Для симуляции decoder HID не нужен. `scripts/run_hid_batch_tests.sh` и `scripts/run_hid_stress_tests.sh` непрерывно вводят смешанные фразы в одном нативном окне и ловят stale state, ошибки dead key, порчу пунктуации и дубли.
+`--input fixtures.jsonl` принимает тесты слов, `--phrase-input phrases.jsonl` — последовательные смешанные фразы, а `--phrase-results results.jsonl` сохраняет полный пошаговый отчёт. `scripts/run_headless_typing_simulator.sh` дополнительно проводит непрерывный поток физических клавиш через `InputSession`, V3 и транзакции замены без окна и перехвата фокуса. Он ловит ошибки decoder, stale state, пунктуации и повторных транзакций. Настоящую доставку CGEvent/AX всё равно можно проверить только видимым host-приложением либо в отдельной macOS-сессии/VM. V4 проверяется отдельно командой `swift test --package-path Experimental/V4`.
 
 В приложении нет reporter или endpoint для статистики использования.
 

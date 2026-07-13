@@ -127,7 +127,11 @@ public enum AutoConvertCandidateGenerator {
         if isValidWord(word, targetLanguage) || FrequentWordLexicon.contains(word, language: targetLanguage) {
             return 10_000 + word.count
         }
-        if LayoutDetector.hasStrongScriptMismatch(typed: candidate.typedRaw, converted: word, targetLang: targetLanguage) {
+        if ScriptMismatchHeuristics.hasStrongMismatch(
+            typed: candidate.typedRaw,
+            converted: word,
+            targetLanguage: targetLanguage
+        ) {
             return 1_000 + word.count
         }
         return word.count

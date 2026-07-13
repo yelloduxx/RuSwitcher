@@ -1,0 +1,7 @@
+{
+  "name": "headless-event-negative-control",
+  "phases": [
+    {"sourceLanguage": "en", "text": "ghbdtn "}
+  ],
+  "expectedText": "ghbdtn "
+}

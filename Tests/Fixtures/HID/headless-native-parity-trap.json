@@ -1,0 +1,21 @@
+{
+  "name": "headless-native-parity-trap",
+  "purpose": "Catch differences between pure event replay and native CGEvent/AX delivery",
+  "expectedTransactions": 9,
+  "phases": [
+    {"sourceLanguage": "en", "text": "put it here?! "},
+    {"sourceLanguage": "en", "text": "gjckt "},
+    {"sourceLanguage": "en", "text": "f "},
+    {"sourceLanguage": "en", "text": "htdjk.wbz? "},
+    {"sourceLanguage": "en", "text": "ghbitk& "},
+    {"sourceLanguage": "en", "text": "\"tckb... "},
+    {"sourceLanguage": "ru", "text": "А "},
+    {"sourceLanguage": "ru", "text": "гыуб "},
+    {"sourceLanguage": "ru", "text": "афиду "},
+    {"sourceLanguage": "en", "text": "test@example.com plan B  "},
+    {"sourceLanguage": "en", "text": "ghbdtn, "},
+    {"sourceLanguage": "en", "text": "ghbdtncnde. "},
+    {"sourceLanguage": "ru", "text": "квазичастица "}
+  ],
+  "expectedText": "put it here?! после а революция, пришел? \"если... А use, fable test@example.com plan B  привет, приветствую квазичастица "
+}

@@ -12,6 +12,10 @@ if [ "$#" -eq 0 ]; then
 fi
 
 failed=0
+if [ -n "${HID_RESULT_PATH:-}" ] && [ "$#" -ne 1 ]; then
+    echo "HID_RESULT_PATH requires exactly one fixture"
+    exit 64
+fi
 for fixture in "$@"; do
     fixture="$(cd "$(dirname "$fixture")" && pwd)/$(basename "$fixture")"
     while read -r pid; do
@@ -21,11 +25,11 @@ for fixture in "$@"; do
         pgrep -f "$BIN" >/dev/null || break
         sleep 0.1
     done
-    sleep 5
+    sleep "${HID_RESTART_SETTLE_SECONDS:-5}"
 
     fixture_name="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["name"])' "$fixture")"
     typed_length="$(python3 -c 'import json,sys; print(sum(len(x["text"]) for x in json.load(open(sys.argv[1], encoding="utf-8"))["phases"]))' "$fixture")"
-    result="$ROOT/.build/ruswitch-hid-batch-$$-$fixture_name.json"
+    result="${HID_RESULT_PATH:-$ROOT/.build/ruswitch-hid-batch-$$-$fixture_name.json}"
     rm -f "$result"
 
     probe_pattern="$BIN --hid-probe-file $fixture"
@@ -71,7 +75,15 @@ typed_length = sum(len(phase["text"]) for phase in fixture["phases"])
 okay = (
     result["postEventAccess"]
     and actual == expected
+    and result.get("unexpectedInputEventCount", 0) == 0
     and not result.get("boundaryDeliveryTimeouts", [])
+    and (
+        fixture.get("expectedTransactions") is None
+        or (
+            result.get("postedAutomaticReplacementCount") == fixture["expectedTransactions"]
+            and result.get("verifiedAutomaticReplacementCount") == fixture["expectedTransactions"]
+        )
+    )
 )
 print(
     f"{'PASS' if okay else 'FAIL'} {fixture['name']}: "
@@ -92,7 +104,11 @@ else:
     )
     print(f"first mismatch at character {mismatch}")
     print(f"layout mismatch strokes: {result.get('layoutMismatchStrokes', [])}")
+    print(f"unexpected input events: {result.get('unexpectedInputEventCount', 0)}")
     print(f"boundary delivery timeouts: {result.get('boundaryDeliveryTimeouts', [])}")
+    print(f"expected transactions: {fixture.get('expectedTransactions')}")
+    print(f"posted transactions: {result.get('postedAutomaticReplacementCount')}")
+    print(f"verified transactions: {result.get('verifiedAutomaticReplacementCount')}")
     print(f"expected: {expected!r}")
     print(f"actual:   {actual!r}")
 raise SystemExit(0 if okay else 1)

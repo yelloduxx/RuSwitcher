@@ -27,10 +27,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         SettingsManager.shared.migrateAdaptiveRulesIfNeeded()
-        if SettingsManager.shared.smartEngineV3, languageModel != nil {
+        if languageModel != nil {
             rslog("engine_v3_available")
         } else {
-            rslog("engine_v2_fallback")
+            rslog("engine_v3_unavailable")
         }
         setupStatusItem()
         setupSettingsCallbacks()
@@ -99,6 +99,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private var lastAutoConverted: AutoLearningEvent?
     private var sessionNegativePairs: Set<String> = []
+    private(set) var postedAutomaticReplacementCount = 0
+    private(set) var verifiedAutomaticReplacementCount = 0
 
     private func learningKey(original: String, converted: String, appBundleID: String?) -> String {
         [
@@ -321,7 +323,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     rslog("trigger: blocked secure-input")
                     return
                 }
-                self.textConverter.convertSelectedText { [weak self] outcome in
+                self.textConverter.convertSelectedText(
+                    allowClipboardFallback: !self.keyboardMonitor.hasManualToken
+                ) { [weak self] outcome in
                     self?.finishManualTriggerAfterSelection(outcome, frontID: frontID)
                 }
                 return
@@ -577,14 +581,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             neverConvert: SettingsManager.shared.deniedWordsSet,
             alwaysConvert: SettingsManager.shared.alwaysConvertWordsSet
         )
-        let isValidWord: (String, String) -> Bool = { word, lang in
-            !word.isEmpty && Dict.isAvailable(lang) && Dict.isValidWord(word, lang: lang)
-        }
         let languagePair = Set([String(langs.current.lowercased().prefix(2)), String(targetLang.lowercased().prefix(2))])
-        var decision: AutoConvertDecision
-        if SettingsManager.shared.smartEngineV3,
-           languagePair == Set(["en", "ru"]),
-           let languageModel {
+        let decision: AutoConvertDecision
+        if languagePair == Set(["en", "ru"]), let languageModel {
             let evaluation = LayoutDecoder.evaluate(
                 typed: pair.original,
                 converted: pair.converted,
@@ -618,54 +617,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 model: languageModel
             )
             decision = evaluation.decision
-        } else if SettingsManager.shared.smartEngineV2, languagePair == Set(["en", "ru"]) {
-            let evaluation = SmartAutoConvertEngine.evaluate(
-                typed: pair.original,
-                converted: pair.converted,
-                currentLanguage: langs.current,
-                targetLanguage: targetLang,
-                capsLock: capsLock,
-                contextWords: contextWords,
-                languageState: snapshot.languageState,
-                policy: policy,
-                adaptiveBias: { original, converted in
-                    let persisted = SettingsManager.shared.adaptiveBias(
-                        original: original,
-                        converted: converted,
-                        appBundleID: frontID
-                    )
-                    let sessionPenalty = self.sessionNegativePairs.contains(self.learningKey(
-                        original: original,
-                        converted: converted,
-                        appBundleID: frontID
-                    )) ? -12.0 : 0.0
-                    return persisted + sessionPenalty
-                },
-                isValidWord: isValidWord
-            )
-            decision = evaluation.decision
         } else {
-            let candidate = AutoConvertCandidateGenerator.bestCandidate(
-                typed: pair.original,
-                converted: pair.converted,
-                targetLanguage: targetLang,
-                isValidWord: isValidWord
-            ) ?? AutoConvertCandidate(
-                typedRaw: pair.original,
-                convertedRaw: pair.converted,
-                convertedWord: pair.converted,
-                suffix: "",
-                kind: .directWord
-            )
-            decision = LayoutDetector.decide(
-                candidate: candidate,
-                currentLang: langs.current,
-                otherLang: targetLang,
-                capsLock: capsLock,
-                policy: policy,
-                isCurrentWordValid: isValidWord(SmartTokenizer.lexicalCore(of: pair.original), langs.current),
-                isConvertedWordValid: isValidWord(candidate.convertedWord, targetLang),
-                context: AutoConvertContext(previousWord: contextWords.last)
+            // V3 is the only production automatic decoder and currently supports
+            // EN/RU. Missing model data or another language pair must keep text.
+            return TokenHandlingResult(
+                consumeBoundary: false,
+                resolvedText: pair.original,
+                resolvedLanguage: langs.current,
+                wasConverted: false
             )
         }
         let candidate = decision.candidate
@@ -740,6 +699,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         switch execution {
         case .postedUnverified:
+            postedAutomaticReplacementCount += 1
             return TokenHandlingResult(
                 consumeBoundary: snapshot.boundary.shouldConsumeOriginalEvent,
                 stageCompletion: true,
@@ -788,6 +748,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 language: targetLanguage,
                 expectedSequence: stagedSequence
             ) else { return }
+            verifiedAutomaticReplacementCount += 1
             if let targetLayoutID = transaction.targetLayoutID {
                 LayoutSwitcher.switchTo(layoutID: targetLayoutID)
             } else {

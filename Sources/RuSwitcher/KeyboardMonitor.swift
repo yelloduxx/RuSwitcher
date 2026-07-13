@@ -108,6 +108,9 @@ final class KeyboardMonitor: @unchecked Sendable {
 
     /// Нажатия набираемого слова — для движка перепечатки (без буфера обмена)
     var currentWordKeys: [TypedKey] { inputSession.currentKeys }
+    /// Double Shift can convert either the unfinished token or the last token
+    /// immediately before a boundary without probing the system pasteboard.
+    var hasManualToken: Bool { !inputSession.currentKeys.isEmpty || !prevWordKeys.isEmpty }
     /// Нажатия слова перед последней границей-пробелом
     private(set) var prevWordKeys: [TypedKey] = []
     /// Фронтмост-приложение на момент границы слова — чтобы авто-путь не перепечатал

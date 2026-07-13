@@ -4,6 +4,12 @@ import PackageDescription
 let package = Package(
     name: "RuSwitcher",
     platforms: [.macOS(.v13)],
+    products: [
+        .library(name: "RuSwitcherCore", targets: ["RuSwitcherCore"]),
+        .executable(name: "RuSwitcher", targets: ["RuSwitcher"]),
+        .executable(name: "RuSwitcherSimulator", targets: ["RuSwitcherSimulator"]),
+        .executable(name: "RuSwitcherTypingSimulator", targets: ["RuSwitcherTypingSimulator"]),
+    ],
     targets: [
         .target(
             name: "RuSwitcherCore",
@@ -11,16 +17,6 @@ let package = Package(
             resources: [
                 .process("Resources/language-model-v1.bin"),
             ]
-        ),
-        .target(
-            name: "RuSwitcherExperimentalV4",
-            dependencies: ["RuSwitcherCore"],
-            path: "Sources/RuSwitcherExperimentalV4",
-            resources: [
-                .process("Resources/layout-model-v4.json"),
-                .copy("Resources/LayoutRerankerV4.mlmodelc"),
-            ],
-            linkerSettings: [.linkedFramework("CoreML")]
         ),
         .target(
             name: "RuSwitcherAppSupport",
@@ -42,8 +38,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "RuSwitcherSimulator",
-            dependencies: ["RuSwitcherCore", "RuSwitcherExperimentalV4"],
+            dependencies: ["RuSwitcherCore"],
             path: "Sources/RuSwitcherSimulator"
+        ),
+        .executableTarget(
+            name: "RuSwitcherTypingSimulator",
+            dependencies: ["RuSwitcherCore"],
+            path: "Sources/RuSwitcherTypingSimulator"
         ),
         .testTarget(
             name: "RuSwitcherCoreTests",
@@ -54,11 +55,6 @@ let package = Package(
             name: "RuSwitcherAppSupportTests",
             dependencies: ["RuSwitcherAppSupport", "RuSwitcherCore"],
             path: "Tests/RuSwitcherAppSupportTests"
-        ),
-        .testTarget(
-            name: "RuSwitcherExperimentalV4Tests",
-            dependencies: ["RuSwitcherCore", "RuSwitcherExperimentalV4"],
-            path: "Tests/RuSwitcherExperimentalV4Tests"
         )
     ]
 )

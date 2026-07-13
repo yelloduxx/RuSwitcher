@@ -74,7 +74,7 @@ public enum LayoutDecoder {
             )
             return fixed(candidate, verdict: .keep, reason: .blockedCodeLike, evidence: [.blockedCode])
         }
-        let targetCanonical = LocalLanguageModel.canonical(targetLanguage)
+        let targetCanonical = LanguageCode.canonical(targetLanguage)
         func candidateWord(_ candidate: AutoConvertCandidate) -> String {
             FrequentWordLexicon.normalize(
                 SmartTokenizer.lexicalCore(of: candidate.convertedWord)
@@ -207,8 +207,8 @@ public enum LayoutDecoder {
         let shape = SmartTokenizer.shape(of: candidate.typedRaw)
         let convertedShape = SmartTokenizer.shape(of: candidate.replacement)
         let baseCandidate = candidate
-        let currentCanonical = LocalLanguageModel.canonical(currentLanguage)
-        let targetCanonical = LocalLanguageModel.canonical(targetLanguage)
+        let currentCanonical = LanguageCode.canonical(currentLanguage)
+        let targetCanonical = LanguageCode.canonical(targetLanguage)
         let targetKnownForShape = model.wordLogProbability(converted, language: targetCanonical)
         let targetExtendedEnglish = targetCanonical == "en" && model.isExtendedEnglishWord(converted)
         let targetExtendedRussian = targetCanonical == "ru" && model.isExtendedRussianWord(converted)
@@ -252,7 +252,7 @@ public enum LayoutDecoder {
         let sourceExtendedRussian = currentCanonical == "ru" && model.isExtendedRussianWord(literal)
         let targetKnown = targetKnownForShape
         let recentLanguages = contextWords.suffix(4).compactMap(SmartTokenizer.languageHint)
-            .map(LocalLanguageModel.canonical)
+            .map(LanguageCode.canonical)
         let recentEnglishCount = recentLanguages.count(where: { $0 == "en" })
         let recentRussianCount = recentLanguages.count(where: { $0 == "ru" })
         let lastTwoTokensAreEnglish = recentLanguages.suffix(2).count == 2
@@ -272,10 +272,10 @@ public enum LayoutDecoder {
                 ? .unlikely
                 : EnglishSourceClassifier.classify(literal, model: model))
             : nil
-        let strongScriptMismatch = LayoutDetector.hasStrongScriptMismatch(
+        let strongScriptMismatch = ScriptMismatchHeuristics.hasStrongMismatch(
             typed: candidate.typedRaw,
             converted: converted,
-            targetLang: targetLanguage
+            targetLanguage: targetLanguage
         )
         let characterAdvantage = model.characterLogProbability(converted, language: targetCanonical)
             - model.characterLogProbability(literal, language: currentCanonical)
@@ -393,8 +393,8 @@ public enum LayoutDecoder {
 
         let sourceHint = SmartTokenizer.languageHint(for: literal)
         let targetHint = SmartTokenizer.languageHint(for: converted)
-        if sourceHint.map({ LocalLanguageModel.canonical($0) == currentCanonical }) == true { literalScore += 1.2 }
-        if targetHint.map({ LocalLanguageModel.canonical($0) == targetCanonical }) == true { convertedScore += 1.2 }
+        if sourceHint.map({ LanguageCode.canonical($0) == currentCanonical }) == true { literalScore += 1.2 }
+        if targetHint.map({ LanguageCode.canonical($0) == targetCanonical }) == true { convertedScore += 1.2 }
         if candidate.kind == .trailingPunctuation || candidate.kind == .wrappingPunctuation {
             convertedScore += 0.35
             if !candidate.suffix.isEmpty,

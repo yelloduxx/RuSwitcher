@@ -15,7 +15,7 @@ public struct LanguageBelief: Equatable, Sendable {
     public mutating func observe(language: String?, weight: Double = 1) {
         russianLogOdds *= 0.72
         guard let language else { return }
-        switch LocalLanguageModel.canonical(language) {
+        switch LanguageCode.canonical(language) {
         case "ru": russianLogOdds += 1.35 * max(0, weight)
         case "en": russianLogOdds -= 1.35 * max(0, weight)
         default: break
@@ -25,7 +25,7 @@ public struct LanguageBelief: Equatable, Sendable {
 
     public func probability(language: String) -> Double {
         let ru = 1 / (1 + exp(-russianLogOdds))
-        switch LocalLanguageModel.canonical(language) {
+        switch LanguageCode.canonical(language) {
         case "ru": return ru
         case "en": return 1 - ru
         default: return 0.5

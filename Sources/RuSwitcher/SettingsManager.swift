@@ -54,13 +54,13 @@ final class SettingsManager: @unchecked Sendable {
         static let deniedWords = "com.ruswitcher.deniedWords"
         static let alwaysConvertWords = "com.ruswitcher.alwaysConvertWords"
         static let adaptiveRules = "com.ruswitcher.adaptiveRules.v1"
-        static let smartEngineV2 = "com.ruswitcher.smartEngineV2"
-        static let smartEngineV3 = "com.ruswitcher.smartEngineV3"
     }
 
     private init(defaults: UserDefaults) {
         self.defaults = defaults
         defaults.removeObject(forKey: "com.ruswitcher.shareAnonymousStatistics")
+        defaults.removeObject(forKey: "com.ruswitcher.smartEngineV2")
+        defaults.removeObject(forKey: "com.ruswitcher.smartEngineV3")
         defaults.removeObject(forKey: "com.ruswitcher.smartEngineV4Mode")
         defaults.removeObject(forKey: "com.ruswitcher.personalizationAdapterV4")
         if let support = FileManager.default.urls(
@@ -182,24 +182,6 @@ final class SettingsManager: @unchecked Sendable {
     var autoConvert: Bool {
         get { defaults.bool(forKey: Keys.autoConvert) }
         set { defaults.set(newValue, forKey: Keys.autoConvert) }
-    }
-
-    /// Hidden rollback switch for the new engine. It defaults to enabled; support can
-    /// temporarily disable it with `defaults` without replacing the application.
-    var smartEngineV2: Bool {
-        get {
-            if defaults.object(forKey: Keys.smartEngineV2) == nil { return true }
-            return defaults.bool(forKey: Keys.smartEngineV2)
-        }
-        set { defaults.set(newValue, forKey: Keys.smartEngineV2) }
-    }
-
-    var smartEngineV3: Bool {
-        get {
-            if defaults.object(forKey: Keys.smartEngineV3) == nil { return true }
-            return defaults.bool(forKey: Keys.smartEngineV3)
-        }
-        set { defaults.set(newValue, forKey: Keys.smartEngineV3) }
     }
 
     /// issue #10: показывать флаг раскладки у текстовой каретки (бета). По умолчанию ВЫКЛ.

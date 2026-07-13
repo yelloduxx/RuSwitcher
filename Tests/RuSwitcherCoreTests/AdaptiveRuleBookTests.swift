@@ -2,7 +2,7 @@ import XCTest
 @testable import RuSwitcherCore
 
 final class AdaptiveRuleBookTests: XCTestCase {
-    func testV2JSONMigratesWithoutLosingRules() throws {
+    func testLegacyJSONMigratesWithoutLosingRules() throws {
         let oldJSON = #"{"rules":[{"original":"ghbdtn","converted":"привет","appBundleID":null,"positiveCount":2,"negativeCount":0,"lastUsed":0}]}"#
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
@@ -36,7 +36,7 @@ final class AdaptiveRuleBookTests: XCTestCase {
         XCTAssertFalse(book.isConfirmed(original: "а", converted: "f", appBundleID: nil))
     }
 
-    func testV6MigrationRemovesUnsafeSingleCharacterRules() throws {
+    func testLegacySchemaRemovesUnsafeSingleCharacterRules() throws {
         let json = #"{"modelVersion":6,"rules":[{"original":"а","converted":"f","appBundleID":null,"positiveCount":22,"negativeCount":0,"confirmed":true,"lastUsed":800000000},{"original":"b","converted":"и","appBundleID":null,"positiveCount":40,"negativeCount":0,"confirmed":true,"lastUsed":800000000},{"original":"ghbdtn","converted":"привет","appBundleID":null,"positiveCount":2,"negativeCount":0,"confirmed":true,"lastUsed":800000000}]}"#
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
@@ -139,7 +139,7 @@ final class AdaptiveRuleBookTests: XCTestCase {
         ), -2.5)
     }
 
-    func testV4WeakApplicationExceptionRemovesLegacyBackspaceFeedback() throws {
+    func testLegacyWeakApplicationExceptionRemovesBackspaceFeedback() throws {
         let json = #"{"modelVersion":4,"rules":[{"original":"gjxtve","converted":"почему","appBundleID":null,"positiveCount":1,"negativeCount":0,"confirmed":false,"applicationException":false,"lastUsed":800000000},{"original":"gjxtve","converted":"почему","appBundleID":"chat.one","positiveCount":0,"negativeCount":1,"confirmed":false,"applicationException":true,"lastUsed":800000000}]}"#
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .secondsSince1970
