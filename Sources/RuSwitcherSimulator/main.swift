@@ -1,5 +1,6 @@
 import Foundation
 import RuSwitcherCore
+import RuSwitcherExperimentalV4
 
 private enum ExpectedVerdict: String, Codable {
     case switchLayout = "switch"

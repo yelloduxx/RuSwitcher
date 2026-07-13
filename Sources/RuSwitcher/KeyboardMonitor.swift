@@ -1,21 +1,31 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import RuSwitcherAppSupport
 import RuSwitcherCore
 
 /// Маркер для симулированных событий — KeyboardMonitor их игнорирует
 let kRuSwitcherEventMarker: Int64 = 0x52555300
+
+struct ManualTokenSnapshot {
+    let keys: [TypedKey]
+    let boundary: InputBoundary
+    let focus: FocusedElementIdentity
+    let sequence: UInt64
+    let editRevision: UInt64
+    let integrity: EditorIntegrity
+}
 
 /// Выделенная очередь для файлового I/O лога — чтобы запись на диск не блокировала
 /// поток обработки событий (event tap висит на главном run loop, а лог пишется
 /// для каждого нажатия при включённом debug).
 private let rsLogQueue = DispatchQueue(label: "com.ruswitcher.log")
 
-func rslog(_ msg: String) {
+func rslog(_ msg: StaticString) {
     // Thread-safe: читаем UserDefaults напрямую (без MainActor)
     guard UserDefaults.standard.bool(forKey: "com.ruswitcher.debugLog") else { return }
 
-    let line = "\(Date()): \(msg)\n"
+    let line = "\(Date()): \(String(describing: msg))\n"
     rsLogQueue.async {
         let logDir = NSHomeDirectory() + "/Library/Logs/RuSwitcher"
         let path = logDir + "/ruswitcher.log"
@@ -78,9 +88,13 @@ struct TriggerConfig {
 
 final class KeyboardMonitor: @unchecked Sendable {
     fileprivate var eventTap: CFMachPort?
+    fileprivate private(set) var activeTap = false
     private var runLoopSource: CFRunLoopSource?
-    private var inputSession = InputSession(contextLimit: ContextSnapshot.maximumTokens)
+    private var inputSession = InputSession(contextLimit: InputContextLimits.maximumTokens)
     private var observedFrontmostProcessID: pid_t?
+    private var physicalTranslation = KeyboardLayoutTranslationState()
+    private var physicalTranslationLayoutID: String?
+    private var physicalTranslationLayoutData: Data?
 
     /// Длина текущего набираемого слова
     var currentWordLength: Int { inputSession.currentKeys.count }
@@ -103,7 +117,6 @@ final class KeyboardMonitor: @unchecked Sendable {
     var soundArmed = false
 
     private var onAltTap: (() -> Void)?
-    private var onAltReconvert: (() -> Void)?
     /// Авто-конвертация получает неизменяемый снимок прямо на границе токена.
     /// Возвращаемое значение сообщает active event tap, нужно ли пропустить границу.
     var onTokenCompleted: ((TokenSnapshot, CGEventTapProxy) -> TokenHandlingResult)?
@@ -128,22 +141,18 @@ final class KeyboardMonitor: @unchecked Sendable {
     private var lastTapTime: Date?
     private let tapWindow: TimeInterval = 0.4
 
-    func start(
-        onAltTap: @escaping () -> Void,
-        onAltReconvert: @escaping () -> Void
-    ) -> Bool {
+    func start(onAltTap: @escaping () -> Void) -> Bool {
         self.onAltTap = onAltTap
-        self.onAltReconvert = onAltReconvert
 
         let precheck = CGPreflightListenEventAccess()
-        rslog("Preflight check = \(precheck)")
+        rslog("event_access_preflight")
         if !precheck {
             rslog("Requesting access...")
             CGRequestListenEventAccess()
         }
 
         triggerConfig = TriggerConfig.current()
-        rslog("Attempting to create event tap... (trigger=\(SettingsManager.shared.triggerKey) capsLock=\(triggerConfig.isCapsLock))")
+        rslog("event_tap_creating")
         let mask: CGEventMask =
             (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.flagsChanged.rawValue)
@@ -153,13 +162,14 @@ final class KeyboardMonitor: @unchecked Sendable {
         // Smart auto-conversion consumes a space only when it is replayed as part of
         // one ordered conversion transaction. Otherwise the tap remains listen-only.
         let needsActiveTap = triggerConfig.isCapsLock || SettingsManager.shared.autoConvert
+        activeTap = needsActiveTap
         let options: CGEventTapOptions = needsActiveTap ? .defaultTap : .listenOnly
 
         // Режим удалённого стола: session-уровень видит проброшенные Screen Sharing
         // нажатия (они инжектятся через CGEventPost, а HID-tap их не видит).
         let tapLocation: CGEventTapLocation =
             SettingsManager.shared.remoteDesktopMode ? .cgSessionEventTap : .cghidEventTap
-        rslog("Tap location: \(SettingsManager.shared.remoteDesktopMode ? "session (remote desktop)" : "hid")")
+        rslog("event_tap_location_selected")
 
         guard let tap = CGEvent.tapCreate(
             tap: tapLocation,
@@ -191,16 +201,18 @@ final class KeyboardMonitor: @unchecked Sendable {
         }
         eventTap = nil
         runLoopSource = nil
+        activeTap = false
+        resetPhysicalTranslation()
     }
 
     /// Перезапускает tap с актуальным конфигом триггера. Нужен при смене настройки —
     /// особенно при переключении на/с Caps Lock, т.к. меняется режим tap (consume).
     @discardableResult
     func reconfigure() -> Bool {
-        guard let t = onAltTap, let r = onAltReconvert else { return false }
+        guard let tap = onAltTap else { return false }
         rslog("Reconfiguring trigger…")
         stop()
-        return start(onAltTap: t, onAltReconvert: r)
+        return start(onAltTap: tap)
     }
 
     func markConverted() {
@@ -222,6 +234,40 @@ final class KeyboardMonitor: @unchecked Sendable {
         }
     }
 
+    private func resetPhysicalTranslation() {
+        physicalTranslation.reset()
+        physicalTranslationLayoutID = nil
+        physicalTranslationLayoutData = nil
+    }
+
+    fileprivate func interpretedProducedText(
+        keyCode: UInt16,
+        flags: CGEventFlags,
+        sourceLayoutID: String?,
+        eventProducedText: String?
+    ) -> String? {
+        guard let sourceLayoutID, !sourceLayoutID.isEmpty else { return eventProducedText }
+        if physicalTranslationLayoutID != sourceLayoutID {
+            physicalTranslation.reset()
+            physicalTranslationLayoutID = sourceLayoutID
+            physicalTranslationLayoutData = LayoutSwitcher.installedLayouts()
+                .first(where: { LayoutSwitcher.sourceID($0) == sourceLayoutID })
+                .flatMap(DynamicKeyMapping.layoutDataForSource)
+        }
+        guard let layoutData = physicalTranslationLayoutData,
+              let translated = physicalTranslation.translate(
+                keyCode: keyCode,
+                shift: flags.contains(.maskShift),
+                capsLock: flags.contains(.maskAlphaShift),
+                layoutData: layoutData
+              ) else {
+            return eventProducedText
+        }
+        // A dead-key starter emits no text yet. Its physical key remains in the
+        // token and will be reconstructed once the composition is committed.
+        return translated.isEmpty ? nil : translated
+    }
+
     private func completeToken(boundary: InputBoundary, proxy: CGEventTapProxy) -> TokenHandlingResult {
         guard !inputSession.currentKeys.isEmpty else { return .passThrough }
         let app = NSWorkspace.shared.frontmostApplication
@@ -234,7 +280,7 @@ final class KeyboardMonitor: @unchecked Sendable {
             return .passThrough
         }
         guard inputSession.beginCommit(expectedRevision: snapshot.editRevision) else {
-            rslog("input-session: stale snapshot rejected rev=\(snapshot.editRevision)")
+            rslog("input_session_stale_snapshot")
             inputSession.invalidate(clearContext: true)
             return .passThrough
         }
@@ -245,6 +291,12 @@ final class KeyboardMonitor: @unchecked Sendable {
         let resolved = result.resolvedText ?? snapshot.producedText
         if result.invalidateSession {
             inputSession.invalidate(clearContext: true)
+        } else if result.stageCompletion {
+            inputSession.stageCompletion(
+                resolvedText: result.resolvedText,
+                language: result.resolvedLanguage,
+                wasConverted: result.wasConverted
+            )
         } else if result.finalizeToken {
             inputSession.complete(
                 resolvedText: resolved,
@@ -256,6 +308,83 @@ final class KeyboardMonitor: @unchecked Sendable {
         return result
     }
 
+    func confirmStagedConversion(
+        text: String,
+        language: String,
+        expectedSequence: UInt64
+    ) -> Bool {
+        guard inputSession.confirmStagedCompletion(
+            resolvedText: text,
+            language: language,
+            wasConverted: true,
+            expectedSequence: expectedSequence
+        ) else { return false }
+        wordBeforeBoundaryLength = 0
+        boundaryCount = 0
+        prevWordKeys = []
+        keysTypedSinceConversion = false
+        return true
+    }
+
+    func finishUnverifiedPostedConversion(expectedSequence: UInt64) {
+        guard isStagedCompletionCurrent(expectedSequence: expectedSequence) else { return }
+        wordBeforeBoundaryLength = 0
+        boundaryCount = 0
+        prevWordKeys = []
+        keysTypedSinceConversion = true
+    }
+
+    func isStagedCompletionCurrent(expectedSequence: UInt64) -> Bool {
+        inputSession.sequence == expectedSequence && inputSession.currentKeys.isEmpty
+    }
+
+    func manualTokenSnapshot() -> ManualTokenSnapshot? {
+        let keys: [TypedKey]
+        let boundary: InputBoundary
+        if !inputSession.currentKeys.isEmpty {
+            keys = inputSession.currentKeys
+            boundary = .punctuation("")
+        } else if !prevWordKeys.isEmpty {
+            keys = prevWordKeys
+            boundary = .space(count: max(1, boundaryCount))
+        } else {
+            return nil
+        }
+        let app = NSWorkspace.shared.frontmostApplication
+        let focus = FocusedElementIdentity(
+            processID: app?.processIdentifier ?? 0,
+            bundleID: app?.bundleIdentifier,
+            identifier: app.flatMap { focusedElementIdentifier(processID: $0.processIdentifier) }
+        )
+        return ManualTokenSnapshot(
+            keys: keys,
+            boundary: boundary,
+            focus: focus,
+            sequence: inputSession.sequence,
+            editRevision: inputSession.editRevision,
+            integrity: inputSession.integrity
+        )
+    }
+
+    func stageManualConversion(
+        expectedSequence: UInt64,
+        expectedRevision: UInt64,
+        hadCurrentToken: Bool
+    ) -> UInt64? {
+        guard inputSession.sequence == expectedSequence,
+              inputSession.editRevision == expectedRevision,
+              inputSession.integrity == .clean else { return nil }
+        if hadCurrentToken,
+           !inputSession.beginCommit(expectedRevision: expectedRevision) { return nil }
+        return inputSession.stageCompletion()
+    }
+
+    func invalidateStagedCompletion(expectedSequence: UInt64) {
+        guard isStagedCompletionCurrent(expectedSequence: expectedSequence) else { return }
+        inputSession.invalidate(clearContext: true)
+        keysTypedSinceConversion = true
+    }
+
     private func focusedElementIdentifier(processID: pid_t) -> String? {
         let app = AXUIElementCreateApplication(processID)
         var focusedRaw: AnyObject?
@@ -263,8 +392,9 @@ final class KeyboardMonitor: @unchecked Sendable {
             app,
             kAXFocusedUIElementAttribute as CFString,
             &focusedRaw
-        ) == .success, let focusedRaw else { return nil }
-        let element = focusedRaw as! AXUIElement
+        ) == .success, let focusedRaw,
+          CFGetTypeID(focusedRaw) == AXUIElementGetTypeID() else { return nil }
+        let element = unsafeDowncast(focusedRaw, to: AXUIElement.self)
         var identifierRaw: AnyObject?
         if AXUIElementCopyAttributeValue(
             element,
@@ -292,17 +422,19 @@ final class KeyboardMonitor: @unchecked Sendable {
         triggerArmed = false
         lastTapTime = nil
         keysTypedSinceConversion = true
+        resetPhysicalTranslation()
         if caretFlagEnabled { DispatchQueue.main.async { [weak self] in self?.onUserInput?() } }   // issue #10: клик прячет флаг у каретки
         fullReset(invalidated: true)
         onEditingInvalidated?()
     }
 
     fileprivate func recoverAfterTapDisabled(reason: CGEventType) {
-        rslog("Event tap recovered after disable type=\(reason.rawValue); input state reset")
+        rslog("event_tap_recovered")
         triggerArmed = false
         triggerPressTime = nil
         lastTapTime = nil
         keysTypedSinceConversion = true
+        resetPhysicalTranslation()
         fullReset(invalidated: true)
         onEditingInvalidated?()
     }
@@ -324,16 +456,21 @@ final class KeyboardMonitor: @unchecked Sendable {
            previous != current {
             rslog("input-session: frontmost process changed; state invalidated")
             keysTypedSinceConversion = true
+            resetPhysicalTranslation()
             fullReset(invalidated: true)
             onEditingInvalidated?()
         }
         observedFrontmostProcessID = frontmostProcessID
         triggerArmed = false
         lastTapTime = nil
+        let spaceDisposition = InputEventClassifier.classifySpaceKey(
+            isSpaceKey: keyCode == KC.space,
+            producedText: producedText
+        )
         let hadRecentCorrection = !keysTypedSinceConversion
         let passiveBoundaryAfterConversion = hadRecentCorrection
             && currentWordLength == 0
-            && (keyCode == KC.space || keyCode == KC.enter || keyCode == KC.tab)
+            && (spaceDisposition == .boundary || keyCode == KC.enter || keyCode == KC.tab)
         if !passiveBoundaryAfterConversion { keysTypedSinceConversion = true }
         if caretFlagEnabled { DispatchQueue.main.async { [weak self] in self?.onUserInput?() } }   // issue #10: спрятать флаг при печати
 
@@ -356,9 +493,15 @@ final class KeyboardMonitor: @unchecked Sendable {
         // «грязный» модификатор (stale .maskAlternate и т.п.) — иначе счётчик
         // слова не сбрасывается и конвертация захватывает лишние символы.
 
-        // Space is a non-ambiguous boundary; punctuation is handled below after its
-        // physical key has been included in candidate generation.
-        if keyCode == KC.space {
+        // A dead-key layout can emit a quote or accent from physical Space. The
+        // preceding dead key is already represented in the token, so this commit
+        // event must pass through without becoming a boundary or a second key.
+        if spaceDisposition == .textComposition {
+            return false
+        }
+
+        // A Space event whose actual payload is a space is a token boundary.
+        if spaceDisposition == .boundary {
             if currentWordLength > 0 {
                 wordBeforeBoundaryLength = currentWordLength
                 boundaryCount = 1
@@ -372,14 +515,20 @@ final class KeyboardMonitor: @unchecked Sendable {
             return false
         }
 
-        // Enter and Tab are native app actions, so they are never consumed. The word
-        // is still evaluated synchronously before the event is passed through.
+        // If a replacement is posted, Enter/Tab are consumed and replayed to the
+        // validated target PID. Passing the original event through can let it overtake
+        // targeted Backspaces and corrupt the following line.
         if keyCode == KC.enter || keyCode == KC.tab {
+            var handling = TokenHandlingResult.passThrough
             if currentWordLength > 0 {
                 wordBeforeBoundaryLength = currentWordLength
                 prevWordKeys = currentWordKeys
                 prevWordBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-                _ = completeToken(boundary: keyCode == KC.enter ? .enter : .tab, proxy: proxy)
+                handling = completeToken(boundary: keyCode == KC.enter ? .enter : .tab, proxy: proxy)
+            }
+            if handling.consumeBoundary {
+                keysTypedSinceConversion = true
+                return true
             }
             fullReset(invalidated: true)
             onEditingInvalidated?()
@@ -602,7 +751,7 @@ final class KeyboardMonitor: @unchecked Sendable {
     }
 
     private func fireConversion() {
-        rslog("trigger: CONVERT selection-first=1 undoEligible=\(!keysTypedSinceConversion)")
+        rslog("manual_trigger_fired")
         DispatchQueue.main.async { [weak self] in self?.onAltTap?() }
     }
 }
@@ -640,22 +789,39 @@ private func keyboardCallback(
     if type == .keyDown {
         let keyCode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let remote = SettingsManager.shared.remoteDesktopMode
-        // Удалёнка: игнорируем авто-повтор клавиш — латентность Screen Sharing рождает
-        // ложные повторы (тот самый «фффффф»), засоряющие буфер конверсии.
-        if event.getIntegerValueField(.keyboardEventAutorepeat) != 0, remote {
-            return Unmanaged.passRetained(event)
-        }
         // Capture the produced Unicode character for every local event. This is used
         // only as immutable context; physical-key conversion still uses the key code.
         var buf = [UniChar](repeating: 0, count: 4)
         var len = 0
         event.keyboardGetUnicodeString(maxStringLength: 4, actualStringLength: &len, unicodeString: &buf)
-        let producedText = len > 0 ? String(utf16CodeUnits: buf, count: len) : nil
+        let eventProducedText = len > 0 ? String(utf16CodeUnits: buf, count: len) : nil
+        let sourceLayoutID = remote && keyCode == 0 ? nil : LayoutSwitcher.currentLayoutID()
+        let producedText = remote
+            ? eventProducedText
+            : monitor.interpretedProducedText(
+                keyCode: keyCode,
+                flags: event.flags,
+                sourceLayoutID: sourceLayoutID,
+                eventProducedText: eventProducedText
+            )
         let producedChar = producedText?.first
         let forwardedChar = remote && keyCode == 0 ? producedChar : nil
-        if let producedChar, remote, keyCode == 0, SettingsManager.shared.debugLogEnabled {
-            let scalar = producedChar.unicodeScalars.first?.value ?? 0
-            rslog("remote: forwarded char U+\(String(scalar, radix: 16))")
+        if event.getIntegerValueField(.keyboardEventAutorepeat) != 0, remote {
+            let repeatedKey = TypedKey(
+                keyCode: keyCode,
+                shift: event.flags.contains(.maskShift),
+                caps: event.flags.contains(.maskAlphaShift),
+                char: remote && keyCode == 0 ? producedChar : nil,
+                producedCharacter: producedChar,
+                producedText: producedText,
+                sourceLayoutID: sourceLayoutID
+            )
+            if InputEventClassifier.classifyRemoteAutorepeat(
+                activeTap: monitor.activeTap,
+                key: repeatedKey
+            ) == .suppress {
+                return nil
+            }
         }
         let consume = monitor.handleKeyDown(
             keyCode: keyCode,
@@ -664,7 +830,7 @@ private func keyboardCallback(
             char: forwardedChar,
             producedCharacter: producedChar,
             producedText: producedText,
-            sourceLayoutID: remote && keyCode == 0 ? nil : LayoutSwitcher.currentLayoutID()
+            sourceLayoutID: sourceLayoutID
         )
         if consume { return nil }
     } else if type == .flagsChanged {

@@ -11,28 +11,29 @@
     "mixed-layout-00926 tokens 1-5",
     "mixed-layout-02466 tokens 1-9"
   ],
+  "inputModel": "physical keys for the expected target text under the listed source layout",
   "phases": [
     {"sourceLanguage": "en", "text": "login?! "},
-    {"sourceLanguage": "ru", "text": "(куыгде; "},
-    {"sourceLanguage": "en", "text": "{xnj} "},
+    {"sourceLanguage": "ru", "text": "куыгдеж "},
+    {"sourceLanguage": "en", "text": "xnj "},
     {"sourceLanguage": "ru", "text": "что. "},
-    {"sourceLanguage": "en", "text": "(nf,kbwf} "},
+    {"sourceLanguage": "en", "text": "nf,kbwf "},
 
-    {"sourceLanguage": "en", "text": "(dyenhb\" "},
-    {"sourceLanguage": "ru", "text": "вудуеу... "},
-    {"sourceLanguage": "en", "text": "ghjdthrf. "},
-    {"sourceLanguage": "ru", "text": "ыгзздшук.  "},
+    {"sourceLanguage": "en", "text": "dyenhb "},
+    {"sourceLanguage": "ru", "text": "вудуеуююю "},
+    {"sourceLanguage": "en", "text": "ghjdthrf/ "},
+    {"sourceLanguage": "ru", "text": "ыгзздшукю  "},
     {"sourceLanguage": "en", "text": "en-US "},
 
     {"sourceLanguage": "en", "text": "ghfdbkmysq "},
     {"sourceLanguage": "en", "text": "\"tckb! "},
     {"sourceLanguage": "ru", "text": "щдв "},
     {"sourceLanguage": "en", "text": "test@example.com "},
-    {"sourceLanguage": "en", "text": "njdfh. "},
+    {"sourceLanguage": "en", "text": "njdfh/ "},
     {"sourceLanguage": "en", "text": "ddjl "},
     {"sourceLanguage": "en", "text": "send "},
     {"sourceLanguage": "en", "text": "gthtrk.xtybt! "},
     {"sourceLanguage": "en", "text": "afqk- "}
   ],
-  "expectedText": "login?! (result; {что} что. (таблица} (внутри\" delete... проверка. supplier.  en-US правильный \"если! old test@example.com товар. ввод send переключение! файл- "
+  "expectedText": "login?! result; что что. таблица внутри delete... проверка. supplier.  en-US правильный \"если! old test@example.com товар. ввод send переключение! файл- "
 }

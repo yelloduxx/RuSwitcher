@@ -11,26 +11,17 @@ private struct HIDProbeResult: Codable {
     let postEventAccess: Bool
     let manualText: String?
     let learningConfirmed: Bool?
+    let layoutMismatchStrokes: [String]
+    let boundaryDeliveryTimeouts: [Int]
 }
 
 private struct HIDProbeScenario {
     struct Phase {
         let sourceLanguage: String
-        let keyCodes: [CGKeyCode]
-        let producedText: String?
-        let typedText: String?
-
-        init(sourceLanguage: String, keyCodes: [CGKeyCode], producedText: String? = nil) {
-            self.sourceLanguage = sourceLanguage
-            self.keyCodes = keyCodes
-            self.producedText = producedText
-            self.typedText = nil
-        }
+        let typedText: String
 
         init(sourceLanguage: String, typedText: String) {
             self.sourceLanguage = sourceLanguage
-            self.keyCodes = []
-            self.producedText = nil
             self.typedText = typedText
         }
     }
@@ -57,45 +48,6 @@ private struct HIDProbeScenario {
 
     static func named(_ name: String) -> HIDProbeScenario? {
         switch name {
-        case "use-comma":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [32, 1, 14, 43, 49])])
-        case "use-comma-no-boundary":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [32, 1, 14, 43])])
-        case "use-comma-after-russian":
-            return HIDProbeScenario(name: name, phases: [
-                Phase(sourceLanguage: "en", keyCodes: [5, 40, 3, 16, 49]), // gkfy -> план
-                Phase(sourceLanguage: "en", keyCodes: [32, 1, 14, 43], producedText: "use,"),
-            ])
-        case "revolution":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [4, 17, 2, 38, 40, 47, 13, 11, 6, 49])])
-        case "privetulki":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [5, 4, 11, 2, 17, 45, 14, 40, 46, 15, 11, 49])])
-        case "hello-from-russian":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [4, 14, 37, 37, 31, 49])])
-        case "use-comma-from-russian":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [32, 1, 14, 43, 49])])
-        case "fable-from-russian":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [3, 0, 11, 37, 14, 49])])
-        case "wipe-from-english":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [5, 4, 38, 45, 17, 4, 17, 45, 46, 49])])
-        case "butt-from-english":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [35, 3, 37, 16, 11, 13, 3, 49])])
-        case "slur-from-english":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [5, 11, 37, 4, 49])])
-        case "cyst-stays-english":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [8, 16, 1, 17, 49])])
-        case "juju-stays-english":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [38, 32, 38, 32, 49])])
-        case "codex-stays-english":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [8, 31, 2, 14, 7, 49])])
-        case "loosen-from-russian":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [37, 31, 31, 1, 14, 45, 49])])
-        case "hello-comma-from-russian":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [4, 14, 37, 37, 31, 43, 49])])
-        case "world-period-from-russian":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "ru", keyCodes: [13, 31, 15, 37, 2, 47, 49])])
-        case "privet-period-from-english":
-            return HIDProbeScenario(name: name, phases: [Phase(sourceLanguage: "en", keyCodes: [5, 4, 11, 2, 17, 45, 47, 49])])
         case "manual-learning-double-shift":
             let source = "qazwsxedc"
             return HIDProbeScenario(
@@ -132,12 +84,12 @@ private struct HIDProbeScenario {
 private struct HIDProbeStroke {
     let keyCode: CGKeyCode
     let shift: Bool
-    let producedCharacter: Character?
 }
 
 private struct HIDProbePlannedPhase {
     let sourceLanguage: String
     let strokes: [HIDProbeStroke]
+    let trailingBoundary: Character?
 }
 
 @MainActor
@@ -152,7 +104,11 @@ enum HIDIntegrationProbe {
         run(scenario: scenario, resultPath: resultPath)
     }
 
-    static func run(fixturePath: String, resultPath: String?) -> Never {
+    static func run(
+        fixturePath: String,
+        resultPath: String?,
+        startProductionMonitoring: Bool = true
+    ) -> Never {
         let scenario: HIDProbeScenario
         do {
             scenario = try HIDProbeScenario.fixture(at: fixturePath)
@@ -160,12 +116,24 @@ enum HIDIntegrationProbe {
             FileHandle.standardError.write(Data("invalid HID probe fixture: \(error)\n".utf8))
             exit(64)
         }
-        run(scenario: scenario, resultPath: resultPath)
+        run(
+            scenario: scenario,
+            resultPath: resultPath,
+            startProductionMonitoring: startProductionMonitoring
+        )
     }
 
-    private static func run(scenario: HIDProbeScenario, resultPath: String?) -> Never {
+    private static func run(
+        scenario: HIDProbeScenario,
+        resultPath: String?,
+        startProductionMonitoring: Bool = true
+    ) -> Never {
         let app = NSApplication.shared
-        let delegate = HIDProbeDelegate(scenario: scenario, resultPath: resultPath)
+        let delegate = HIDProbeDelegate(
+            scenario: scenario,
+            resultPath: resultPath,
+            startProductionMonitoring: startProductionMonitoring
+        )
         retainedDelegate = delegate
         app.delegate = delegate
         app.run()
@@ -184,10 +152,20 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     private var eventSource: CGEventSource?
     private var plannedPhases: [HIDProbePlannedPhase] = []
     private var manualObservedText: String?
+    private var layoutMismatchStrokes: [String] = []
+    private var boundaryDeliveryTimeouts: [Int] = []
+    private var didStartProductionMonitoring = false
+    private let productionDelegate = AppDelegate()
+    private let startProductionMonitoring: Bool
 
-    init(scenario: HIDProbeScenario, resultPath: String?) {
+    init(
+        scenario: HIDProbeScenario,
+        resultPath: String?,
+        startProductionMonitoring: Bool = true
+    ) {
         self.scenario = scenario
         self.resultPath = resultPath
+        self.startProductionMonitoring = startProductionMonitoring
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -203,15 +181,18 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isAutomaticTextCompletionEnabled = false
         textView.enabledTextCheckingTypes = 0
         textView.isContinuousSpellCheckingEnabled = false
         window.contentView = textView
         window.makeKeyAndOrderFront(nil)
         window.makeFirstResponder(textView)
         NSApp.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         self.window = window
 
         originalLayoutID = LayoutSwitcher.currentLayoutID()
+        releaseModifiers()
         if let source = scenario.manualLearningSource {
             startManualLearningProbe(source: source)
             return
@@ -222,8 +203,10 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
-            self?.postPhysicalKeys()
+        // Let any input queued before this probe drain before the production
+        // monitor starts. The editor is cleared only after focus is stable.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.prepareAutomatedInput()
         }
     }
 
@@ -232,12 +215,32 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             finish(text: "<layout-unavailable>")
             return
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.prepareManualLearningInput(source: source)
+        }
+    }
+
+    private func prepareAutomatedInput(attempt: Int = 0) {
+        guard focusProbeWindow(attempt: attempt) else { return }
+        textView.string = ""
+        textView.setSelectedRange(NSRange(location: 0, length: 0))
+        releaseModifiers()
+        startProductionMonitoringIfNeeded()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.postPhysicalKeys()
+        }
+    }
+
+    private func prepareManualLearningInput(source: String, attempt: Int = 0) {
+        guard focusProbeWindow(attempt: attempt) else { return }
         textView.string = source
         textView.setSelectedRange(NSRange(location: 0, length: (source as NSString).length))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        releaseModifiers()
+        startProductionMonitoringIfNeeded()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.postDoubleShift()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { [weak self] in
             guard let self else { return }
             self.manualObservedText = self.textView.string
             self.textView.string = ""
@@ -245,6 +248,50 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             self.window?.makeFirstResponder(self.textView)
             self.postPhysicalKeys()
         }
+    }
+
+    private func focusProbeWindow(attempt: Int) -> Bool {
+        NSApp.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        window?.makeKeyAndOrderFront(nil)
+        window?.makeFirstResponder(textView)
+        let focused = NSWorkspace.shared.frontmostApplication?.processIdentifier
+            == ProcessInfo.processInfo.processIdentifier
+            && window?.isKeyWindow == true
+            && window?.firstResponder === textView
+        guard !focused, attempt < 10 else {
+            if !focused { finish(text: "<focus-unavailable>") }
+            return focused
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self else { return }
+            if self.scenario.manualLearningSource != nil {
+                self.prepareManualLearningInput(
+                    source: self.scenario.manualLearningSource ?? "",
+                    attempt: attempt + 1
+                )
+            } else {
+                self.prepareAutomatedInput(attempt: attempt + 1)
+            }
+        }
+        return false
+    }
+
+    private func startProductionMonitoringIfNeeded() {
+        guard startProductionMonitoring, !didStartProductionMonitoring else { return }
+        didStartProductionMonitoring = true
+        let settings = SettingsManager.shared
+        settings.autoSwitchEnabled = true
+        settings.autoConvert = true
+        settings.smartEngineV2 = true
+        settings.smartEngineV3 = true
+        settings.triggerKey = "shift"
+        settings.triggerRightOnly = false
+        settings.triggerDoubleTap = true
+        settings.remoteDesktopMode = false
+        settings.deniedWords = []
+        settings.alwaysConvertWords = []
+        productionDelegate.startHIDProbeMonitoring()
     }
 
     private func postDoubleShift() {
@@ -275,9 +322,11 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     private func postPhysicalKeys(attempt: Int = 0) {
         guard !didPostKeys else { return }
         NSApp.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         window?.makeKeyAndOrderFront(nil)
         window?.makeFirstResponder(textView)
-        guard window?.isKeyWindow == true, window?.firstResponder === textView else {
+        let isFrontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+        guard isFrontmost, window?.isKeyWindow == true, window?.firstResponder === textView else {
             if attempt < 10 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                     self?.postPhysicalKeys(attempt: attempt + 1)
@@ -294,24 +343,21 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         source.userData = 0x52535445 // RSTE: deliberately not RuSwitcher's synthetic marker.
         var phases: [HIDProbePlannedPhase] = []
         for phase in scenario.phases {
-            let strokes: [HIDProbeStroke]
-            if let typedText = phase.typedText {
-                guard let planned = physicalStrokes(for: typedText, language: phase.sourceLanguage) else {
-                    finish(text: "<unmappable-fixture-text>")
-                    return
-                }
-                strokes = planned
-            } else {
-                let producedCharacters = phase.producedText.map(Array.init)
-                strokes = phase.keyCodes.enumerated().map { index, keyCode in
-                    HIDProbeStroke(
-                        keyCode: keyCode,
-                        shift: false,
-                        producedCharacter: producedCharacters?[safe: index]
-                    )
-                }
+            guard let strokes = physicalStrokes(
+                for: phase.typedText,
+                language: phase.sourceLanguage
+            ) else {
+                finish(text: "<unmappable-fixture-text>")
+                return
             }
-            phases.append(HIDProbePlannedPhase(sourceLanguage: phase.sourceLanguage, strokes: strokes))
+            let trailingBoundary = phase.typedText.last.flatMap { character in
+                [" ", "\n", "\t"].contains(character) ? character : nil
+            }
+            phases.append(HIDProbePlannedPhase(
+                sourceLanguage: phase.sourceLanguage,
+                strokes: strokes,
+                trailingBoundary: trailingBoundary
+            ))
         }
         didPostKeys = true
         eventSource = source
@@ -332,7 +378,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             finish(text: "<layout-unavailable>")
             return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) { [weak self] in
             self?.postStroke(phaseIndex: phaseIndex, strokeIndex: 0)
         }
     }
@@ -341,36 +387,19 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         guard plannedPhases.indices.contains(phaseIndex), let source = eventSource else { return }
         let phase = plannedPhases[phaseIndex]
         guard phase.strokes.indices.contains(strokeIndex) else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                self?.postPhase(at: phaseIndex + 1)
-            }
+            waitForBoundaryDelivery(phaseIndex: phaseIndex, attempt: 0)
             return
         }
         let stroke = phase.strokes[strokeIndex]
-        if stroke.shift {
-            let shiftDown = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: 56,
-                keyDown: true
-            )
-            shiftDown?.flags = [.maskShift]
-            shiftDown?.post(tap: .cghidEventTap)
+        if LayoutSwitcher.currentLanguageCode() != phase.sourceLanguage {
+            layoutMismatchStrokes.append("\(phaseIndex):\(strokeIndex)")
         }
         let keyDown = CGEvent(
             keyboardEventSource: source,
             virtualKey: stroke.keyCode,
             keyDown: true
         )
-        if stroke.shift { keyDown?.flags = [.maskShift] }
-        if let producedCharacter = stroke.producedCharacter {
-            let utf16 = Array(String(producedCharacter).utf16)
-            utf16.withUnsafeBufferPointer { buffer in
-                keyDown?.keyboardSetUnicodeString(
-                    stringLength: buffer.count,
-                    unicodeString: buffer.baseAddress
-                )
-            }
-        }
+        keyDown?.flags = stroke.shift ? [.maskShift] : []
         keyDown?.post(tap: .cghidEventTap)
 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { [weak self] in
@@ -380,22 +409,33 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
                 virtualKey: stroke.keyCode,
                 keyDown: false
             )
-            if stroke.shift { keyUp?.flags = [.maskShift] }
+            keyUp?.flags = stroke.shift ? [.maskShift] : []
             keyUp?.post(tap: .cghidEventTap)
-            if stroke.shift {
-                CGEvent(
-                    keyboardEventSource: source,
-                    virtualKey: 56,
-                    keyDown: false
-                )?.post(tap: .cghidEventTap)
-            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) { [weak self] in
                 self?.postStroke(phaseIndex: phaseIndex, strokeIndex: strokeIndex + 1)
             }
         }
     }
 
+    private func waitForBoundaryDelivery(phaseIndex: Int, attempt: Int) {
+        guard plannedPhases.indices.contains(phaseIndex) else { return }
+        let boundary = plannedPhases[phaseIndex].trailingBoundary
+        if boundary == nil || textView.string.last == boundary {
+            postPhase(at: phaseIndex + 1)
+            return
+        }
+        guard attempt < 100 else {
+            boundaryDeliveryTimeouts.append(phaseIndex)
+            postPhase(at: phaseIndex + 1)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.001) { [weak self] in
+            self?.waitForBoundaryDelivery(phaseIndex: phaseIndex, attempt: attempt + 1)
+        }
+    }
+
     private func finish(text: String) {
+        releaseModifiers()
         let resultingLayoutID = LayoutSwitcher.currentLayoutID()
         if !originalLayoutID.isEmpty { LayoutSwitcher.switchTo(layoutID: originalLayoutID) }
         let result = HIDProbeResult(
@@ -410,7 +450,9 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
                     converted: KeyMapping.convert(source),
                     appBundleID: nil
                 )
-            }
+            },
+            layoutMismatchStrokes: layoutMismatchStrokes,
+            boundaryDeliveryTimeouts: boundaryDeliveryTimeouts
         )
         let data = try! JSONEncoder().encode(result)
         if let resultPath {
@@ -434,29 +476,37 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
-    private func physicalStrokes(for text: String, language: String) -> [HIDProbeStroke]? {
-        guard let layout = inputSource(for: language) else { return nil }
-        return text.map { character in
-            physicalStroke(for: character, layout: layout)
-        }.reduce(into: Optional<[HIDProbeStroke]>([])) { result, stroke in
-            guard result != nil, let stroke else {
-                result = nil
-                return
-            }
-            result?.append(stroke)
+    private func releaseModifiers() {
+        guard let source = CGEventSource(stateID: .hidSystemState) else { return }
+        source.userData = 0x52535445
+        for keyCode: CGKeyCode in [54, 55, 56, 57, 58, 59, 60, 61, 62] {
+            let event = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+            event?.flags = []
+            event?.post(tap: .cghidEventTap)
         }
     }
 
-    private func physicalStroke(for character: Character, layout: TISInputSource) -> HIDProbeStroke? {
-        if character == " " { return HIDProbeStroke(keyCode: 49, shift: false, producedCharacter: nil) }
-        if character == "\t" { return HIDProbeStroke(keyCode: 48, shift: false, producedCharacter: nil) }
-        if character == "\n" { return HIDProbeStroke(keyCode: 36, shift: false, producedCharacter: nil) }
-        guard let physical = DynamicKeyMapping.physicalKey(for: character, layout: layout) else { return nil }
-        return HIDProbeStroke(
-            keyCode: CGKeyCode(physical.keyCode),
-            shift: physical.shift,
-            producedCharacter: nil
-        )
+    private func physicalStrokes(for text: String, language: String) -> [HIDProbeStroke]? {
+        guard let layout = inputSource(for: language) else { return nil }
+        return text.map { character -> [HIDProbeStroke]? in
+            physicalStrokes(for: character, layout: layout)
+        }.reduce(into: Optional<[HIDProbeStroke]>([])) { result, strokes in
+            guard result != nil, let strokes else {
+                result = nil
+                return
+            }
+            result?.append(contentsOf: strokes)
+        }
+    }
+
+    private func physicalStrokes(for character: Character, layout: TISInputSource) -> [HIDProbeStroke]? {
+        if character == " " { return [HIDProbeStroke(keyCode: 49, shift: false)] }
+        if character == "\t" { return [HIDProbeStroke(keyCode: 48, shift: false)] }
+        if character == "\n" { return [HIDProbeStroke(keyCode: 36, shift: false)] }
+        guard let physical = DynamicKeyMapping.physicalKeys(for: character, layout: layout) else { return nil }
+        return physical.map {
+            HIDProbeStroke(keyCode: CGKeyCode($0.keyCode), shift: $0.shift)
+        }
     }
 
     private func inputSource(for targetLanguage: String) -> TISInputSource? {
@@ -473,11 +523,5 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         return layouts.first {
             LayoutSwitcher.languageCode($0).map { String($0.lowercased().prefix(2)) } == targetLanguage
         }
-    }
-}
-
-private extension Collection {
-    subscript(safe index: Index) -> Element? {
-        indices.contains(index) ? self[index] : nil
     }
 }

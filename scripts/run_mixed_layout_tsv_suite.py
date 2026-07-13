@@ -21,6 +21,30 @@ SOURCE_LANGUAGE = {
     "ru_correct": "ru",
 }
 
+EN_TO_RU = dict(zip(
+    "qwertyuiop[]asdfghjkl;'zxcvbnm,./\\`",
+    "йцукенгшщзхъфывапролджэячсмитьбю.ёё",
+))
+EN_TO_RU.update(dict(zip(
+    'QWERTYUIOP{}ASDFGHJKL:"ZXCVBNM<>?|~',
+    'ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ,ЁЁ',
+)))
+EN_TO_RU["&"] = "?"
+RU_TO_EN = {value: key for key, value in EN_TO_RU.items()}
+RU_TO_EN["ё"] = "`"
+RU_TO_EN["Ё"] = "~"
+
+
+def physical_wrong_input(expected: str, pattern: str) -> str:
+    """Produce what the intended token emits in the opposite active layout.
+
+    The source TSV keeps many punctuation marks literal while corrupting only
+    letters. That cannot be produced by physical keyboard input for layout-
+    dependent keys such as comma, period and question mark.
+    """
+    mapping = EN_TO_RU if pattern == "en_wrong" else RU_TO_EN
+    return "".join(mapping.get(char, char) for char in expected)
+
 
 def split_text(value: str) -> tuple[list[str], list[str]]:
     return [part for part in SEPARATOR.split(value) if part], SEPARATOR.findall(value)
@@ -68,6 +92,8 @@ def convert_corpus(source: Path, destination: Path) -> tuple[int, list[str]]:
                             f"unknown token pattern {pattern!r} at TSV line {line_number}"
                         ) from error
                     verdict = "switch" if pattern.endswith("_wrong") else "keep"
+                    if verdict == "switch":
+                        typed = physical_wrong_input(expected, pattern)
                 steps.append(
                     {
                         "typed": typed,

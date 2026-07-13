@@ -14,13 +14,13 @@ installed build changes.
 - Automatic conversion is off by default until the user enables it.
 - Primary repository: `rashn/RuSwitcher`; local branch used for this work:
   `codex/caramba-autoconvert`.
-- As of 2026-07-12, the installed version is `4.0.0` build `76`. The latest
-  committed baseline is `2126e58` (`fix: translate punctuation with converted
-  layout`); build 75 adds pending manual-selection and adaptive-feedback fixes.
+- The stabilization release is `4.0.0` build `81`. Verify the installed binary
+  hash and PID after every local replacement; do not infer the running build
+  from `version.json` alone.
 - The installed app is `/Applications/RuSwitcher.app`, signed with the reusable
   identity `RuSwitcher Local Code Signing`.
-- Installed build-76 executable SHA-256:
-  `485e01d95724cc8af3cd35079b85888a01d8c00966588524d98add94dcd0fc70`.
+- Installed build-81 executable SHA-256:
+  `7d2e056785497efa88af1aede27db7d5784f30f2b704ac3d636530bdb001907b`.
 
 ## User Requirements
 
@@ -36,12 +36,18 @@ installed build changes.
 
 ## Package Layout
 
-- `Sources/RuSwitcherCore`: pure/testable decoder, language models, candidate
-  lattice, state and transaction data.
+- `Sources/RuSwitcherCore`: pure/testable V3 decoder, language model, state and
+  transaction data.
+- `Sources/RuSwitcherAppSupport`: testable native replacement, event,
+  pasteboard, logging and release-version contracts.
+- `Sources/RuSwitcherExperimentalV4`: simulator-only Core ML experiment; the
+  production executable must not depend on this target.
 - `Sources/RuSwitcher`: AppKit application, event tap, layout switching, AX
   context, manual conversion, transaction execution and settings.
 - `Sources/RuSwitcherSimulator`: parallel, non-HID corpus/phrase simulator.
 - `Tests/RuSwitcherCoreTests`: unit, corpus, state-machine and transaction tests.
+- `Tests/RuSwitcherAppSupportTests`: native-contract tests with controlled fakes.
+- `Tests/RuSwitcherExperimentalV4Tests`: isolated V4 experiment tests.
 - `Tests/Fixtures/Simulator`: deterministic word and phrase fixtures.
 - `Tests/Fixtures/HID/mixed-layout-corpus-batch.json`: continuous one-window
   CGEvent fixture selected from the user's 5,000-phrase corpus.
@@ -50,10 +56,14 @@ installed build changes.
 
 SwiftPM targets:
 
-- `RuSwitcherCore` library
+- `RuSwitcherCore` library (production V3)
+- `RuSwitcherAppSupport` library
+- `RuSwitcherExperimentalV4` library (simulator only)
 - `RuSwitcher` executable
 - `RuSwitcherSimulator` executable
 - `RuSwitcherCoreTests`
+- `RuSwitcherAppSupportTests`
+- `RuSwitcherExperimentalV4Tests`
 
 ## Decoder Architecture
 
@@ -72,20 +82,16 @@ compares the literal-layout and opposite-layout hypotheses using:
 Important types:
 
 - `AutoConvertCandidate` and `AutoConvertCandidateGenerator`
-- `PhysicalKeyLattice`
-- `LayoutDecoder` (V3 production fallback/current decision engine)
-- `ContextualLayoutDecoder` and `ContextualLayoutModel` (V4)
-- `LanguageBelief`, `ContextSnapshot`, `CompoundWordAnalyzer`
+- `LayoutDecoder` (the sole production decision engine)
+- `LanguageBelief`, `CompoundWordAnalyzer`
 - `InputSession`, `TokenSnapshot`, `ConversionTransaction`
+- `ReplacementCoordinator`, `InputEventClassifier` and
+  `KeyboardLayoutTranslationState`
 
-V4 is a small local byte-level Core ML reranker over deterministic lattice
-candidates. It never generates arbitrary text. The default mode is `shadow`, so
-V3 remains authoritative while V4 decisions/latency are measured. Hidden modes:
-`off`, `shadow`, `active` via `smartEngineV4Mode`.
-
-V4 context is capped at 16 tokens and 192 UTF-8 bytes. A stale model result,
-focus/revision mismatch, timeout, corrupt artifact, or unavailable model falls
-back to V3/keep rather than performing a late edit.
+V4 is not part of the application runtime, settings or app resources. Its Core
+ML model, lattice, adapter and decoder live in `RuSwitcherExperimentalV4` and are
+available only to `RuSwitcherSimulator`. Production behavior must be validated
+with `--engine v3`.
 
 ## Candidate and Punctuation Rules
 
@@ -113,9 +119,16 @@ back to V3/keep rather than performing a late edit.
   the first punctuation key: it caused `...` to become `.//` after the layout
   switched mid-sequence and caused races with the following boundary.
 - A word ending in punctuation with no following Space/Enter/Tab remains pending.
+- Physical key code alone is not a boundary. `KeyboardLayoutTranslationState`
+  keeps the Carbon dead-key state for the active input source. On US
+  International-PC, quote followed by physical Space produces a quote and must
+  remain inside the token; only a translated literal space is a word boundary.
 - AX suffix validation retries one mismatch after 0.75 ms within the existing
   4 ms deadline. This handles short-token races in WebKit/Electron while still
   blocking a persistent focus/caret mismatch.
+- Posted replacement events are verified asynchronously for up to 120 ms. This
+  does not block the event callback; it prevents a temporarily stale AX value
+  from clearing valid phrase context after the editor has accepted a conversion.
 
 Hard blockers remain authoritative:
 
@@ -146,6 +159,9 @@ and synthetic events before mutating the token state.
 - Active taps use `.headInsertEventTap`; listen-only taps may use tail placement.
 - Automatic replacement validates PID, bundle, focus identity, revision and the
   expected suffix before editing.
+- A posted conversion immediately publishes provisional phrase context for the
+  next token. AX read-back confirms learning and Undo state without duplicating
+  that context; stale verification never overrides newer input.
 
 The reliable build-68 transaction path is intentional:
 
@@ -184,11 +200,11 @@ Adaptive learning behavior:
   train or create an application exception.
 - A permanent application exception is created only when explicitly reversing a
   globally confirmed manual pair. Weak automatic positives are not sufficient.
-- Rule-book model 6 removes legacy app-local negative rules created by the old
-  Backspace behavior while preserving confirmed global rules and their genuine
-  per-application exceptions.
+- Rule-book model 8 removes legacy app-local negative rules and unsafe learned
+  pairs. Persistent manual pairs require at least two letters on both sides, so
+  accidental `а`/`f` or `b`/`и` confirmations cannot become global overrides.
 - Simple switch-only actions do not train.
-- Rules and the V4 personalization adapter persist in `UserDefaults`.
+- Adaptive rules persist in `UserDefaults`.
 - Advanced settings can reset learned corrections.
 - Advanced settings can export and import learned word rules as a versioned,
   human-readable JSON archive. Import merges by normalized source, target and
@@ -204,8 +220,8 @@ Bundled resources:
 
 - `language-model-v1.bin`: versioned V3 model, current SHA-256
   `954cd3d86fae11dc6e82d099996406a4259c7f1148f67fbfa5d445ef45deb347`.
-- `layout-model-v4.json` and `LayoutRerankerV4.mlmodelc`: bootstrap V4 shadow
-  artifact and manifest.
+- Production `.app` contains no V4 model. `layout-model-v4.json` and
+  `LayoutRerankerV4.mlmodelc` belong only to `RuSwitcherExperimentalV4`.
 
 `scripts/build_language_model.py` reproducibly builds the V3 artifact. Inputs and
 hashes are pinned in `scripts/v4_training_sources.json`:
@@ -221,16 +237,15 @@ Keep `THIRD_PARTY_NOTICES.md`, source archives under `scripts/data`, manifest
 hashes and `build_app.sh` resource copying synchronized. The app performs no model
 downloads and no network inference.
 
-## Privacy and Statistics
+## Privacy
 
 - Decoder, models and personal learning are local.
 - Debug logs contain only lengths, language/evidence categories, revision,
   latency buckets and transaction outcomes; never words or neighboring text.
-- Anonymous statistics are opt-in and contain aggregate outcomes/buckets only,
-  never text or app IDs.
-- Debug logging was disabled and its temporary file removed after the build-76
-  audit. Do not re-enable it until the remote-input Unicode-scalar and bundle-ID
-  logging paths are removed; those paths violate the no-user-text/app-ID rule.
+- The anonymous-statistics UI, reporter, persistence and localization keys were
+  removed. There is no statistics endpoint.
+- `rslog` accepts only `StaticString`; dynamic user text, context, paths, layout
+  IDs, bundle IDs and localized errors cannot be passed to it.
 
 ## Test Corpus and Current Results
 
@@ -248,10 +263,10 @@ python3 scripts/run_mixed_layout_tsv_suite.py \
 
 Last audited result:
 
-- 58,718 / 59,388 tokens correct: 98.8718%.
-- 4,371 / 5,000 phrases entirely exact.
+- 58,945 / 59,388 tokens correct: 99.2541%.
+- 4,577 / 5,000 phrases entirely exact.
 - 100% keep accuracy for correct English, correct Russian and technical tokens.
-- 670 remaining failures were safe misses; zero wrong replacements/false positives.
+- 443 remaining failures were safe misses; zero wrong replacements/false positives.
 - Reports are generated under `.build/mixed-layout-5000-*.json*`.
 
 Pure and deterministic checks:
@@ -263,7 +278,7 @@ bash scripts/run_randomized_layout_suite.sh
 bash scripts/verify_simulator_negative_control.sh
 ```
 
-Last results: 165/165 unit tests, 11,128/11,128 built-in simulator checks,
+Last results: 189/189 unit tests, 11,128/11,128 built-in simulator checks,
 38/38 randomized checks, and a passing intentional negative control.
 
 Learned-rule persistence is tested by `scripts/run_manual_learning_test.sh`: an
@@ -275,25 +290,23 @@ domain afterward, so it does not pollute the user's dictionary.
 Real CGEvent tests, without Computer Use:
 
 ```bash
-bash scripts/run_hid_integration_tests.sh
 bash scripts/run_hid_batch_tests.sh
+bash scripts/run_hid_stress_tests.sh
 ```
 
-- Isolated suite: 18/18 scenarios.
-- Continuous batch: 19 phases and 160 physical characters in one `NSTextView`,
-  selected from corpus IDs `mixed-layout-00653`, `mixed-layout-00926` and
-  `mixed-layout-02466`.
-- After the final transaction fix it passed five consecutive/final runs exactly,
-  including quotes, wrappers, `?!`, `...`, an email, mixed RU/EN and double spaces.
-- Keep isolated tests for pinpoint diagnostics and the continuous test for stale
-  state, punctuation damage, missed Backspaces and duplicate insertion.
+- The authored stress fixture contains 16 natural mixed-language phrases, 164
+  alternating-layout phases and 939 physical input characters in one
+  `NSTextView`, without pauses after words.
+- It passed exactly after the stateful dead-key and asynchronous AX verification
+  fixes, including straight/double quotes under US International-PC, wrappers,
+  `?!`, `...`, `@`, email, `plan B`, one-letter conjunctions and alternating
+  RU/EN words.
 - Do not run multiple CGEvent UI probes in parallel: macOS has one focus/layout
   event stream. The pure simulator may use parallel workers.
-- `Tests/Fixtures/HID/punctuation-and-uppercase-regression.json` covers the
-  build-73 punctuation and uppercase regressions in one continuous window. Its
-  2026-07-12 run was inconclusive because the probe process lacked Accessibility
-  event-posting access (`postEventAccess=false`, `focus-unavailable`); do not
-  report it as passed until that host permission is restored.
+- HID probes use the isolated `com.ruswitcher.hidhost` preferences suite, reset
+  at probe startup, so corpus runs cannot train or mutate the user's learned
+  rules. The manual persistence script opts into the standard domain explicitly,
+  backs it up and restores it on exit.
 
 ## Build, Signing and Installation
 
@@ -320,14 +333,14 @@ Install atomically:
 5. Move staging to `/Applications/RuSwitcher.app`.
 6. Open the app and verify version, architectures, signature, SHA-256 and process.
 
-Current observed footprint for build 68:
+Current observed footprint for build 81:
 
-- App bundle: about 14.4 MiB on disk.
+- App bundle: 10.54 MiB on disk.
 - V3 language model: 7,296,305 bytes.
-- Idle process: approximately 0-0.1% CPU and 81 MiB RSS on the development Mac.
+- Idle process: 0.0% CPU and about 73 MiB RSS on the development Mac.
 - Decoder inference in the simulator: under roughly 4 ms p99 per completed token.
 
-The installed binary SHA-256 after build 68 was
-`bfe6ad8d011efc1e6408fb35f4b325673316f485453b0620b2b37d1fe8898b50`.
+The installed binary SHA-256 after build 81 is
+`7d2e056785497efa88af1aede27db7d5784f30f2b704ac3d636530bdb001907b`.
 Always compare installed and freshly built hashes rather than trusting the build
 number alone.

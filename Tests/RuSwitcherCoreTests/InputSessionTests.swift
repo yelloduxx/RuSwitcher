@@ -2,6 +2,69 @@ import XCTest
 @testable import RuSwitcherCore
 
 final class InputSessionTests: XCTestCase {
+    func testTextBoundariesReplayOnlyInsideCommittedTransaction() {
+        XCTAssertTrue(InputBoundary.space(count: 1).shouldConsumeOriginalEvent)
+        XCTAssertEqual(InputBoundary.space(count: 1).replayText, " ")
+        XCTAssertTrue(InputBoundary.enter.shouldConsumeOriginalEvent)
+        XCTAssertEqual(InputBoundary.enter.replayText, "\n")
+        XCTAssertTrue(InputBoundary.tab.shouldConsumeOriginalEvent)
+        XCTAssertEqual(InputBoundary.tab.replayText, "\t")
+        XCTAssertFalse(InputBoundary.punctuation(",").shouldConsumeOriginalEvent)
+        XCTAssertEqual(InputBoundary.punctuation(",").replayText, "")
+    }
+
+    func testStagedCompletionProvidesProvisionalContextWithoutDuplication() {
+        var session = InputSession()
+        session.append(TypedKey(keyCode: 5, shift: false, caps: false, char: "g"))
+
+        let stagedSequence = session.stageCompletion(
+            resolvedText: "привет",
+            language: "ru",
+            wasConverted: true
+        )
+
+        XCTAssertTrue(session.currentKeys.isEmpty)
+        XCTAssertEqual(session.context.map(\.text), ["привет"])
+        XCTAssertTrue(session.confirmStagedCompletion(
+            resolvedText: "привет",
+            language: "ru",
+            wasConverted: true,
+            expectedSequence: stagedSequence
+        ))
+        XCTAssertEqual(session.context.map(\.text), ["привет"])
+    }
+
+    func testProvisionalContextSurvivesImmediateNextInput() {
+        var session = InputSession()
+        session.append(TypedKey(keyCode: 5, shift: false, caps: false, char: "g"))
+        let stagedSequence = session.stageCompletion(
+            resolvedText: "проверили",
+            language: "ru",
+            wasConverted: true
+        )
+        session.append(TypedKey(keyCode: 0, shift: false, caps: false, char: "a"))
+
+        XCTAssertFalse(session.confirmStagedCompletion(
+            resolvedText: "привет",
+            language: "ru",
+            wasConverted: true,
+            expectedSequence: stagedSequence
+        ))
+        XCTAssertEqual(session.context.map(\.text), ["проверили"])
+        XCTAssertEqual(session.snapshot(
+            boundary: .space(count: 1),
+            focus: .init(processID: 1, bundleID: "test")
+        )?.context.map(\.text), ["проверили"])
+    }
+
+    func testManualStagingWithoutResolvedTextDoesNotInventContext() {
+        var session = InputSession()
+        session.append(TypedKey(keyCode: 5, shift: false, caps: false, char: "g"))
+
+        session.stageCompletion()
+
+        XCTAssertTrue(session.context.isEmpty)
+    }
     private let focus = FocusedElementIdentity(processID: 42, bundleID: "test.app")
 
     func testSnapshotDoesNotChangeAfterNextTokenStarts() throws {

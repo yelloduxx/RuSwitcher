@@ -38,6 +38,19 @@ public enum AutoConvertCandidateGenerator {
                     kind: .wrappingPunctuation
                 )
                 if !result.contains(candidate) { result.append(candidate) }
+                let translatedSuffix = KeyMapping.convert(String(suffixCharacters))
+                if translatedSuffix != String(suffixCharacters),
+                   translatedSuffix.allSatisfy(isTrailingPunctuation) {
+                    let translatedCandidate = AutoConvertCandidate(
+                        typedRaw: typed,
+                        convertedRaw: converted,
+                        prefix: shape.prefix,
+                        convertedWord: KeyMapping.convert(String(coreCharacters)),
+                        suffix: translatedSuffix,
+                        kind: .wrappingPunctuation
+                    )
+                    if !result.contains(translatedCandidate) { result.append(translatedCandidate) }
+                }
             }
         }
 
@@ -86,6 +99,7 @@ public enum AutoConvertCandidateGenerator {
     private static func isTrailingPunctuation(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy {
             CharacterSet.punctuationCharacters.contains($0)
+                || $0 == "&"
         }
     }
 

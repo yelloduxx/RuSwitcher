@@ -1,5 +1,6 @@
 import XCTest
 @testable import RuSwitcherCore
+@testable import RuSwitcherExperimentalV4
 
 final class ContextualLayoutModelTests: XCTestCase {
     func testBundledModelLoadsAndProducesFiniteOutputs() throws {

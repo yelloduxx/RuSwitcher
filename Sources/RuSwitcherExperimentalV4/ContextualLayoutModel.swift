@@ -1,6 +1,7 @@
 import CoreML
 import CryptoKit
 import Foundation
+import RuSwitcherCore
 
 public final class ContextualLayoutModel: @unchecked Sendable, ContextualLayoutScoring {
     public static let bundled: ContextualLayoutModel? = try? ContextualLayoutModel()

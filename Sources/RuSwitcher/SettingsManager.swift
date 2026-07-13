@@ -1,4 +1,5 @@
 import Foundation
+import RuSwitcherAppSupport
 import RuSwitcherCore
 import ServiceManagement
 
@@ -11,10 +12,19 @@ final class SettingsManager: @unchecked Sendable {
         let total: Int
     }
 
-    static let shared = SettingsManager()
-    static let learningResetNotification = Notification.Name("com.ruswitcher.learningReset")
+    static let shared = SettingsManager(defaults: makeDefaults())
 
-    private let defaults = UserDefaults.standard
+    private let defaults: UserDefaults
+
+    private static func makeDefaults() -> UserDefaults {
+        guard let suiteName = RuntimePreferencesDomain.isolatedSuiteName(
+            arguments: CommandLine.arguments
+        ), let isolated = UserDefaults(suiteName: suiteName) else {
+            return .standard
+        }
+        isolated.removePersistentDomain(forName: suiteName)
+        return isolated
+    }
 
     private enum Keys {
         static let autoSwitch = "com.ruswitcher.autoSwitch"
@@ -46,12 +56,24 @@ final class SettingsManager: @unchecked Sendable {
         static let adaptiveRules = "com.ruswitcher.adaptiveRules.v1"
         static let smartEngineV2 = "com.ruswitcher.smartEngineV2"
         static let smartEngineV3 = "com.ruswitcher.smartEngineV3"
-        static let smartEngineV4Mode = "com.ruswitcher.smartEngineV4Mode"
-        static let personalizationAdapterV4 = "com.ruswitcher.personalizationAdapterV4"
-        static let shareAnonymousStatistics = "com.ruswitcher.shareAnonymousStatistics"
     }
 
-    private init() {}
+    private init(defaults: UserDefaults) {
+        self.defaults = defaults
+        defaults.removeObject(forKey: "com.ruswitcher.shareAnonymousStatistics")
+        defaults.removeObject(forKey: "com.ruswitcher.smartEngineV4Mode")
+        defaults.removeObject(forKey: "com.ruswitcher.personalizationAdapterV4")
+        if let support = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first {
+            try? FileManager.default.removeItem(
+                at: support
+                    .appendingPathComponent("RuSwitcher", isDirectory: true)
+                    .appendingPathComponent("anonymous-usage-v1.json")
+            )
+        }
+    }
 
     // MARK: - Properties
 
@@ -178,38 +200,6 @@ final class SettingsManager: @unchecked Sendable {
             return defaults.bool(forKey: Keys.smartEngineV3)
         }
         set { defaults.set(newValue, forKey: Keys.smartEngineV3) }
-    }
-
-    var smartEngineV4Mode: SmartEngineV4Mode {
-        get {
-            guard let raw = defaults.string(forKey: Keys.smartEngineV4Mode),
-                  let mode = SmartEngineV4Mode(rawValue: raw) else { return .shadow }
-            return mode
-        }
-        set { defaults.set(newValue.rawValue, forKey: Keys.smartEngineV4Mode) }
-    }
-
-    func personalizationAdapter(for manifest: ContextualModelManifest) -> PersonalizationAdapter {
-        guard let data = defaults.data(forKey: Keys.personalizationAdapterV4),
-              var adapter = try? JSONDecoder().decode(PersonalizationAdapter.self, from: data) else {
-            return PersonalizationAdapter(
-                modelVersion: manifest.modelVersion,
-                embeddingSize: manifest.embeddingSize
-            )
-        }
-        adapter.migrate(modelVersion: manifest.modelVersion, embeddingSize: manifest.embeddingSize)
-        return adapter
-    }
-
-    func savePersonalizationAdapter(_ adapter: PersonalizationAdapter) {
-        guard let data = try? JSONEncoder().encode(adapter) else { return }
-        defaults.set(data, forKey: Keys.personalizationAdapterV4)
-    }
-
-    /// Opt-in only. Payloads contain aggregate counters, never typed text or app IDs.
-    var shareAnonymousStatistics: Bool {
-        get { defaults.bool(forKey: Keys.shareAnonymousStatistics) }
-        set { defaults.set(newValue, forKey: Keys.shareAnonymousStatistics) }
     }
 
     /// issue #10: показывать флаг раскладки у текстовой каретки (бета). По умолчанию ВЫКЛ.
@@ -342,8 +332,6 @@ final class SettingsManager: @unchecked Sendable {
 
     func clearAdaptiveRules() {
         defaults.removeObject(forKey: Keys.adaptiveRules)
-        defaults.removeObject(forKey: Keys.personalizationAdapterV4)
-        NotificationCenter.default.post(name: Self.learningResetNotification, object: nil)
     }
 
     func exportLearnedCorrections() throws -> Data {
@@ -398,7 +386,7 @@ final class SettingsManager: @unchecked Sendable {
                 rslog("Login item unregistered")
             }
         } catch {
-            rslog("Login item error: \(error)")
+            rslog("login_item_error")
         }
     }
 

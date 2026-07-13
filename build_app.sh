@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="RuSwitcher"
@@ -68,18 +68,10 @@ if [ ! -f "$MODEL_RESOURCE" ]; then
     exit 1
 fi
 cp "$MODEL_RESOURCE" "$APP_BUNDLE/Contents/Resources/language-model-v1.bin"
-V4_MODEL_RESOURCE="$CORE_RESOURCE_BUNDLE/Contents/Resources/LayoutRerankerV4.mlmodelc"
-V4_MANIFEST_RESOURCE="$CORE_RESOURCE_BUNDLE/Contents/Resources/layout-model-v4.json"
-if [ ! -d "$V4_MODEL_RESOURCE" ] || [ ! -f "$V4_MANIFEST_RESOURCE" ]; then
-    echo "ERROR: V4 model resources not found in SwiftPM bundle"
-    exit 1
-fi
-cp -R "$V4_MODEL_RESOURCE" "$APP_BUNDLE/Contents/Resources/LayoutRerankerV4.mlmodelc"
-cp "$V4_MANIFEST_RESOURCE" "$APP_BUNDLE/Contents/Resources/layout-model-v4.json"
 cp "$PROJECT_DIR/THIRD_PARTY_NOTICES.md" "$APP_BUNDLE/Contents/Resources/THIRD_PARTY_NOTICES.md"
 cp "$PROJECT_DIR/scripts/data/SCOWL_COPYRIGHT.txt" "$APP_BUNDLE/Contents/Resources/SCOWL_COPYRIGHT.txt"
 cp "$PROJECT_DIR/scripts/data/RUSSIAN_HUNSPELL_COPYRIGHT.txt" "$APP_BUNDLE/Contents/Resources/RUSSIAN_HUNSPELL_COPYRIGHT.txt"
-echo "→ Bundled V3/V4 local models and third-party notices"
+echo "→ Bundled V3 production model and third-party notices"
 
 # 6. Создаём PkgInfo
 echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
@@ -114,6 +106,15 @@ codesign --force --deep --sign "$SIGN_ID" \
     --options runtime \
     --entitlements "$PROJECT_DIR/RuSwitcher.entitlements" \
     "$APP_BUNDLE"
+
+echo "→ Verifying signature and Gatekeeper assessment..."
+codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
+SIGNATURE_DETAILS=$(codesign -dv --verbose=4 "$APP_BUNDLE" 2>&1)
+if ! echo "$SIGNATURE_DETAILS" | grep -Fq "Authority=$SIGN_ID"; then
+    echo "ERROR: signed authority does not match $SIGN_ID"
+    exit 1
+fi
+spctl --assess --type execute --verbose=4 "$APP_BUNDLE"
 
 echo ""
 echo "=== Done! ==="

@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import RuSwitcherAppSupport
 
 /// Проверяет наличие обновлений через GitHub
 @MainActor
@@ -10,6 +11,7 @@ enum UpdateChecker {
     /// Структура JSON версии
     private struct VersionInfo: Decodable {
         let version: String
+        let build: String
         let url: String
         let notes: String?
         let sha256: String?
@@ -58,9 +60,15 @@ enum UpdateChecker {
             SettingsManager.shared.lastUpdateCheck = Date()
 
             let currentVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+            let currentBuild = Int(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0") ?? 0
+            guard let availableBuild = Int(info.build) else {
+                throw UpdateMetadataError.invalidBuild
+            }
+            let available = ReleaseVersion(version: info.version, build: availableBuild)
+            let current = ReleaseVersion(version: currentVersion, build: currentBuild)
 
-            if compareVersions(info.version, isNewerThan: currentVersion) {
-                if SettingsManager.shared.skippedVersion == info.version && silent {
+            if available > current {
+                if available.matchesSkipIdentifier(SettingsManager.shared.skippedVersion), silent {
                     return // Пользователь пропустил эту версию
                 }
                 await showUpdateAlert(info: info)
@@ -68,7 +76,7 @@ enum UpdateChecker {
                 await showUpToDateAlert()
             }
         } catch {
-            rslog("UpdateChecker error: \(error)")
+            rslog("update_check_failed")
             if !silent {
                 await showErrorAlert()
             }
@@ -79,7 +87,7 @@ enum UpdateChecker {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = L10n.updateAvailable
-        alert.informativeText = "\(L10n.updateNewVersion) \(info.version)\n\(info.notes ?? "")"
+        alert.informativeText = "\(L10n.updateNewVersion) \(info.version) (\(info.build))\n\(info.notes ?? "")"
         alert.addButton(withTitle: L10n.updateInstallRestart)  // 1st
         alert.addButton(withTitle: L10n.updateDownload)         // 2nd
         alert.addButton(withTitle: L10n.updateSkip)             // 3rd
@@ -94,7 +102,12 @@ enum UpdateChecker {
                 NSWorkspace.shared.open(url)
             }
         case .alertThirdButtonReturn:
-            SettingsManager.shared.skippedVersion = info.version
+            if let build = Int(info.build) {
+                SettingsManager.shared.skippedVersion = ReleaseVersion(
+                    version: info.version,
+                    build: build
+                ).identifier
+            }
         default:
             break
         }
@@ -104,10 +117,14 @@ enum UpdateChecker {
 
     private static func installAndRestart(info: VersionInfo) async {
         let version = info.version
+        guard let announcedBuild = Int(info.build), announcedBuild > 0 else {
+            await showInstallError(L10n.updateVerifyFailed)
+            return
+        }
 
         // 0. Версия приходит из сети — не доверяем вслепую (попадёт в URL и в сравнение).
         guard version.range(of: "^[0-9]+(\\.[0-9]+){1,3}$", options: .regularExpression) != nil else {
-            rslog("Update: rejected malformed version '\(version)'")
+            rslog("update_version_malformed")
             await showInstallError(L10n.updateVerifyFailed)
             return
         }
@@ -126,77 +143,80 @@ enum UpdateChecker {
             return
         }
 
-        let tmpPath = "/tmp/RuSwitcher-update.dmg"
-        let tmpURL = URL(fileURLWithPath: tmpPath)
+        let fm = FileManager.default
+        let attemptRoot = fm.temporaryDirectory
+            .appendingPathComponent("RuSwitcher-update-\(UUID().uuidString)", isDirectory: true)
+        let tmpURL = attemptRoot.appendingPathComponent("update.dmg")
+        let mountURL = attemptRoot.appendingPathComponent("mount", isDirectory: true)
+        let stagingDir = attemptRoot.appendingPathComponent("staging", isDirectory: true)
+        do {
+            try fm.createDirectory(at: attemptRoot, withIntermediateDirectories: true)
+            try fm.createDirectory(at: mountURL, withIntermediateDirectories: true)
+            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
+        } catch {
+            await showInstallError(L10n.updateInstallFailed)
+            return
+        }
+        var mounted = false
+        defer {
+            if mounted { detach(mountPoint: mountURL.path) }
+            try? fm.removeItem(at: attemptRoot)
+        }
 
         // 1. Скачать
-        rslog("Update: downloading \(dmgURL)")
+        rslog("update_download_started")
         do {
-            let (data, response) = try await URLSession.shared.data(from: dmgURL)
+            let (downloadedURL, response) = try await URLSession.shared.download(from: dmgURL)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
                 await showInstallError(L10n.updateDownloadFailed)
                 return
             }
-            try data.write(to: tmpURL)
+            try fm.moveItem(at: downloadedURL, to: tmpURL)
         } catch {
-            rslog("Update: download failed — \(error)")
+            rslog("update_download_failed")
             await showInstallError(L10n.updateDownloadFailed)
             return
         }
 
         // 2. Проверить sha256 (обязательно)
-        let actualSHA = sha256OfFile(at: tmpPath)
+        let actualSHA = sha256OfFile(at: tmpURL.path)
         guard actualSHA == expectedSHA else {
-            rslog("Update: sha256 mismatch expected=\(expectedSHA) actual=\(actualSHA ?? "nil")")
-            try? FileManager.default.removeItem(at: tmpURL)
+            rslog("update_checksum_mismatch")
             await showInstallError(L10n.updateVerifyFailed)
             return
         }
         rslog("Update: sha256 verified")
 
         // 3. Смонтировать DMG
-        let mountPoint = "/tmp/RuSwitcher-update-mount"
         let mount = Process()
         mount.launchPath = "/usr/bin/hdiutil"
-        mount.arguments = ["attach", tmpPath, "-nobrowse", "-readonly", "-mountpoint", mountPoint]
+        mount.arguments = ["attach", tmpURL.path, "-nobrowse", "-readonly", "-mountpoint", mountURL.path]
         mount.standardOutput = FileHandle.nullDevice
         mount.standardError = FileHandle.nullDevice
         do {
             try mount.run()
             mount.waitUntilExit()
             guard mount.terminationStatus == 0 else {
-                rslog("Update: hdiutil attach failed with status \(mount.terminationStatus)")
+                rslog("update_mount_failed")
                 await showInstallError(L10n.updateInstallFailed)
                 return
             }
+            mounted = true
         } catch {
-            rslog("Update: hdiutil attach error — \(error)")
+            rslog("update_mount_error")
             await showInstallError(L10n.updateInstallFailed)
             return
         }
 
-        defer {
-            // Размонтировать и почистить
-            let detach = Process()
-            detach.launchPath = "/usr/bin/hdiutil"
-            detach.arguments = ["detach", mountPoint, "-quiet"]
-            detach.standardOutput = FileHandle.nullDevice
-            detach.standardError = FileHandle.nullDevice
-            try? detach.run()
-            detach.waitUntilExit()
-            try? FileManager.default.removeItem(at: tmpURL)
-        }
-
         // 4. Найти .app в смонтированном томе
-        let fm = FileManager.default
-        guard let contents = try? fm.contentsOfDirectory(atPath: mountPoint),
+        guard let contents = try? fm.contentsOfDirectory(atPath: mountURL.path),
               let appName = contents.first(where: { $0.hasSuffix(".app") }) else {
             rslog("Update: no .app found in mounted DMG")
             await showInstallError(L10n.updateInstallFailed)
             return
         }
 
-        let sourceApp = URL(fileURLWithPath: mountPoint).appendingPathComponent(appName)
+        let sourceApp = mountURL.appendingPathComponent(appName)
         let currentApp = URL(fileURLWithPath: Bundle.main.bundlePath)
 
         // 5. ПРОВЕРКА ПОДПИСИ: единственная реальная защита от подмены кода.
@@ -212,13 +232,19 @@ enum UpdateChecker {
         let mountedInfo = Bundle(url: sourceApp)?.infoDictionary
         let mountedID = mountedInfo?["CFBundleIdentifier"] as? String
         let mountedVersion = mountedInfo?["CFBundleShortVersionString"] as? String
+        let mountedBuild = Int(mountedInfo?["CFBundleVersion"] as? String ?? "")
         guard mountedID == Bundle.main.bundleIdentifier else {
-            rslog("Update: bundle id mismatch (\(mountedID ?? "nil"))")
+            rslog("update_bundle_id_mismatch")
             await showInstallError(L10n.updateVerifyFailed)
             return
         }
         guard mountedVersion == version else {
-            rslog("Update: bundle version mismatch — announced \(version), contains \(mountedVersion ?? "nil")")
+            rslog("update_bundle_version_mismatch")
+            await showInstallError(L10n.updateVerifyFailed)
+            return
+        }
+        guard mountedBuild == announcedBuild else {
+            rslog("update_bundle_build_mismatch")
             await showInstallError(L10n.updateVerifyFailed)
             return
         }
@@ -226,26 +252,26 @@ enum UpdateChecker {
         // 6. Скопировать .app с read-only тома DMG на тот же том, что и текущее
         //    приложение. replaceItemAt НЕ умеет переносить элемент напрямую с
         //    read-only тома DMG — именно это давало «Ошибку установки».
-        let stagingDir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("RuSwitcher-update-staging", isDirectory: true)
-        try? fm.removeItem(at: stagingDir)
         let stagedApp = stagingDir.appendingPathComponent(appName)
         do {
-            try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
             try fm.copyItem(at: sourceApp, to: stagedApp)
         } catch {
-            rslog("Update: staging copy failed — \(error)")
+            rslog("update_staging_failed")
             await showInstallError(error.localizedDescription)
             return
         }
-        defer { try? fm.removeItem(at: stagingDir) }
+        guard verifyNotarizedSignature(at: stagedApp.path) else {
+            rslog("update_staged_signature_failed")
+            await showInstallError(L10n.updateVerifyFailed)
+            return
+        }
 
         // 7. Атомарно заменить .app из staging-копии (на одном томе — работает)
         do {
             _ = try fm.replaceItemAt(currentApp, withItemAt: stagedApp)
             rslog("Update: app replaced successfully")
         } catch {
-            rslog("Update: replace failed — \(error)")
+            rslog("update_replace_failed")
             await showInstallError(error.localizedDescription)
             return
         }
@@ -267,9 +293,17 @@ enum UpdateChecker {
         do {
             try process.run()
             process.waitUntilExit()
-            return process.terminationStatus == 0
+            guard process.terminationStatus == 0 else { return false }
+            let gatekeeper = Process()
+            gatekeeper.launchPath = "/usr/sbin/spctl"
+            gatekeeper.arguments = ["--assess", "--type", "execute", "--verbose=2", path]
+            gatekeeper.standardOutput = FileHandle.nullDevice
+            gatekeeper.standardError = FileHandle.nullDevice
+            try gatekeeper.run()
+            gatekeeper.waitUntilExit()
+            return gatekeeper.terminationStatus == 0
         } catch {
-            rslog("Update: codesign verify error — \(error)")
+            rslog("update_signature_check_error")
             return false
         }
     }
@@ -313,17 +347,15 @@ enum UpdateChecker {
         showAlert(style: .warning, title: L10n.updateCheckFailed, message: L10n.updateCheckFailedDetail)
     }
 
-    /// Сравнивает версии ("2.0.1" > "1.9.0")
-    private static func compareVersions(_ v1: String, isNewerThan v2: String) -> Bool {
-        let parts1 = v1.split(separator: ".").compactMap { Int($0) }
-        let parts2 = v2.split(separator: ".").compactMap { Int($0) }
-
-        for i in 0..<max(parts1.count, parts2.count) {
-            let p1 = i < parts1.count ? parts1[i] : 0
-            let p2 = i < parts2.count ? parts2[i] : 0
-            if p1 > p2 { return true }
-            if p1 < p2 { return false }
-        }
-        return false
+    private static func detach(mountPoint: String) {
+        let process = Process()
+        process.launchPath = "/usr/bin/hdiutil"
+        process.arguments = ["detach", mountPoint, "-quiet"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+        process.waitUntilExit()
     }
+
+    private enum UpdateMetadataError: Error { case invalidBuild }
 }

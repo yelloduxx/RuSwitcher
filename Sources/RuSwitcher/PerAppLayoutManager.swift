@@ -55,7 +55,7 @@ final class PerAppLayoutManager {
 
         // Восстанавливаем раскладку для нового приложения
         if let savedLayout = layoutByApp[newBundleID], savedLayout != currentLayout {
-            rslog("PerAppLayout: \(newBundleID) → restore \(savedLayout)")
+            rslog("per_app_layout_restored")
             LayoutSwitcher.switchTo(layoutID: savedLayout)
             onLayoutRestored?()
         }

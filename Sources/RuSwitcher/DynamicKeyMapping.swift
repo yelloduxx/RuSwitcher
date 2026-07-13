@@ -1,5 +1,6 @@
 import Carbon
 import Foundation
+import RuSwitcherAppSupport
 import RuSwitcherCore
 
 /// Динамический маппинг keycode↔символ для любой пары раскладок через UCKeyTranslate
@@ -18,10 +19,10 @@ enum DynamicKeyMapping {
         return translateKeycode(keycode, layoutData: layoutData, shift: false)
     }
 
-    /// Finds the real keycode and Shift state that produce a character in a
-    /// concrete installed layout. HID integration tests use this instead of
-    /// Unicode injection so they exercise the same path as physical typing.
-    static func physicalKey(for character: Character, layout: TISInputSource) -> (keyCode: UInt16, shift: Bool)? {
+    /// Returns the physical stroke sequence that produces a literal character.
+    /// International layouts use dead keys for characters such as straight
+    /// quotes, so the sequence may include Space to commit the dead key.
+    static func physicalKeys(for character: Character, layout: TISInputSource) -> [(keyCode: UInt16, shift: Bool)]? {
         guard let layoutData = layoutDataForSource(layout) else { return nil }
         for shift in [false, true] {
             for keyCode in allKeycodes where translateKeycode(
@@ -29,7 +30,15 @@ enum DynamicKeyMapping {
                 layoutData: layoutData,
                 shift: shift
             ) == character {
-                return (keyCode, shift)
+                guard let deadKeySequence = deadKeySequenceIfNeeded(
+                    keyCode: keyCode,
+                    shift: shift,
+                    character: character,
+                    layoutData: layoutData
+                ) else {
+                    return [(keyCode, shift)]
+                }
+                return deadKeySequence
             }
         }
         return nil
@@ -239,7 +248,7 @@ enum DynamicKeyMapping {
 
     // MARK: - Private
 
-    private static func layoutDataForSource(_ source: TISInputSource) -> Data? {
+    static func layoutDataForSource(_ source: TISInputSource) -> Data? {
         guard let ptr = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
             return nil
         }
@@ -284,5 +293,30 @@ enum DynamicKeyMapping {
         }
 
         return char
+    }
+
+    private static func deadKeySequenceIfNeeded(
+        keyCode: UInt16,
+        shift: Bool,
+        character: Character,
+        layoutData: Data
+    ) -> [(keyCode: UInt16, shift: Bool)]? {
+        var translation = KeyboardLayoutTranslationState()
+        let first = translation.translate(
+            keyCode: keyCode,
+            shift: shift,
+            capsLock: false,
+            layoutData: layoutData
+        )
+        guard first?.isEmpty == true else { return nil }
+
+        let committed = translation.translate(
+            keyCode: 49,
+            shift: false,
+            capsLock: false,
+            layoutData: layoutData
+        )
+        guard committed == String(character) else { return nil }
+        return [(keyCode, shift), (49, false)]
     }
 }

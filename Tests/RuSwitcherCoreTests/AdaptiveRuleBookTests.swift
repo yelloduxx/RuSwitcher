@@ -8,7 +8,7 @@ final class AdaptiveRuleBookTests: XCTestCase {
         decoder.dateDecodingStrategy = .secondsSince1970
         let book = try decoder.decode(AdaptiveRuleBook.self, from: Data(oldJSON.utf8))
 
-        XCTAssertEqual(book.modelVersion, 6)
+        XCTAssertEqual(book.modelVersion, 8)
         XCTAssertEqual(book.rules.count, 1)
         XCTAssertFalse(book.rules[0].confirmed)
         XCTAssertGreaterThan(book.bias(original: "ghbdtn", converted: "привет", appBundleID: nil), 0)
@@ -22,6 +22,45 @@ final class AdaptiveRuleBookTests: XCTestCase {
         book.recordNegative(original: "cegthcgbyf", converted: "суперспина", appBundleID: nil)
         XCTAssertFalse(book.isConfirmed(original: "cegthcgbyf", converted: "суперспина", appBundleID: nil))
         XCTAssertFalse(book.rules.contains { $0.confirmed })
+    }
+
+    func testSingleCharacterManualPairIsNeverPersisted() {
+        var book = AdaptiveRuleBook()
+
+        book.recordManualCorrection(original: "а", converted: "f", appBundleID: "chat.one")
+        book.recordPositive(original: "b", converted: "и")
+        book.recordPositive(original: ",s", converted: "бы")
+        book.recordPositive(original: "3ч", converted: "3x")
+
+        XCTAssertTrue(book.rules.isEmpty)
+        XCTAssertFalse(book.isConfirmed(original: "а", converted: "f", appBundleID: nil))
+    }
+
+    func testV6MigrationRemovesUnsafeSingleCharacterRules() throws {
+        let json = #"{"modelVersion":6,"rules":[{"original":"а","converted":"f","appBundleID":null,"positiveCount":22,"negativeCount":0,"confirmed":true,"lastUsed":800000000},{"original":"b","converted":"и","appBundleID":null,"positiveCount":40,"negativeCount":0,"confirmed":true,"lastUsed":800000000},{"original":"ghbdtn","converted":"привет","appBundleID":null,"positiveCount":2,"negativeCount":0,"confirmed":true,"lastUsed":800000000}]}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+
+        let book = try decoder.decode(AdaptiveRuleBook.self, from: Data(json.utf8))
+
+        XCTAssertEqual(book.modelVersion, 8)
+        XCTAssertEqual(book.rules.map(\.original), ["ghbdtn"])
+        XCTAssertTrue(book.isConfirmed(original: "ghbdtn", converted: "привет", appBundleID: nil))
+    }
+
+    func testCurrentArchiveCannotReintroduceUnsafeSingleCharacterRule() {
+        let unsafe = AdaptiveRule(
+            original: "а",
+            converted: "f",
+            positiveCount: 22,
+            confirmed: true
+        )
+
+        var current = AdaptiveRuleBook()
+        current.merge(AdaptiveRuleBook(rules: [unsafe], modelVersion: 8))
+
+        XCTAssertTrue(current.rules.isEmpty)
+        XCTAssertFalse(current.isConfirmed(original: "а", converted: "f", appBundleID: nil))
     }
 
     func testPositiveAndNegativeSignalsAdjustBias() {
@@ -107,7 +146,7 @@ final class AdaptiveRuleBookTests: XCTestCase {
 
         let book = try decoder.decode(AdaptiveRuleBook.self, from: Data(json.utf8))
 
-        XCTAssertEqual(book.modelVersion, 6)
+        XCTAssertEqual(book.modelVersion, 8)
         XCTAssertFalse(book.hasApplicationException(
             original: "gjxtve",
             converted: "почему",
@@ -192,7 +231,7 @@ final class AdaptiveRuleBookTests: XCTestCase {
 
         let book = try decoder.decode(AdaptiveRuleBook.self, from: Data(json.utf8))
 
-        XCTAssertEqual(book.modelVersion, 6)
+        XCTAssertEqual(book.modelVersion, 8)
         XCTAssertTrue(book.isConfirmed(
             original: "qazwsxedc",
             converted: "йфяцычувс",

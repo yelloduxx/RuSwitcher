@@ -63,6 +63,99 @@ final class LayoutDecoderTests: XCTestCase {
         XCTAssertEqual(result.decision.reason, .blockedContext)
     }
 
+    func testSingleRussianConjunctionAfterEnglishInsertionUsesRecentMixedContext() {
+        let mixed = evaluate("f", context: ["sent", "файл", "к", "review"])
+        XCTAssertEqual(mixed.decision.candidate.replacement, "а")
+        XCTAssertEqual(mixed.decision.verdict, .switchToConverted)
+
+        let english = evaluate("f", context: ["send", "it", "to", "review"])
+        XCTAssertEqual(english.decision.verdict, .keep)
+    }
+
+    func testCorrectSingleRussianConjunctionStaysRussianInEnglishContext() {
+        var englishBelief = LanguageBelief.neutral
+        englishBelief.observe(language: "en")
+        englishBelief.observe(language: "en")
+
+        for word in ["а", "и", "я", "в", "с", "к", "у", "о"] {
+            let result = evaluate(
+                word,
+                current: "ru",
+                target: "en",
+                context: ["answer", "yes"],
+                belief: englishBelief
+            )
+            XCTAssertEqual(result.decision.verdict, .keep, word)
+        }
+    }
+
+    func testStaleConfirmationCannotOverrideCorrectSingleLetterWord() {
+        var englishBelief = LanguageBelief.neutral
+        englishBelief.observe(language: "en")
+        englishBelief.observe(language: "en")
+
+        for word in ["а", "и", "я", "в", "с", "к", "у", "о"] {
+            let result = evaluate(
+                word,
+                current: "ru",
+                target: "en",
+                context: ["answer", "yes"],
+                belief: englishBelief,
+                confirmed: true
+            )
+            XCTAssertEqual(result.decision.verdict, .keep, word)
+            XCTAssertNotEqual(result.decision.reason, .confirmedByUser, word)
+        }
+    }
+
+    func testPunctuationOnlyTokensNeverTriggerLayoutConversion() {
+        for token in ["\"?!\",", "...", "@", "&"] {
+            let result = evaluate(token)
+            XCTAssertEqual(result.decision.verdict, .keep, token)
+            XCTAssertEqual(result.decision.reason, .blockedCodeLike, token)
+        }
+    }
+
+    func testFrequentEnglishShortWordsBeatOnlyWeakRussianDictionaryHitsInMixedContext() {
+        let butResult = evaluate(
+            "иге",
+            current: "ru",
+            target: "en",
+            context: ["Development", "работает", "в", "RU"]
+        )
+        XCTAssertEqual(butResult.decision.candidate.replacement, "but")
+        XCTAssertEqual(butResult.decision.verdict, .switchToConverted)
+
+        let inResult = evaluate(
+            "шт",
+            current: "ru",
+            target: "en",
+            context: ["работает", "RU", "but", "stays"]
+        )
+        XCTAssertEqual(inResult.decision.candidate.replacement, "in")
+        XCTAssertEqual(inResult.decision.verdict, .switchToConverted)
+
+        let russianContext = evaluate(
+            "шт",
+            current: "ru",
+            target: "en",
+            context: ["цена", "за", "одну", "штуку"]
+        )
+        XCTAssertEqual(russianContext.decision.verdict, .keep)
+    }
+
+    func testFrequentEnglishTargetCannotOverrideKnownRussianWord() {
+        for word in ["рук", "руб", "шею"] {
+            let result = evaluate(
+                word,
+                current: "ru",
+                target: "en",
+                context: ["this", "text"]
+            )
+            XCTAssertEqual(result.decision.verdict, .keep, word)
+        }
+    }
+
     func testColloquialSuffixConvertsFromKnownStem() {
         var englishBelief = LanguageBelief.neutral
         englishBelief.observe(language: "en")
@@ -193,6 +286,12 @@ final class LayoutDecoderTests: XCTestCase {
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
     }
 
+    func testWrappedPhysicalQuestionMarkUsesTargetLayout() {
+        let result = evaluate("{gjregfntkm&", context: ["этот"])
+        XCTAssertEqual(result.decision.candidate.replacement, "{покупатель?")
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
     func testSingleUppercaseCyrillicLetterStaysUnchanged() {
         let result = evaluate("А", current: "ru", target: "en")
         XCTAssertEqual(result.decision.verdict, .keep)
@@ -216,7 +315,7 @@ final class LayoutDecoderTests: XCTestCase {
             context: ["keyboard", "again"],
             belief: englishBelief
         )
-        XCTAssertEqual(result.decision.candidate.replacement, "{удали?")
+        XCTAssertEqual(result.decision.candidate.replacement, "{удали,")
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
     }
 
@@ -224,6 +323,25 @@ final class LayoutDecoderTests: XCTestCase {
         let result = evaluate("htpekmnfn?!", context: ["это"])
         XCTAssertEqual(result.decision.candidate.replacement, "результат?!")
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testNaturalMultiMarkSuffixWinsAcrossPhysicalLayouts() {
+        let russianQuestion = evaluate("htpekmnfn&!", context: ["это"])
+        XCTAssertEqual(russianQuestion.decision.candidate.replacement, "результат?!")
+        XCTAssertEqual(russianQuestion.decision.verdict, .switchToConverted)
+
+        let englishQuestion = evaluate(
+            "дшту,!",
+            current: "ru",
+            target: "en",
+            context: ["this"]
+        )
+        XCTAssertEqual(englishQuestion.decision.candidate.replacement, "line?!")
+        XCTAssertEqual(englishQuestion.decision.verdict, .switchToConverted)
+
+        let ellipsis = evaluate("ghjdthrf///", context: ["это"])
+        XCTAssertEqual(ellipsis.decision.candidate.replacement, "проверка...")
+        XCTAssertEqual(ellipsis.decision.verdict, .switchToConverted)
     }
 
     func testFrequentWrappedTargetBeatsBloomOnlyDirectTarget() {

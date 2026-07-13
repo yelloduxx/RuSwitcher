@@ -72,8 +72,6 @@ enum L10n {
     static var settingsImportLearningSuccess: String { s("settings.learning.importSuccess") }
     static var settingsLearningFileError: String { s("settings.learning.fileError") }
     static var settingsSmartEngine: String { s("settings.smartEngine") }
-    static var settingsAnonymousStatistics: String { s("settings.statistics.anonymous") }
-    static var settingsAnonymousStatisticsHint: String { s("settings.statistics.anonymousHint") }
     static var statusActive: String { s("status.active") }
     static var statusDisabled: String { s("status.disabled") }
     static var statusSecureInput: String { s("status.secureInput") }
@@ -213,8 +211,6 @@ enum L10n {
             "settings.learning.importSuccess": "Imported %d rules; %d new. Total: %d.",
             "settings.learning.fileError": "Learned words file error",
             "settings.smartEngine": "Smart Engine %@ · language model %@",
-            "settings.statistics.anonymous": "Share anonymous quality statistics",
-            "settings.statistics.anonymousHint": "Off by default. Sends only aggregate outcomes and length buckets; never words, nearby text, or app names.",
             "status.active": "Smart conversion is active",
             "status.disabled": "Automatic conversion is disabled",
             "status.secureInput": "Paused: secure input is active",
@@ -317,8 +313,6 @@ enum L10n {
             "settings.learning.importSuccess": "Импортировано: %d; новых: %d. Всего: %d.",
             "settings.learning.fileError": "Ошибка файла выученных слов",
             "settings.smartEngine": "Smart Engine %@ · языковая модель %@",
-            "settings.statistics.anonymous": "Отправлять анонимную статистику качества",
-            "settings.statistics.anonymousHint": "По умолчанию выключено. Только итоги и диапазоны длины; без слов, соседнего текста и названий приложений.",
             "status.active": "Умная конверсия работает",
             "status.disabled": "Автоматическая конверсия выключена",
             "status.secureInput": "Приостановлено: защищённый ввод",

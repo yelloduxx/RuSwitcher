@@ -1,8 +1,9 @@
 import Foundation
+import RuSwitcherCore
 
 public struct ContextSnapshot: Equatable, Sendable {
-    public static let maximumTokens = 16
-    public static let maximumUTF8Bytes = 192
+    public static let maximumTokens = InputContextLimits.maximumTokens
+    public static let maximumUTF8Bytes = InputContextLimits.maximumUTF8Bytes
 
     public let text: String
     public let tokenLanguages: [String?]

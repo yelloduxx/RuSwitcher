@@ -66,11 +66,12 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
     public private(set) var rules: [AdaptiveRule]
     public private(set) var modelVersion: Int
 
-    public init(rules: [AdaptiveRule] = [], modelVersion: Int = 6) {
+    public init(rules: [AdaptiveRule] = [], modelVersion: Int = 8) {
         self.rules = rules
         self.modelVersion = modelVersion
         migrateLegacyScopesIfNeeded()
         migrateLegacyBackspaceFeedbackIfNeeded()
+        enforcePersistablePairs()
     }
 
     private enum CodingKeys: String, CodingKey { case rules, modelVersion }
@@ -81,6 +82,7 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
         modelVersion = try values.decodeIfPresent(Int.self, forKey: .modelVersion) ?? 3
         migrateLegacyScopesIfNeeded()
         migrateLegacyBackspaceFeedbackIfNeeded()
+        enforcePersistablePairs()
     }
 
     public func bias(original: String, converted: String, appBundleID: String?) -> Double {
@@ -123,10 +125,12 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
     /// Accepted corrections are portable. Application scope is reserved only for
     /// an explicit reversal of a global correction.
     public mutating func recordPositive(original: String, converted: String) {
+        guard Self.isPersistablePair(original: original, converted: converted) else { return }
         update(original: original, converted: converted, appBundleID: nil, positive: true)
     }
 
     public mutating func recordNegative(original: String, converted: String, appBundleID: String?) {
+        guard Self.isPersistablePair(original: original, converted: converted) else { return }
         if let appBundleID, hasGlobalConfirmation(original: original, converted: converted) {
             setApplicationException(
                 original: original,
@@ -149,6 +153,7 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
         converted: String,
         clearingExceptionFor appBundleID: String? = nil
     ) {
+        guard Self.isPersistablePair(original: original, converted: converted) else { return }
         if let index = rules.firstIndex(where: {
             $0.matchesPair(original: original, converted: converted) && $0.appBundleID == nil
         }) {
@@ -170,7 +175,7 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
                     && $0.matchesPair(original: original, converted: converted)
             }
         }
-        modelVersion = 6
+        modelVersion = 8
         prune()
     }
 
@@ -219,6 +224,8 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
         }
         modelVersion = max(modelVersion, imported.modelVersion)
         migrateLegacyScopesIfNeeded()
+        migrateLegacyBackspaceFeedbackIfNeeded()
+        enforcePersistablePairs()
         prune()
     }
 
@@ -252,7 +259,7 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
                 applicationException: true
             ))
         }
-        modelVersion = 6
+        modelVersion = 8
         prune()
     }
 
@@ -344,6 +351,21 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
                 && rule.negativeCount > 0
         }
         modelVersion = 6
+    }
+
+    /// A one-character pair is inherently ambiguous across layouts (`a`/`ф`,
+    /// `f`/`а`, `b`/`и`). Contextual short-word rules may still convert it, but a
+    /// global learned override must never make that choice unconditional.
+    private mutating func enforcePersistablePairs() {
+        rules.removeAll {
+            !Self.isPersistablePair(original: $0.original, converted: $0.converted)
+        }
+        modelVersion = max(modelVersion, 8)
+    }
+
+    private static func isPersistablePair(original: String, converted: String) -> Bool {
+        FrequentWordLexicon.normalize(original).count(where: \.isLetter) >= 2
+            && FrequentWordLexicon.normalize(converted).count(where: \.isLetter) >= 2
     }
 
     private mutating func prune() {

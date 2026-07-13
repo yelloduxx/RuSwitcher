@@ -379,17 +379,8 @@ final class SettingsWindowController {
         view.addSubview(pathLabel)
         y -= 72
 
-        let v4Mode = SettingsManager.shared.smartEngineV4Mode
-        let v4Model = ContextualLayoutModel.bundled
-        let engineVersion: String
-        let modelVersion: String
-        if v4Mode != .off, let v4Model {
-            engineVersion = "V4 \(v4Mode.rawValue)"
-            modelVersion = v4Model.manifest.modelVersion
-        } else {
-            engineVersion = SettingsManager.shared.smartEngineV3 && LanguageModelStore.bundled != nil ? "V3" : "V2"
-            modelVersion = LanguageModelStore.bundled?.metadata.modelVersion ?? "fallback"
-        }
+        let engineVersion = SettingsManager.shared.smartEngineV3 && LanguageModelStore.bundled != nil ? "V3" : "V2"
+        let modelVersion = LanguageModelStore.bundled?.metadata.modelVersion ?? "fallback"
         let engineLabel = NSTextField(
             labelWithString: String(format: L10n.settingsSmartEngine, engineVersion, modelVersion)
         )
@@ -398,23 +389,6 @@ final class SettingsWindowController {
         engineLabel.textColor = .secondaryLabelColor
         view.addSubview(engineLabel)
         y -= 38
-
-        let statisticsCheckbox = NSButton(
-            checkboxWithTitle: L10n.settingsAnonymousStatistics,
-            target: self,
-            action: #selector(anonymousStatisticsChanged)
-        )
-        statisticsCheckbox.frame = NSRect(x: 20, y: y, width: 420, height: 22)
-        statisticsCheckbox.state = SettingsManager.shared.shareAnonymousStatistics ? .on : .off
-        view.addSubview(statisticsCheckbox)
-        y -= 24
-
-        let statisticsHint = NSTextField(wrappingLabelWithString: L10n.settingsAnonymousStatisticsHint)
-        statisticsHint.frame = NSRect(x: 40, y: y - 34, width: 390, height: 34)
-        statisticsHint.font = .systemFont(ofSize: 11)
-        statisticsHint.textColor = .secondaryLabelColor
-        view.addSubview(statisticsHint)
-        y -= 48
 
         let exportLearningBtn = NSButton(
             title: L10n.settingsExportLearning,
@@ -610,15 +584,6 @@ final class SettingsWindowController {
         SettingsManager.shared.debugLogEnabled = sender.state == .on
     }
 
-    @objc private func anonymousStatisticsChanged(_ sender: NSButton) {
-        SettingsManager.shared.shareAnonymousStatistics = sender.state == .on
-        if sender.state == .on {
-            AnonymousStatisticsReporter.shared.uploadIfDue()
-        } else {
-            AnonymousStatisticsReporter.shared.clear()
-        }
-    }
-
     @objc private func clearAdaptiveLearning() {
         let alert = NSAlert()
         alert.messageText = L10n.settingsClearLearningConfirm
@@ -666,7 +631,7 @@ final class SettingsWindowController {
                     result.total
                 )
             )
-            rslog("learn: imported=\(result.imported) added=\(result.added) total=\(result.total)")
+            rslog("learning_rules_imported")
         } catch {
             showLearningAlert(title: L10n.settingsLearningFileError, detail: error.localizedDescription)
         }

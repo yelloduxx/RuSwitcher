@@ -1,4 +1,5 @@
 import Foundation
+import RuSwitcherCore
 
 public struct PersonalizationAdapter: Codable, Equatable, Sendable {
     public private(set) var formatVersion: Int

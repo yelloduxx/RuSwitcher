@@ -1,4 +1,5 @@
 import Foundation
+import RuSwitcherCore
 
 public enum ContextualLayoutDecoder {
     private static let featureCount = 12

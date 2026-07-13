@@ -1,5 +1,10 @@
 import Foundation
 
+public enum InputContextLimits {
+    public static let maximumTokens = 16
+    public static let maximumUTF8Bytes = 192
+}
+
 public enum EditorIntegrity: Equatable, Sendable {
     case clean
     case invalidated
@@ -44,17 +49,21 @@ public enum InputBoundary: Equatable, Sendable {
         }
     }
 
-    /// Space is consumed and replayed after the replacement. Enter and Tab keep
-    /// their native application semantics and are passed through.
+    /// Text boundaries are consumed only after a replacement has been posted, then
+    /// replayed to the same PID so they cannot overtake the replacement events.
     public var shouldConsumeOriginalEvent: Bool {
-        if case .space = self { return true }
-        return false
+        switch self {
+        case .space, .enter, .tab: return true
+        case .punctuation: return false
+        }
     }
 
     /// Space is replayed as a separate marked key event after replacement.
     public var replayText: String {
-        if case .space = self { return text }
-        return ""
+        switch self {
+        case .space, .enter, .tab: return text
+        case .punctuation: return ""
+        }
     }
 
     public var isIncludedInTokenKeys: Bool {
@@ -177,6 +186,7 @@ public struct TokenDraft: Equatable, Sendable {
 public struct TokenHandlingResult: Equatable, Sendable {
     public let consumeBoundary: Bool
     public let finalizeToken: Bool
+    public let stageCompletion: Bool
     public let resolvedText: String?
     public let resolvedLanguage: String?
     public let wasConverted: Bool
@@ -185,6 +195,7 @@ public struct TokenHandlingResult: Equatable, Sendable {
     public static let passThrough = TokenHandlingResult(
         consumeBoundary: false,
         finalizeToken: true,
+        stageCompletion: false,
         resolvedText: nil,
         resolvedLanguage: nil,
         wasConverted: false,
@@ -194,6 +205,7 @@ public struct TokenHandlingResult: Equatable, Sendable {
     public init(
         consumeBoundary: Bool,
         finalizeToken: Bool = true,
+        stageCompletion: Bool = false,
         resolvedText: String?,
         resolvedLanguage: String?,
         wasConverted: Bool,
@@ -201,6 +213,7 @@ public struct TokenHandlingResult: Equatable, Sendable {
     ) {
         self.consumeBoundary = consumeBoundary
         self.finalizeToken = finalizeToken
+        self.stageCompletion = stageCompletion
         self.resolvedText = resolvedText
         self.resolvedLanguage = resolvedLanguage
         self.wasConverted = wasConverted
@@ -219,6 +232,7 @@ public struct InputSession: Equatable, Sendable {
     public private(set) var editRevision: UInt64 = 0
     public private(set) var integrity: EditorIntegrity = .clean
     public private(set) var state: InputSessionState = .idle(revision: 0)
+    private var stagedContextSequence: UInt64?
     public let contextLimit: Int
 
     public init(contextLimit: Int = 5) {
@@ -287,6 +301,7 @@ public struct InputSession: Equatable, Sendable {
     public mutating func invalidate(clearContext: Bool, incrementRevision: Bool = true) {
         sequence &+= 1
         if incrementRevision { editRevision &+= 1 }
+        stagedContextSequence = nil
         currentKeys.removeAll(keepingCapacity: true)
         integrity = .invalidated
         state = .invalidated(revision: editRevision)
@@ -324,6 +339,79 @@ public struct InputSession: Equatable, Sendable {
         wasConverted: Bool
     ) {
         sequence &+= 1
+        stagedContextSequence = nil
+        appendContext(resolvedText: resolvedText, language: language, wasConverted: wasConverted)
+        currentKeys.removeAll(keepingCapacity: true)
+        integrity = .clean
+        state = .idle(revision: editRevision)
+    }
+
+    /// Publishes the expected editor state immediately so the next token can use
+    /// it as provisional phrase context. Persistent learning still waits for the
+    /// asynchronous read-back performed outside this state machine.
+    @discardableResult
+    public mutating func stageCompletion(
+        resolvedText: String? = nil,
+        language: String? = nil,
+        wasConverted: Bool = false
+    ) -> UInt64 {
+        sequence &+= 1
+        if let resolvedText, !resolvedText.isEmpty {
+            appendContext(
+                resolvedText: resolvedText,
+                language: language,
+                wasConverted: wasConverted
+            )
+            stagedContextSequence = sequence
+        } else {
+            stagedContextSequence = nil
+        }
+        currentKeys.removeAll(keepingCapacity: true)
+        integrity = .clean
+        state = .idle(revision: editRevision)
+        return sequence
+    }
+
+    /// Applies delayed context only while no newer user input or token completion
+    /// has superseded the staged transaction.
+    @discardableResult
+    public mutating func confirmStagedCompletion(
+        resolvedText: String,
+        language: String?,
+        wasConverted: Bool,
+        expectedSequence: UInt64
+    ) -> Bool {
+        guard sequence == expectedSequence, currentKeys.isEmpty, integrity == .clean else {
+            return false
+        }
+        if stagedContextSequence == expectedSequence {
+            stagedContextSequence = nil
+            return true
+        }
+        guard !resolvedText.isEmpty else { return true }
+        appendContext(resolvedText: resolvedText, language: language, wasConverted: wasConverted)
+        return true
+    }
+
+    public mutating func reset(keepContext: Bool = false) {
+        sequence &+= 1
+        editRevision &+= 1
+        stagedContextSequence = nil
+        currentKeys.removeAll(keepingCapacity: true)
+        integrity = .clean
+        state = .idle(revision: editRevision)
+        if !keepContext {
+            context.removeAll(keepingCapacity: true)
+            languageState = .neutral
+            languageBelief = .neutral
+        }
+    }
+
+    private mutating func appendContext(
+        resolvedText: String?,
+        language: String?,
+        wasConverted: Bool
+    ) {
         if let resolvedText, !resolvedText.isEmpty {
             context.append(InputContextToken(
                 text: resolvedText,
@@ -336,21 +424,5 @@ public struct InputSession: Equatable, Sendable {
         }
         languageState.observe(language: language, weight: wasConverted ? 1.4 : 1.0)
         languageBelief.observe(language: language, weight: wasConverted ? 1.4 : 1.0)
-        currentKeys.removeAll(keepingCapacity: true)
-        integrity = .clean
-        state = .idle(revision: editRevision)
-    }
-
-    public mutating func reset(keepContext: Bool = false) {
-        sequence &+= 1
-        editRevision &+= 1
-        currentKeys.removeAll(keepingCapacity: true)
-        integrity = .clean
-        state = .idle(revision: editRevision)
-        if !keepContext {
-            context.removeAll(keepingCapacity: true)
-            languageState = .neutral
-            languageBelief = .neutral
-        }
     }
 }

@@ -146,8 +146,9 @@ final class CaretIndicator {
         enableChromiumA11y(axApp)   // поднять ленивое дерево Electron/Chromium (идемпотентно)
         var focusedRaw: AnyObject?
         guard AXUIElementCopyAttributeValue(axApp, kAXFocusedUIElementAttribute as CFString, &focusedRaw) == .success,
-              let focused = focusedRaw else { return nil }
-        let element = focused as! AXUIElement
+              let focused = focusedRaw,
+              CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        let element = unsafeDowncast(focused, to: AXUIElement.self)
         // Нативные Cocoa → range-путь; веб/Electron → text-marker (приватные AX-атрибуты).
         guard let topLeft = axCaretRectTopLeft(of: element) ?? axCaretRectViaTextMarker(of: element) else { return nil }
 
@@ -163,8 +164,10 @@ final class CaretIndicator {
         var rangeValue: AnyObject?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeValue) == .success,
               let rv = rangeValue, CFGetTypeID(rv) == AXValueGetTypeID() else { return nil }
+        let rangeAXValue = unsafeDowncast(rv, to: AXValue.self)
+        guard AXValueGetType(rangeAXValue) == .cfRange else { return nil }
         var range = CFRange(location: 0, length: 0)
-        guard AXValueGetValue(rv as! AXValue, .cfRange, &range) else { return nil }
+        guard AXValueGetValue(rangeAXValue, .cfRange, &range) else { return nil }
 
         // Часть Cocoa-контролов отдаёт пустой прямоугольник на нулевой длине → просим 1 символ,
         // с откатом на исходный нулевой диапазон (пустое поле, где следующего глифа нет).
@@ -179,8 +182,10 @@ final class CaretIndicator {
                 element, kAXBoundsForRangeParameterizedAttribute as CFString, zeroArg, &boundsValue)
         }
         guard err == .success, let bv = boundsValue, CFGetTypeID(bv) == AXValueGetTypeID() else { return nil }
+        let boundsAXValue = unsafeDowncast(bv, to: AXValue.self)
+        guard AXValueGetType(boundsAXValue) == .cgRect else { return nil }
         var rect = CGRect.zero
-        guard AXValueGetValue(bv as! AXValue, .cgRect, &rect) else { return nil }
+        guard AXValueGetValue(boundsAXValue, .cgRect, &rect) else { return nil }
         // Каретка: width = 0 (тонкая черта), но height = высота строки. VS Code-canvas отдаёт
         // (0,N,0x0) — height 0 = реальной геометрии нет, не показываем (иначе плашка в углу экрана).
         guard rect.height >= 1, rect.width.isFinite, rect.height.isFinite else { return nil }
@@ -205,8 +210,10 @@ final class CaretIndicator {
         guard AXUIElementCopyParameterizedAttributeValue(
                 element, "AXBoundsForTextMarkerRange" as CFString, mr as CFTypeRef, &boundsValue) == .success,
               let bv = boundsValue, CFGetTypeID(bv) == AXValueGetTypeID() else { return nil }
+        let boundsAXValue = unsafeDowncast(bv, to: AXValue.self)
+        guard AXValueGetType(boundsAXValue) == .cgRect else { return nil }
         var rect = CGRect.zero
-        guard AXValueGetValue(bv as! AXValue, .cgRect, &rect) else { return nil }
+        guard AXValueGetValue(boundsAXValue, .cgRect, &rect) else { return nil }
         // Тот же гвард, что в range-пути: отвергаем вырожденную геометрию (веб/Electron
         // порой отдаёт (x,y,0x0) с ненулевым origin — height>=1 это ловит, включая .zero).
         guard rect.height >= 1, rect.width.isFinite, rect.height.isFinite else { return nil }

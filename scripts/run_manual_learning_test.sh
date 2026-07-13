@@ -50,6 +50,7 @@ sleep 1
 
 open -n "$APP" --args \
     --hid-probe-file "$FIXTURE" \
+    --hid-use-standard-preferences \
     --result "$BASELINE_RESULT"
 
 python3 - "$BASELINE_RESULT" <<'PY'
@@ -73,6 +74,7 @@ PY
 
 open -n "$APP" --args \
     --hid-probe manual-learning-double-shift \
+    --hid-use-standard-preferences \
     --result "$RESULT"
 
 python3 - "$RESULT" <<'PY'
@@ -110,6 +112,7 @@ sleep 1
 
 open -n "$APP" --args \
     --hid-probe-file "$FIXTURE" \
+    --hid-use-standard-preferences \
     --result "$PERSISTED_RESULT"
 
 python3 - "$PERSISTED_RESULT" <<'PY'

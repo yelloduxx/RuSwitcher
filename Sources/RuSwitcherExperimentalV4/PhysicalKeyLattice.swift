@@ -1,4 +1,5 @@
 import Foundation
+import RuSwitcherCore
 
 public struct LayoutHypothesis: Equatable, Sendable {
     public enum Kind: String, Equatable, Sendable {
