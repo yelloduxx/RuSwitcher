@@ -66,10 +66,11 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
     public private(set) var rules: [AdaptiveRule]
     public private(set) var modelVersion: Int
 
-    public init(rules: [AdaptiveRule] = [], modelVersion: Int = 4) {
+    public init(rules: [AdaptiveRule] = [], modelVersion: Int = 6) {
         self.rules = rules
         self.modelVersion = modelVersion
         migrateLegacyScopesIfNeeded()
+        migrateLegacyBackspaceFeedbackIfNeeded()
     }
 
     private enum CodingKeys: String, CodingKey { case rules, modelVersion }
@@ -79,6 +80,7 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
         rules = try values.decodeIfPresent([AdaptiveRule].self, forKey: .rules) ?? []
         modelVersion = try values.decodeIfPresent(Int.self, forKey: .modelVersion) ?? 3
         migrateLegacyScopesIfNeeded()
+        migrateLegacyBackspaceFeedbackIfNeeded()
     }
 
     public func bias(original: String, converted: String, appBundleID: String?) -> Double {
@@ -125,7 +127,7 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
     }
 
     public mutating func recordNegative(original: String, converted: String, appBundleID: String?) {
-        if let appBundleID, hasGlobalLearning(original: original, converted: converted) {
+        if let appBundleID, hasGlobalConfirmation(original: original, converted: converted) {
             setApplicationException(
                 original: original,
                 converted: converted,
@@ -168,7 +170,7 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
                     && $0.matchesPair(original: original, converted: converted)
             }
         }
-        modelVersion = 4
+        modelVersion = 6
         prune()
     }
 
@@ -181,7 +183,7 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
         appBundleID: String?
     ) {
         if let appBundleID,
-           hasGlobalLearning(original: converted, converted: original) {
+           hasGlobalConfirmation(original: converted, converted: original) {
             setApplicationException(
                 original: converted,
                 converted: original,
@@ -220,11 +222,11 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
         prune()
     }
 
-    private func hasGlobalLearning(original: String, converted: String) -> Bool {
+    private func hasGlobalConfirmation(original: String, converted: String) -> Bool {
         rules.contains {
             $0.appBundleID == nil
                 && $0.matchesPair(original: original, converted: converted)
-                && ($0.confirmed || $0.positiveCount > 0)
+                && $0.confirmed
         }
     }
 
@@ -250,7 +252,7 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
                 applicationException: true
             ))
         }
-        modelVersion = 4
+        modelVersion = 6
         prune()
     }
 
@@ -321,6 +323,27 @@ public struct AdaptiveRuleBook: Codable, Equatable, Sendable {
         }
         rules = migrated
         modelVersion = 4
+    }
+
+    /// Version 4 treated one accepted automatic correction as sufficient for a
+    /// permanent application exception. In practice the first Backspace usually
+    /// deleted the replayed space, so these weak exceptions caused random misses.
+    /// Keep their counters as soft app-local feedback, but reserve a hard
+    /// exception for pairs confirmed manually at the global scope.
+    private mutating func migrateLegacyBackspaceFeedbackIfNeeded() {
+        guard modelVersion < 6 else { return }
+        let confirmedGlobalPairs = Set(rules.compactMap { rule -> String? in
+            guard rule.appBundleID == nil, rule.confirmed else { return nil }
+            return "\(rule.original)\u{1f}\(rule.converted)"
+        })
+        rules.removeAll { rule in
+            guard rule.appBundleID != nil else { return false }
+            let pair = "\(rule.original)\u{1f}\(rule.converted)"
+            return !confirmedGlobalPairs.contains(pair)
+                && rule.positiveCount == 0
+                && rule.negativeCount > 0
+        }
+        modelVersion = 6
     }
 
     private mutating func prune() {

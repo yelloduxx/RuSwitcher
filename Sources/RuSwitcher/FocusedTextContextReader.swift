@@ -75,7 +75,16 @@ final class FocusedTextContextReader: @unchecked Sendable {
         let box = ResultBox()
         let semaphore = DispatchSemaphore(value: 0)
         queue.async {
-            box.set(Self.readAndCompare(expectedSuffix: expectedSuffix, focus: focus))
+            let first = Self.readAndCompare(expectedSuffix: expectedSuffix, focus: focus)
+            if first == .mismatch {
+                // Short tokens can reach the boundary before WebKit/Electron has
+                // published the last character through AX. Retry once inside the
+                // existing deadline; a real cursor/focus mismatch remains blocked.
+                usleep(750)
+                box.set(Self.readAndCompare(expectedSuffix: expectedSuffix, focus: focus))
+            } else {
+                box.set(first)
+            }
             semaphore.signal()
         }
         let timeout = DispatchTime.now() + .milliseconds(max(1, deadlineMilliseconds))

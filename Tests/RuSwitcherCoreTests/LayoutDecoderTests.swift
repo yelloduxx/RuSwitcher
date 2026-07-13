@@ -121,6 +121,18 @@ final class LayoutDecoderTests: XCTestCase {
         XCTAssertEqual(evaluate("B", context: ["plan"]).decision.verdict, .keep)
     }
 
+    func testFrequentThreeLetterRussianWordConvertsWithoutSpecialContext() {
+        for context in [[], ["это"], ["почему"]] {
+            let result = evaluate("vyt", context: context)
+            XCTAssertEqual(result.decision.candidate.replacement, "мне", "context=\(context)")
+            XCTAssertEqual(
+                result.decision.verdict,
+                .switchToConverted,
+                "context=\(context) margin=\(result.confidenceMargin) evidence=\(result.evidence)"
+            )
+        }
+    }
+
     func testRussianUnknownDoesNotFlipToEnglishInRussianBelief() {
         var belief = LanguageBelief.neutral
         belief.observe(language: "ru")

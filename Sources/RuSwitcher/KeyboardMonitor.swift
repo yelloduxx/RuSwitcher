@@ -334,9 +334,7 @@ final class KeyboardMonitor: @unchecked Sendable {
         let passiveBoundaryAfterConversion = hadRecentCorrection
             && currentWordLength == 0
             && (keyCode == KC.space || keyCode == KC.enter || keyCode == KC.tab)
-        let editsRecentCorrection = !keysTypedSinceConversion && keyCode == KC.backspace
         if !passiveBoundaryAfterConversion { keysTypedSinceConversion = true }
-        if editsRecentCorrection { onCorrectionEdited?() }
         if caretFlagEnabled { DispatchQueue.main.async { [weak self] in self?.onUserInput?() } }   // issue #10: спрятать флаг при печати
 
         // Удалёнка: Screen Sharing шлёт проброшенные символы как keyCode 0 + юникод. Перехватываем

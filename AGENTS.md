@@ -14,13 +14,13 @@ installed build changes.
 - Automatic conversion is off by default until the user enables it.
 - Primary repository: `rashn/RuSwitcher`; local branch used for this work:
   `codex/caramba-autoconvert`.
-- As of 2026-07-12, the installed version is `4.0.0` build `73`. The latest
-  committed baseline is `ec0c605` (`fix: make learned corrections global with
-  app exceptions`); the build-73 punctuation/uppercase fix is pending commit.
+- As of 2026-07-12, the installed version is `4.0.0` build `76`. The latest
+  committed baseline is `2126e58` (`fix: translate punctuation with converted
+  layout`); build 75 adds pending manual-selection and adaptive-feedback fixes.
 - The installed app is `/Applications/RuSwitcher.app`, signed with the reusable
   identity `RuSwitcher Local Code Signing`.
-- Installed build-73 executable SHA-256:
-  `54e38c9ca18f8ea623839c93b5ddf2da01f5e7b9d3674e33e75815e1f652e8cb`.
+- Installed build-76 executable SHA-256:
+  `485e01d95724cc8af3cd35079b85888a01d8c00966588524d98add94dcd0fc70`.
 
 ## User Requirements
 
@@ -113,6 +113,9 @@ back to V3/keep rather than performing a late edit.
   the first punctuation key: it caused `...` to become `.//` after the layout
   switched mid-sequence and caused races with the following boundary.
 - A word ending in punctuation with no following Space/Enter/Tab remains pending.
+- AX suffix validation retries one mismatch after 0.75 ms within the existing
+  4 ms deadline. This handles short-token races in WebKit/Electron while still
+  blocking a persistent focus/caret mismatch.
 
 Hard blockers remain authoritative:
 
@@ -176,8 +179,14 @@ Adaptive learning behavior:
   source/target pair. The next occurrence can auto-convert without dictionary
   evidence.
 - A completed following token is a weak positive signal.
-- immediate Undo or Backspace is a negative signal and removes confirmation;
-  it does not automatically create a permanent `neverConvert` rule.
+- Explicit Undo or double-Shift reversal is a negative signal. A plain first
+  Backspace after auto-conversion usually deletes the replayed space and must not
+  train or create an application exception.
+- A permanent application exception is created only when explicitly reversing a
+  globally confirmed manual pair. Weak automatic positives are not sufficient.
+- Rule-book model 6 removes legacy app-local negative rules created by the old
+  Backspace behavior while preserving confirmed global rules and their genuine
+  per-application exceptions.
 - Simple switch-only actions do not train.
 - Rules and the V4 personalization adapter persist in `UserDefaults`.
 - Advanced settings can reset learned corrections.
@@ -219,8 +228,9 @@ downloads and no network inference.
   latency buckets and transaction outcomes; never words or neighboring text.
 - Anonymous statistics are opt-in and contain aggregate outcomes/buckets only,
   never text or app IDs.
-- Debug logging was disabled and the temporary debug log removed after build-68
-  verification; build 70 preserves the user's existing logging preference.
+- Debug logging was disabled and its temporary file removed after the build-76
+  audit. Do not re-enable it until the remote-input Unicode-scalar and bundle-ID
+  logging paths are removed; those paths violate the no-user-text/app-ID rule.
 
 ## Test Corpus and Current Results
 
@@ -253,7 +263,7 @@ bash scripts/run_randomized_layout_suite.sh
 bash scripts/verify_simulator_negative_control.sh
 ```
 
-Last results: 161/161 unit tests, 11,128/11,128 built-in simulator checks,
+Last results: 165/165 unit tests, 11,128/11,128 built-in simulator checks,
 38/38 randomized checks, and a passing intentional negative control.
 
 Learned-rule persistence is tested by `scripts/run_manual_learning_test.sh`: an

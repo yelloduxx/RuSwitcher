@@ -88,4 +88,11 @@ final class MixedPhraseDecoderTests: XCTestCase {
             Step("online", manualLanguage: "en"),
         ]), "революция началась online")
     }
+
+    func testSimpleRussianPhraseTypedInEnglishLayout() {
+        XCTAssertEqual(simulate(initialLanguage: "en", steps: [
+            Step("gjxtve", expected: "почему", shouldSwitch: true),
+            Step("я"),
+        ]), "почему я")
+    }
 }

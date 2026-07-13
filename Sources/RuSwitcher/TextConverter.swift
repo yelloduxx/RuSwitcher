@@ -9,6 +9,13 @@ enum SelectedTextConversionOutcome: Equatable {
     case failed
 }
 
+private enum ReplacementVerification {
+    case match
+    case unchanged
+    case mismatch
+    case unavailable
+}
+
 /// Конвертация текста между раскладками
 @MainActor
 final class TextConverter {
@@ -127,14 +134,23 @@ final class TextConverter {
                     if setResult == .success {
                         let verified = verifyReplacement(
                             replacement,
+                            original: text,
                             originalRange: range,
                             element: element
                         )
                         rslog("manual selection: strategy=ax len=\(text.count) verified=\(verified)")
-                        lastConvertedCount = replacement.count
-                        lastBoundaryCount = 0
-                        lastWasBuffer = false
-                        return .converted
+                        switch verified {
+                        case .match:
+                            lastConvertedCount = replacement.count
+                            lastBoundaryCount = 0
+                            lastWasBuffer = false
+                            return .converted
+                        case .unchanged:
+                            return convertSelectionViaClipboard(selectionKnown: true)
+                        case .mismatch, .unavailable:
+                            lastLearningPair = nil
+                            return .failed
+                        }
                     }
                     return convertSelectionViaClipboard(selectionKnown: true)
                 }
@@ -499,20 +515,29 @@ final class TextConverter {
 
     private func verifyReplacement(
         _ replacement: String,
+        original: String,
         originalRange: CFRange,
         element: AXUIElement
-    ) -> Bool {
+    ) -> ReplacementVerification {
         var range = CFRange(location: originalRange.location, length: replacement.utf16.count)
-        guard let rangeValue = AXValueCreate(.cfRange, &range) else { return false }
+        guard let rangeValue = AXValueCreate(.cfRange, &range) else { return .unavailable }
         var textRaw: AnyObject?
         guard AXUIElementCopyParameterizedAttributeValue(
             element,
             kAXStringForRangeParameterizedAttribute as CFString,
             rangeValue,
             &textRaw
-        ) == .success, let actual = textRaw as? String else { return false }
-        return actual.precomposedStringWithCanonicalMapping
-            == replacement.precomposedStringWithCanonicalMapping
+        ) == .success, let actual = textRaw as? String else {
+            guard let selected = selectedText(from: element) else { return .unavailable }
+            let normalized = selected.precomposedStringWithCanonicalMapping
+            if normalized == replacement.precomposedStringWithCanonicalMapping { return .match }
+            if normalized == original.precomposedStringWithCanonicalMapping { return .unchanged }
+            return .unavailable
+        }
+        let normalized = actual.precomposedStringWithCanonicalMapping
+        if normalized == replacement.precomposedStringWithCanonicalMapping { return .match }
+        if normalized == original.precomposedStringWithCanonicalMapping { return .unchanged }
+        return .mismatch
     }
 
     private func convertSelectionViaClipboard(selectionKnown: Bool) -> SelectedTextConversionOutcome {

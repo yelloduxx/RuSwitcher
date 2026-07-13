@@ -8,7 +8,7 @@ final class AdaptiveRuleBookTests: XCTestCase {
         decoder.dateDecodingStrategy = .secondsSince1970
         let book = try decoder.decode(AdaptiveRuleBook.self, from: Data(oldJSON.utf8))
 
-        XCTAssertEqual(book.modelVersion, 4)
+        XCTAssertEqual(book.modelVersion, 6)
         XCTAssertEqual(book.rules.count, 1)
         XCTAssertFalse(book.rules[0].confirmed)
         XCTAssertGreaterThan(book.bias(original: "ghbdtn", converted: "привет", appBundleID: nil), 0)
@@ -81,6 +81,41 @@ final class AdaptiveRuleBookTests: XCTestCase {
             converted: "йфяцычувс",
             appBundleID: "editor.two"
         ))
+    }
+
+    func testWeakAutomaticLearningDoesNotCreatePermanentApplicationException() {
+        var book = AdaptiveRuleBook()
+        book.recordPositive(original: "gjxtve", converted: "почему")
+        book.recordNegative(original: "gjxtve", converted: "почему", appBundleID: "chat.one")
+
+        XCTAssertFalse(book.hasApplicationException(
+            original: "gjxtve",
+            converted: "почему",
+            appBundleID: "chat.one"
+        ))
+        XCTAssertGreaterThanOrEqual(book.bias(
+            original: "gjxtve",
+            converted: "почему",
+            appBundleID: "chat.one"
+        ), -2.5)
+    }
+
+    func testV4WeakApplicationExceptionRemovesLegacyBackspaceFeedback() throws {
+        let json = #"{"modelVersion":4,"rules":[{"original":"gjxtve","converted":"почему","appBundleID":null,"positiveCount":1,"negativeCount":0,"confirmed":false,"applicationException":false,"lastUsed":800000000},{"original":"gjxtve","converted":"почему","appBundleID":"chat.one","positiveCount":0,"negativeCount":1,"confirmed":false,"applicationException":true,"lastUsed":800000000}]}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+
+        let book = try decoder.decode(AdaptiveRuleBook.self, from: Data(json.utf8))
+
+        XCTAssertEqual(book.modelVersion, 6)
+        XCTAssertFalse(book.hasApplicationException(
+            original: "gjxtve",
+            converted: "почему",
+            appBundleID: "chat.one"
+        ))
+        XCTAssertFalse(book.rules.contains {
+            $0.original == "gjxtve" && $0.converted == "почему" && $0.appBundleID == "chat.one"
+        })
     }
 
     func testManualConfirmationClearsOnlyCurrentApplicationException() {
@@ -157,7 +192,7 @@ final class AdaptiveRuleBookTests: XCTestCase {
 
         let book = try decoder.decode(AdaptiveRuleBook.self, from: Data(json.utf8))
 
-        XCTAssertEqual(book.modelVersion, 4)
+        XCTAssertEqual(book.modelVersion, 6)
         XCTAssertTrue(book.isConfirmed(
             original: "qazwsxedc",
             converted: "йфяцычувс",
