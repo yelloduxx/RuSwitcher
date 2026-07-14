@@ -7,6 +7,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEFAULT_FIXTURE="$ROOT/Tests/Fixtures/HID/mixed-layout-corpus-batch.json"
 
 test -x "$BIN"
+ACTUAL_APP_SHA256="$(shasum -a 256 "$BIN" | awk '{print $1}')"
+EXPECTED_APP_SHA256="${RUSWITCH_APP_SHA256:-$ACTUAL_APP_SHA256}"
+if [ "$ACTUAL_APP_SHA256" != "$EXPECTED_APP_SHA256" ]; then
+    echo "FAIL: candidate SHA-256 mismatch"
+    exit 1
+fi
+echo "Testing $BIN (sha256=$ACTUAL_APP_SHA256)"
 if [ "$#" -eq 0 ]; then
     set -- "$DEFAULT_FIXTURE"
 fi
@@ -75,6 +82,7 @@ typed_length = sum(len(phase["text"]) for phase in fixture["phases"])
 okay = (
     result["postEventAccess"]
     and actual == expected
+    and result.get("pasteboardChangeCountDelta") == 0
     and result.get("unexpectedInputEventCount", 0) == 0
     and not result.get("boundaryDeliveryTimeouts", [])
     and (
@@ -105,6 +113,7 @@ else:
     print(f"first mismatch at character {mismatch}")
     print(f"layout mismatch strokes: {result.get('layoutMismatchStrokes', [])}")
     print(f"unexpected input events: {result.get('unexpectedInputEventCount', 0)}")
+    print(f"pasteboard change count delta: {result.get('pasteboardChangeCountDelta')}")
     print(f"boundary delivery timeouts: {result.get('boundaryDeliveryTimeouts', [])}")
     print(f"expected transactions: {fixture.get('expectedTransactions')}")
     print(f"posted transactions: {result.get('postedAutomaticReplacementCount')}")

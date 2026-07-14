@@ -7,14 +7,20 @@ final class PhysicalKeyLatticeTests: XCTestCase {
         let typed = "гыуб"
         let converted = KeyMapping.convert(typed)
         XCTAssertEqual(converted, "use,")
-        let hypotheses = PhysicalKeyLattice.hypotheses(typed: typed, converted: converted)
+        let hypotheses = RuSwitcherExperimentalV4.PhysicalKeyLattice.hypotheses(
+            typed: typed,
+            converted: converted
+        )
         XCTAssertEqual(hypotheses.first?.text, typed)
         XCTAssertTrue(hypotheses.contains { $0.text == "use," })
-        XCTAssertLessThanOrEqual(hypotheses.count, PhysicalKeyLattice.maximumHypotheses)
+        XCTAssertLessThanOrEqual(
+            hypotheses.count,
+            RuSwitcherExperimentalV4.PhysicalKeyLattice.maximumHypotheses
+        )
     }
 
     func testPhysicalPeriodKeepsWordAndPunctuationAlternatives() {
-        let hypotheses = PhysicalKeyLattice.hypotheses(
+        let hypotheses = RuSwitcherExperimentalV4.PhysicalKeyLattice.hypotheses(
             typed: "ghbdtncnde.",
             converted: KeyMapping.convert("ghbdtncnde.")
         )
@@ -24,7 +30,7 @@ final class PhysicalKeyLatticeTests: XCTestCase {
 
     func testWrappingPunctuationHypothesisPreservesBothSides() {
         let typed = "[gjxtve."
-        let hypotheses = PhysicalKeyLattice.hypotheses(
+        let hypotheses = RuSwitcherExperimentalV4.PhysicalKeyLattice.hypotheses(
             typed: typed,
             converted: KeyMapping.convert(typed)
         )

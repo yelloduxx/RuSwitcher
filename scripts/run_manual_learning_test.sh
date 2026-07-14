@@ -1,7 +1,19 @@
 #!/bin/bash
 set -euo pipefail
 
-APP="/Applications/RuSwitcher.app"
+APP="${RUSWITCH_APP:-/Applications/RuSwitcher.app}"
+APP_EXEC="$APP/Contents/MacOS/RuSwitcher"
+if [ ! -x "$APP_EXEC" ]; then
+    echo "FAIL: RuSwitcher executable not found at $APP_EXEC"
+    exit 1
+fi
+ACTUAL_APP_SHA256=$(shasum -a 256 "$APP_EXEC" | awk '{print $1}')
+EXPECTED_APP_SHA256="${RUSWITCH_APP_SHA256:-$ACTUAL_APP_SHA256}"
+if [ "$ACTUAL_APP_SHA256" != "$EXPECTED_APP_SHA256" ]; then
+    echo "FAIL: candidate SHA-256 mismatch"
+    exit 1
+fi
+echo "Testing $APP_EXEC (sha256=$ACTUAL_APP_SHA256)"
 DOMAIN="com.ruswitcher.app"
 BACKUP="$(mktemp "${TMPDIR:-/tmp}/ruswitch-prefs.XXXXXX.plist")"
 RESULT="$(mktemp "${TMPDIR:-/tmp}/ruswitch-learning.XXXXXX.json")"
@@ -76,12 +88,19 @@ if not os.path.exists(path) or os.path.getsize(path) == 0:
     raise SystemExit("FAIL manual-previous-word-double-shift: no result")
 with open(path, encoding="utf-8") as handle:
     result = json.load(handle)
-expected = "сегодня я привет "
+expected = "сейчас идет проверка "
 passed = (
     result["postEventAccess"]
     and result["text"] == expected
     and result.get("manualText") == expected
     and result.get("pasteboardChangeCountDelta") == 0
+    and result.get("triggerPasteboardChangeCountDelta") == 0
+    and result.get("manualOutcome") == "verified"
+    and result.get("postedManualReplacementCount") == 1
+    and result.get("verifiedManualReplacementCount") == 1
+    and result.get("postedAutomaticReplacementCount") == 0
+    and result.get("verifiedAutomaticReplacementCount") == 0
+    and result.get("finalLayoutLanguage", "").lower().startswith("ru")
     and not result.get("boundaryDeliveryTimeouts")
 )
 print(f"{'PASS' if passed else 'FAIL'} manual-previous-word-double-shift: {result['text']!r}")
@@ -109,7 +128,15 @@ if not os.path.exists(path) or os.path.getsize(path) == 0:
     raise SystemExit("FAIL before-learning: no result")
 with open(path, encoding="utf-8") as handle:
     result = json.load(handle)
-passed = result["postEventAccess"] and result["text"] == "qazwsxedc "
+passed = (
+    result["postEventAccess"]
+    and result["text"] == "qazwsxedc "
+    and result.get("pasteboardChangeCountDelta") == 0
+    and result.get("postedAutomaticReplacementCount") == 0
+    and result.get("verifiedAutomaticReplacementCount") == 0
+    and result.get("postedManualReplacementCount") == 0
+    and result.get("verifiedManualReplacementCount") == 0
+)
 print(f"{'PASS' if passed else 'FAIL'} before-learning: {result['text']!r}")
 raise SystemExit(0 if passed else 1)
 PY
@@ -143,6 +170,13 @@ passed = (
     and result["text"] == expected_word + " "
     and result.get("learningConfirmed") is True
     and result.get("pasteboardChangeCountDelta") == 0
+    and result.get("triggerPasteboardChangeCountDelta") == 0
+    and result.get("manualOutcome") == "verified"
+    and result.get("postedManualReplacementCount") == 0
+    and result.get("verifiedManualReplacementCount") == 1
+    and result.get("postedAutomaticReplacementCount") == 1
+    and result.get("verifiedAutomaticReplacementCount") == 1
+    and result.get("finalLayoutLanguage", "").lower().startswith("ru")
 )
 print(
     f"{'PASS' if passed else 'FAIL'} manual-learning-double-shift: "
@@ -173,12 +207,19 @@ if not os.path.exists(path) or os.path.getsize(path) == 0:
     raise SystemExit("FAIL manual-buffer-double-shift: no result")
 with open(path, encoding="utf-8") as handle:
     result = json.load(handle)
-expected = "сегодня я привет"
+expected = "сейчас идет проверка"
 passed = (
     result["postEventAccess"]
     and result["text"] == expected
     and result.get("manualText") == expected
     and result.get("pasteboardChangeCountDelta") == 0
+    and result.get("triggerPasteboardChangeCountDelta") == 0
+    and result.get("manualOutcome") == "verified"
+    and result.get("postedManualReplacementCount") == 1
+    and result.get("verifiedManualReplacementCount") == 1
+    and result.get("postedAutomaticReplacementCount") == 0
+    and result.get("verifiedAutomaticReplacementCount") == 0
+    and result.get("finalLayoutLanguage", "").lower().startswith("ru")
     and not result.get("boundaryDeliveryTimeouts")
 )
 print(f"{'PASS' if passed else 'FAIL'} manual-buffer-double-shift: {result['text']!r}")
@@ -206,7 +247,15 @@ if not os.path.exists(path) or os.path.getsize(path) == 0:
     raise SystemExit("FAIL after-restart: no result")
 with open(path, encoding="utf-8") as handle:
     result = json.load(handle)
-passed = result["postEventAccess"] and result["text"] == "йфяцычувс "
+passed = (
+    result["postEventAccess"]
+    and result["text"] == "йфяцычувс "
+    and result.get("pasteboardChangeCountDelta") == 0
+    and result.get("postedAutomaticReplacementCount") == 1
+    and result.get("verifiedAutomaticReplacementCount") == 1
+    and result.get("postedManualReplacementCount") == 0
+    and result.get("verifiedManualReplacementCount") == 0
+)
 print(f"{'PASS' if passed else 'FAIL'} after-restart: {result['text']!r}")
 raise SystemExit(0 if passed else 1)
 PY

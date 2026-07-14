@@ -5,21 +5,38 @@ import Foundation
 import RuSwitcherCore
 
 private struct HIDProbeResult: Codable {
+    let processID: Int32
+    let productionMonitoringStarted: Bool
     let scenario: String
     let text: String
     let layoutID: String
     let postEventAccess: Bool
     let manualText: String?
+    let manualOutcome: String?
     let learningConfirmed: Bool?
+    let adaptiveBias: Double?
     let pasteboardChangeCountDelta: Int
+    let triggerPasteboardChangeCountDelta: Int?
     let postedAutomaticReplacementCount: Int
     let verifiedAutomaticReplacementCount: Int
+    let postedManualReplacementCount: Int
+    let verifiedManualReplacementCount: Int
+    let finalLayoutLanguage: String?
+    let selectedRangeLocation: Int
+    let selectedRangeLength: Int
     let unexpectedInputEventCount: Int
+    let unexpectedInputEvents: [String]
     let layoutMismatchStrokes: [String]
     let boundaryDeliveryTimeouts: [Int]
 }
 
 private struct HIDProbeScenario {
+    struct ManualSelection {
+        let text: String
+        let range: NSRange
+        let sourceLanguage: String
+    }
+
     struct Phase {
         let sourceLanguage: String
         let typedText: String
@@ -43,6 +60,11 @@ private struct HIDProbeScenario {
     let name: String
     let phases: [Phase]
     let manualLearningSource: String?
+    let manualSelection: ManualSelection?
+    let expectedManualText: String?
+    let expectedManualLanguage: String?
+    let adaptivePair: (original: String, converted: String)?
+    let requiredAutomaticVerificationsBeforeTrigger: Int
     let triggerAfterTyping: Bool
     let autoConvertEnabled: Bool
 
@@ -50,12 +72,22 @@ private struct HIDProbeScenario {
         name: String,
         phases: [Phase],
         manualLearningSource: String? = nil,
+        manualSelection: ManualSelection? = nil,
+        expectedManualText: String? = nil,
+        expectedManualLanguage: String? = nil,
+        adaptivePair: (original: String, converted: String)? = nil,
+        requiredAutomaticVerificationsBeforeTrigger: Int = 0,
         triggerAfterTyping: Bool = false,
         autoConvertEnabled: Bool = true
     ) {
         self.name = name
         self.phases = phases
         self.manualLearningSource = manualLearningSource
+        self.manualSelection = manualSelection
+        self.expectedManualText = expectedManualText
+        self.expectedManualLanguage = expectedManualLanguage
+        self.adaptivePair = adaptivePair
+        self.requiredAutomaticVerificationsBeforeTrigger = requiredAutomaticVerificationsBeforeTrigger
         self.triggerAfterTyping = triggerAfterTyping
         self.autoConvertEnabled = autoConvertEnabled
     }
@@ -67,26 +99,62 @@ private struct HIDProbeScenario {
             return HIDProbeScenario(
                 name: name,
                 phases: [Phase(sourceLanguage: "en", typedText: source + " ")],
-                manualLearningSource: source
+                manualLearningSource: source,
+                expectedManualText: KeyMapping.convert(source),
+                expectedManualLanguage: "ru"
+            )
+        case "manual-selection-double-shift":
+            let source = "qazwsxedc"
+            let prefix = "L|"
+            let suffix = "|R"
+            return HIDProbeScenario(
+                name: name,
+                phases: [],
+                manualSelection: ManualSelection(
+                    text: prefix + source + suffix,
+                    range: NSRange(location: prefix.utf16.count, length: source.utf16.count),
+                    sourceLanguage: "en"
+                ),
+                expectedManualText: prefix + KeyMapping.convert(source) + suffix,
+                expectedManualLanguage: "ru"
             )
         case "manual-buffer-double-shift":
             return HIDProbeScenario(
                 name: name,
                 phases: [
-                    Phase(sourceLanguage: "ru", typedText: "сегодня я "),
-                    Phase(sourceLanguage: "en", typedText: "ghbdtn"),
+                    Phase(sourceLanguage: "ru", typedText: "сейчас идет "),
+                    Phase(sourceLanguage: "en", typedText: "ghjdthrf"),
                 ],
+                expectedManualText: "сейчас идет проверка",
+                expectedManualLanguage: "ru",
                 triggerAfterTyping: true
             )
         case "manual-previous-word-double-shift":
             return HIDProbeScenario(
                 name: name,
                 phases: [
-                    Phase(sourceLanguage: "ru", typedText: "сегодня я "),
-                    Phase(sourceLanguage: "en", typedText: "ghbdtn "),
+                    Phase(sourceLanguage: "ru", typedText: "сейчас идет "),
+                    Phase(sourceLanguage: "en", typedText: "ghjdthrf "),
                 ],
+                expectedManualText: "сейчас идет проверка ",
+                expectedManualLanguage: "ru",
                 triggerAfterTyping: true,
                 autoConvertEnabled: false
+            )
+        case "manual-auto-reconvert-double-shift":
+            let original = "ghjdthrf"
+            let converted = "проверка"
+            return HIDProbeScenario(
+                name: name,
+                phases: [
+                    Phase(sourceLanguage: "ru", typedText: "сейчас "),
+                    Phase(sourceLanguage: "en", typedText: original + " "),
+                ],
+                expectedManualText: "сейчас \(original) ",
+                expectedManualLanguage: "en",
+                adaptivePair: (original, converted),
+                requiredAutomaticVerificationsBeforeTrigger: 1,
+                triggerAfterTyping: true
             )
         default:
             return nil
@@ -129,12 +197,20 @@ private struct HIDProbePlannedPhase {
 enum HIDIntegrationProbe {
     private static var retainedDelegate: HIDProbeDelegate?
 
-    static func run(scenarioName: String, resultPath: String?) -> Never {
+    static func run(
+        scenarioName: String,
+        resultPath: String?,
+        startProductionMonitoring: Bool = true
+    ) -> Never {
         guard let scenario = HIDProbeScenario.named(scenarioName) else {
             FileHandle.standardError.write(Data("unknown HID probe scenario\n".utf8))
             exit(64)
         }
-        run(scenario: scenario, resultPath: resultPath)
+        run(
+            scenario: scenario,
+            resultPath: resultPath,
+            startProductionMonitoring: startProductionMonitoring
+        )
     }
 
     static func run(
@@ -199,7 +275,10 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     private var didStartProductionMonitoring = false
     private var didPostTrailingTrigger = false
     private var initialPasteboardChangeCount = 0
+    private var triggerPasteboardStartChangeCount: Int?
+    private var externallyObservedManualVerification = false
     private var unexpectedInputEventCount = 0
+    private var unexpectedInputEvents: [String] = []
     private var localEventMonitor: Any?
     private let productionDelegate = AppDelegate()
     private let startProductionMonitoring: Bool
@@ -235,6 +314,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             let marker = event.cgEvent?.getIntegerValueField(.eventSourceUserData) ?? 0
             if marker != 0x52535445, marker != kRuSwitcherEventMarker {
                 self?.unexpectedInputEventCount += 1
+                self?.unexpectedInputEvents.append("\(event.keyCode):\(marker)")
             }
             return event
         }
@@ -247,6 +327,10 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
 
         originalLayoutID = LayoutSwitcher.currentLayoutID()
         releaseModifiers()
+        if let selection = scenario.manualSelection {
+            startManualSelectionProbe(selection)
+            return
+        }
         if let source = scenario.manualLearningSource {
             startManualLearningProbe(source: source)
             return
@@ -261,6 +345,16 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         // monitor starts. The editor is cleared only after focus is stable.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             self?.prepareAutomatedInput()
+        }
+    }
+
+    private func startManualSelectionProbe(_ selection: HIDProbeScenario.ManualSelection) {
+        guard selectLayout(language: selection.sourceLanguage) else {
+            finish(text: "<layout-unavailable>")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.prepareManualSelectionInput(selection)
         }
     }
 
@@ -292,15 +386,32 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         releaseModifiers()
         startProductionMonitoringIfNeeded()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.postDoubleShift()
+            self?.performVerifiedManualTrigger { [weak self] in
+                guard let self else { return }
+                self.manualObservedText = self.textView.string
+                self.textView.string = ""
+                self.textView.setSelectedRange(NSRange(location: 0, length: 0))
+                self.window?.makeFirstResponder(self.textView)
+                self.postPhysicalKeys()
+            }
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) { [weak self] in
-            guard let self else { return }
-            self.manualObservedText = self.textView.string
-            self.textView.string = ""
-            self.textView.setSelectedRange(NSRange(location: 0, length: 0))
-            self.window?.makeFirstResponder(self.textView)
-            self.postPhysicalKeys()
+    }
+
+    private func prepareManualSelectionInput(
+        _ selection: HIDProbeScenario.ManualSelection,
+        attempt: Int = 0
+    ) {
+        guard focusProbeWindow(attempt: attempt) else { return }
+        textView.string = selection.text
+        textView.setSelectedRange(selection.range)
+        releaseModifiers()
+        startProductionMonitoringIfNeeded()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.performVerifiedManualTrigger { [weak self] in
+                guard let self else { return }
+                self.manualObservedText = self.textView.string
+                self.finish(text: self.textView.string)
+            }
         }
     }
 
@@ -319,7 +430,9 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let self else { return }
-            if self.scenario.manualLearningSource != nil {
+            if let selection = self.scenario.manualSelection {
+                self.prepareManualSelectionInput(selection, attempt: attempt + 1)
+            } else if self.scenario.manualLearningSource != nil {
                 self.prepareManualLearningInput(
                     source: self.scenario.manualLearningSource ?? "",
                     attempt: attempt + 1
@@ -356,6 +469,86 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
                 self?.postShiftTap(source: source, completion: {})
             }
+        }
+    }
+
+    private func performVerifiedManualTrigger(completion: @escaping () -> Void) {
+        triggerPasteboardStartChangeCount = NSPasteboard.general.changeCount
+        if !startProductionMonitoring {
+            guard let expected = scenario.expectedManualText else {
+                finish(text: "<manual-external-expected-text-missing>")
+                return
+            }
+            postDoubleShift()
+            waitForExternalManualVerification(
+                expected: expected,
+                deadline: Date().addingTimeInterval(1.2),
+                completion: completion
+            )
+            return
+        }
+        let expectedVerifiedCount = productionDelegate.verifiedManualReplacementCount + 1
+        postDoubleShift()
+        waitForManualVerification(
+            expectedCount: expectedVerifiedCount,
+            deadline: Date().addingTimeInterval(1.2),
+            completion: completion
+        )
+    }
+
+    private func waitForExternalManualVerification(
+        expected: String,
+        deadline: Date,
+        completion: @escaping () -> Void
+    ) {
+        let selectedRange = textView.selectedRange()
+        let languageMatches = scenario.expectedManualLanguage.map {
+            LayoutSwitcher.currentLanguageCode()?.lowercased().hasPrefix($0) == true
+        } ?? true
+        let caretMatches = scenario.manualSelection != nil
+            || (selectedRange.location == expected.utf16.count && selectedRange.length == 0)
+        if textView.string == expected, languageMatches, caretMatches {
+            externallyObservedManualVerification = true
+            completion()
+            return
+        }
+        guard Date() < deadline else {
+            finish(text: "<manual-external-verification-timeout>")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) { [weak self] in
+            self?.waitForExternalManualVerification(
+                expected: expected,
+                deadline: deadline,
+                completion: completion
+            )
+        }
+    }
+
+    private func waitForManualVerification(
+        expectedCount: Int,
+        deadline: Date,
+        completion: @escaping () -> Void
+    ) {
+        if productionDelegate.verifiedManualReplacementCount >= expectedCount {
+            completion()
+            return
+        }
+        if let outcome = productionDelegate.lastManualReplacementOutcomeCode,
+           outcome.hasPrefix("failed-") || outcome.hasPrefix("blocked-") {
+            finish(text: "<manual-\(outcome)>")
+            return
+        }
+        guard Date() < deadline else {
+            finish(text: "<manual-verification-timeout>")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) { [weak self] in
+            self?.waitForManualVerification(
+                expectedCount: expectedCount,
+                deadline: deadline,
+                completion: completion
+            )
         }
     }
 
@@ -422,12 +615,9 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             if scenario.triggerAfterTyping, !didPostTrailingTrigger {
                 didPostTrailingTrigger = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                    self?.postDoubleShift()
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
-                    guard let self else { return }
-                    self.manualObservedText = self.textView.string
-                    self.finish(text: self.textView.string)
+                    self?.waitForTrailingTriggerReadiness(
+                        deadline: Date().addingTimeInterval(1.2)
+                    )
                 }
                 return
             }
@@ -481,6 +671,25 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func waitForTrailingTriggerReadiness(deadline: Date) {
+        if productionDelegate.verifiedAutomaticReplacementCount
+            >= scenario.requiredAutomaticVerificationsBeforeTrigger {
+            performVerifiedManualTrigger { [weak self] in
+                guard let self else { return }
+                self.manualObservedText = self.textView.string
+                self.finish(text: self.textView.string)
+            }
+            return
+        }
+        guard Date() < deadline else {
+            finish(text: "<automatic-verification-timeout>")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) { [weak self] in
+            self?.waitForTrailingTriggerReadiness(deadline: deadline)
+        }
+    }
+
     private func waitForBoundaryDelivery(phaseIndex: Int, attempt: Int) {
         guard plannedPhases.indices.contains(phaseIndex) else { return }
         let boundary = plannedPhases[phaseIndex].trailingBoundary
@@ -505,13 +714,19 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             self.localEventMonitor = nil
         }
         let resultingLayoutID = LayoutSwitcher.currentLayoutID()
+        let resultingLayoutLanguage = LayoutSwitcher.currentLanguageCode()
+        let selectedRange = textView.selectedRange()
         if !originalLayoutID.isEmpty { LayoutSwitcher.switchTo(layoutID: originalLayoutID) }
         let result = HIDProbeResult(
+            processID: ProcessInfo.processInfo.processIdentifier,
+            productionMonitoringStarted: didStartProductionMonitoring,
             scenario: scenario.name,
             text: text,
             layoutID: resultingLayoutID,
             postEventAccess: CGPreflightPostEventAccess(),
             manualText: manualObservedText,
+            manualOutcome: productionDelegate.lastManualReplacementOutcomeCode
+                ?? (externallyObservedManualVerification ? "verified-external" : nil),
             learningConfirmed: scenario.manualLearningSource.map { source in
                 SettingsManager.shared.isAdaptiveConfirmed(
                     original: source,
@@ -519,11 +734,27 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
                     appBundleID: nil
                 )
             },
+            adaptiveBias: scenario.adaptivePair.map { pair in
+                SettingsManager.shared.adaptiveBias(
+                    original: pair.original,
+                    converted: pair.converted,
+                    appBundleID: Bundle.main.bundleIdentifier
+                )
+            },
             pasteboardChangeCountDelta: NSPasteboard.general.changeCount
                 - initialPasteboardChangeCount,
+            triggerPasteboardChangeCountDelta: triggerPasteboardStartChangeCount.map {
+                NSPasteboard.general.changeCount - $0
+            },
             postedAutomaticReplacementCount: productionDelegate.postedAutomaticReplacementCount,
             verifiedAutomaticReplacementCount: productionDelegate.verifiedAutomaticReplacementCount,
+            postedManualReplacementCount: productionDelegate.postedManualReplacementCount,
+            verifiedManualReplacementCount: productionDelegate.verifiedManualReplacementCount,
+            finalLayoutLanguage: resultingLayoutLanguage,
+            selectedRangeLocation: selectedRange.location,
+            selectedRangeLength: selectedRange.length,
             unexpectedInputEventCount: unexpectedInputEventCount,
+            unexpectedInputEvents: unexpectedInputEvents,
             layoutMismatchStrokes: layoutMismatchStrokes,
             boundaryDeliveryTimeouts: boundaryDeliveryTimeouts
         )

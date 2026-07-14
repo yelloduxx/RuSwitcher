@@ -22,6 +22,7 @@ final class InputSessionTests: XCTestCase {
             language: "ru",
             wasConverted: true
         )
+        XCTAssertTrue(session.hasPendingStagedCompletion)
 
         XCTAssertTrue(session.currentKeys.isEmpty)
         XCTAssertEqual(session.context.map(\.text), ["привет"])
@@ -31,6 +32,7 @@ final class InputSessionTests: XCTestCase {
             wasConverted: true,
             expectedSequence: stagedSequence
         ))
+        XCTAssertFalse(session.hasPendingStagedCompletion)
         XCTAssertEqual(session.context.map(\.text), ["привет"])
     }
 
@@ -44,6 +46,7 @@ final class InputSessionTests: XCTestCase {
         )
         session.append(TypedKey(keyCode: 0, shift: false, caps: false, char: "a"))
 
+        XCTAssertFalse(session.hasPendingStagedCompletion)
         XCTAssertFalse(session.confirmStagedCompletion(
             resolvedText: "привет",
             language: "ru",
@@ -55,6 +58,26 @@ final class InputSessionTests: XCTestCase {
             boundary: .space(count: 1),
             focus: .init(processID: 1, bundleID: "test")
         )?.context.map(\.text), ["проверили"])
+    }
+
+    func testUnverifiedCompletionClearsPendingMarkerWithoutDuplicatingContext() {
+        var session = InputSession()
+        session.append(TypedKey(keyCode: 5, shift: false, caps: false, char: "g"))
+        let stagedSequence = session.stageCompletion(
+            resolvedText: "проверка",
+            language: "ru",
+            wasConverted: true
+        )
+
+        XCTAssertTrue(session.hasPendingStagedCompletion)
+        XCTAssertTrue(session.finishUnverifiedStagedCompletion(
+            expectedSequence: stagedSequence
+        ))
+        XCTAssertFalse(session.hasPendingStagedCompletion)
+        XCTAssertEqual(session.context.map(\.text), ["проверка"])
+        XCTAssertFalse(session.finishUnverifiedStagedCompletion(
+            expectedSequence: stagedSequence
+        ))
     }
 
     func testManualStagingWithoutResolvedTextDoesNotInventContext() {

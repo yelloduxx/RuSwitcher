@@ -70,6 +70,7 @@ public enum PhysicalKeyLattice {
     /// A resource guard for pathological tokens with long punctuation runs.
     /// Normal prose produces two to eight paths.
     public static let maximumHypotheses = 64
+    private static let maximumMixedDecorationRun = 5
 
     public static func candidates(
         typed: String,
@@ -166,6 +167,64 @@ public enum PhysicalKeyLattice {
                 suffix: "",
                 kind: .wrappingPunctuation
             ))
+        }
+
+        // Boundary punctuation may alternate between the literal and target
+        // layouts. Enumerate the bounded physical choices after the lexical
+        // core so `&\"?` can become `?\",` without treating the quote key as a
+        // target-layout letter. Longer runs retain the existing whole/literal
+        // paths to keep the lattice inside its resource guard.
+        let mixedSuffixCount = strokes.reversed().prefix { stroke in
+            isBoundaryDecoration(stroke.literal, counterpart: stroke.opposite)
+                || isBoundaryDecoration(stroke.opposite, counterpart: stroke.literal)
+        }.count
+        if mixedSuffixCount > 0,
+           mixedSuffixCount <= maximumMixedDecorationRun,
+           mixedSuffixCount < strokes.count {
+            let split = strokes.count - mixedSuffixCount
+            let choices = strokes[split...].map { stroke -> [String] in
+                var values: [String] = []
+                if isBoundaryDecoration(stroke.literal, counterpart: stroke.opposite) {
+                    values.append(stroke.literal)
+                }
+                if isBoundaryDecoration(stroke.opposite, counterpart: stroke.literal),
+                   !values.contains(stroke.opposite) {
+                    values.append(stroke.opposite)
+                }
+                return values
+            }
+            if choices.allSatisfy({ !$0.isEmpty }) {
+                var suffixes = [""]
+                for options in choices {
+                    suffixes = suffixes.flatMap { prefix in
+                        options.map { prefix + $0 }
+                    }
+                }
+                let convertedCore = strokes[..<split].map(\.opposite).joined()
+                for suffix in suffixes {
+                    append(AutoConvertCandidate(
+                        typedRaw: typed,
+                        convertedRaw: converted,
+                        convertedWord: convertedCore,
+                        suffix: suffix,
+                        kind: .trailingPunctuation
+                    ))
+                }
+                for prefixLength in prefixLengths.dropFirst() where prefixLength < split {
+                    let prefix = strokes[..<prefixLength].map(\.literal).joined()
+                    let word = strokes[prefixLength..<split].map(\.opposite).joined()
+                    for suffix in suffixes {
+                        append(AutoConvertCandidate(
+                            typedRaw: typed,
+                            convertedRaw: converted,
+                            prefix: prefix,
+                            convertedWord: word,
+                            suffix: suffix,
+                            kind: .wrappingPunctuation
+                        ))
+                    }
+                }
+            }
         }
 
         return result

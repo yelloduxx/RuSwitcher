@@ -228,6 +228,10 @@ public struct InputSession: Equatable, Sendable {
     private var stagedContextSequence: UInt64?
     public let contextLimit: Int
 
+    public var hasPendingStagedCompletion: Bool {
+        stagedContextSequence != nil
+    }
+
     public init(contextLimit: Int = 5) {
         self.contextLimit = max(1, contextLimit)
     }
@@ -247,6 +251,7 @@ public struct InputSession: Equatable, Sendable {
 
     public mutating func append(_ key: TypedKey) {
         sequence &+= 1
+        stagedContextSequence = nil
         if integrity == .invalidated {
             currentKeys.removeAll(keepingCapacity: true)
             integrity = .clean
@@ -258,6 +263,7 @@ public struct InputSession: Equatable, Sendable {
     public mutating func removeLast() {
         sequence &+= 1
         editRevision &+= 1
+        stagedContextSequence = nil
         if !currentKeys.isEmpty {
             currentKeys.removeLast()
             integrity = .clean
@@ -271,6 +277,7 @@ public struct InputSession: Equatable, Sendable {
 
     public mutating func noteExternalEvent() {
         sequence &+= 1
+        stagedContextSequence = nil
         if currentKeys.isEmpty {
             integrity = .clean
             state = .idle(revision: editRevision)
@@ -380,6 +387,21 @@ public struct InputSession: Equatable, Sendable {
         }
         guard !resolvedText.isEmpty else { return true }
         appendContext(resolvedText: resolvedText, language: language, wasConverted: wasConverted)
+        return true
+    }
+
+    /// Ends an accepted-but-unverifiable transaction without adding context a
+    /// second time. Any newer input has already cleared the pending marker.
+    @discardableResult
+    public mutating func finishUnverifiedStagedCompletion(
+        expectedSequence: UInt64
+    ) -> Bool {
+        guard sequence == expectedSequence,
+              currentKeys.isEmpty,
+              stagedContextSequence == expectedSequence else {
+            return false
+        }
+        stagedContextSequence = nil
         return true
     }
 

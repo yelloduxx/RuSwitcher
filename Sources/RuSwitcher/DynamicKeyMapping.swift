@@ -193,7 +193,7 @@ enum DynamicKeyMapping {
 
     /// Конвертирует набранные keycodes в строки исходной и целевой раскладок —
     /// для движка перепечатки (не читаем поле, не трогаем буфер обмена).
-    /// nil — если раскладки не определились (тогда вызывающий падает на clipboard).
+    /// nil — если раскладки не определились; вызывающий безопасно пропускает замену.
     static func convertKeys(_ keys: [TypedKey]) -> ReconciledKeyText? {
         guard !keys.isEmpty else { return nil }
         // Удалёнка: символы проброшены через Screen Sharing (keyCode 0 + char). Конвертируем

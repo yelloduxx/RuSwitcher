@@ -16,38 +16,77 @@ struct ManualTokenSnapshot {
     let integrity: EditorIntegrity
 }
 
+private final class ManualSnapshotCompletionBox: @unchecked Sendable {
+    let callback: (ManualTokenSnapshot?) -> Void
+
+    init(_ callback: @escaping (ManualTokenSnapshot?) -> Void) {
+        self.callback = callback
+    }
+}
+
 /// Выделенная очередь для файлового I/O лога — чтобы запись на диск не блокировала
 /// поток обработки событий (event tap висит на главном run loop, а лог пишется
 /// для каждого нажатия при включённом debug).
 private let rsLogQueue = DispatchQueue(label: "com.ruswitcher.log")
-
-func rslog(_ msg: StaticString) {
-    // Thread-safe: читаем UserDefaults напрямую (без MainActor)
+private let rsPrivacyLogger = PrivacySafeLogger { event in
     guard UserDefaults.standard.bool(forKey: "com.ruswitcher.debugLog") else { return }
-
-    let line = "\(Date()): \(String(describing: msg))\n"
+    let line = "\(Date()): \(event)\n"
     rsLogQueue.async {
-        let logDir = NSHomeDirectory() + "/Library/Logs/RuSwitcher"
-        let path = logDir + "/ruswitcher.log"
-
-        // Создаём директорию если нет
-        if !FileManager.default.fileExists(atPath: logDir) {
-            try? FileManager.default.createDirectory(atPath: logDir, withIntermediateDirectories: true)
+        let logDirectory = NSHomeDirectory() + "/Library/Logs/RuSwitcher"
+        let path = logDirectory + "/ruswitcher.log"
+        if !FileManager.default.fileExists(atPath: logDirectory) {
+            try? FileManager.default.createDirectory(
+                atPath: logDirectory,
+                withIntermediateDirectories: true
+            )
         }
-
         if let handle = FileHandle(forWritingAtPath: path) {
             handle.seekToEndOfFile()
-            // Ротация: если > 5MB — обрезаем
             if handle.offsetInFile > 5_000_000 {
                 handle.truncateFile(atOffset: 0)
-                handle.write("--- Log rotated ---\n".data(using: .utf8)!)
+                if let marker = "--- Log rotated ---\n".data(using: .utf8) {
+                    handle.write(marker)
+                }
             }
-            handle.write(line.data(using: .utf8)!)
+            if let data = line.data(using: .utf8) { handle.write(data) }
             handle.closeFile()
         } else {
-            FileManager.default.createFile(atPath: path, contents: line.data(using: .utf8))
+            FileManager.default.createFile(
+                atPath: path,
+                contents: line.data(using: .utf8)
+            )
         }
     }
+}
+
+private final class AXFocusedElementIdentifierReader: FocusedElementIdentifierReading, @unchecked Sendable {
+    func identifier(processID: Int32, timeoutMilliseconds: Int) -> String? {
+        let timeout = Float(max(1, timeoutMilliseconds)) / 1_000
+        let app = AXUIElementCreateApplication(processID)
+        AXUIElementSetMessagingTimeout(app, timeout)
+        var focusedRaw: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            app,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedRaw
+        ) == .success, let focusedRaw,
+          CFGetTypeID(focusedRaw) == AXUIElementGetTypeID() else { return nil }
+        let element = unsafeDowncast(focusedRaw, to: AXUIElement.self)
+        AXUIElementSetMessagingTimeout(element, timeout)
+        var identifierRaw: AnyObject?
+        if AXUIElementCopyAttributeValue(
+            element,
+            kAXIdentifierAttribute as CFString,
+            &identifierRaw
+        ) == .success, let identifier = identifierRaw as? String, !identifier.isEmpty {
+            return identifier
+        }
+        return "axhash:\(CFHash(element))"
+    }
+}
+
+func rslog(_ msg: StaticString) {
+    rsPrivacyLogger.log(msg)
 }
 
 /// Конфигурация клавиши-триггера (читается из настроек, кэшируется в KeyboardMonitor).
@@ -95,6 +134,9 @@ final class KeyboardMonitor: @unchecked Sendable {
     private var physicalTranslation = KeyboardLayoutTranslationState()
     private var physicalTranslationLayoutID: String?
     private var physicalTranslationLayoutData: Data?
+    private let focusIdentityResolver = FocusedElementIdentityResolver(
+        reader: AXFocusedElementIdentifierReader()
+    )
 
     /// Длина текущего набираемого слова
     var currentWordLength: Int { inputSession.currentKeys.count }
@@ -105,6 +147,7 @@ final class KeyboardMonitor: @unchecked Sendable {
     /// Были ли реальные нажатия после последней конвертации?
     private(set) var keysTypedSinceConversion = true
     var shouldReconvert: Bool { !keysTypedSinceConversion }
+    var hasPendingAutomaticCompletion: Bool { inputSession.hasPendingStagedCompletion }
 
     /// Нажатия набираемого слова — для движка перепечатки (без буфера обмена)
     var currentWordKeys: [TypedKey] { inputSession.currentKeys }
@@ -273,11 +316,12 @@ final class KeyboardMonitor: @unchecked Sendable {
 
     private func completeToken(boundary: InputBoundary, proxy: CGEventTapProxy) -> TokenHandlingResult {
         guard !inputSession.currentKeys.isEmpty else { return .passThrough }
+        let autoConvertEnabled = SettingsManager.shared.autoConvert
         let app = NSWorkspace.shared.frontmostApplication
-        let focus = FocusedElementIdentity(
+        let focus = focusIdentityResolver.resolve(
             processID: app?.processIdentifier ?? 0,
             bundleID: app?.bundleIdentifier,
-            identifier: app.flatMap { focusedElementIdentifier(processID: $0.processIdentifier) }
+            autoConvertEnabled: autoConvertEnabled
         )
         guard let snapshot = inputSession.snapshot(boundary: boundary, focus: focus) else {
             return .passThrough
@@ -288,7 +332,7 @@ final class KeyboardMonitor: @unchecked Sendable {
             return .passThrough
         }
 
-        let result = SettingsManager.shared.autoConvert
+        let result = autoConvertEnabled
             ? (onTokenCompleted?(snapshot, proxy) ?? .passThrough)
             : .passThrough
         let resolved = result.resolvedText ?? snapshot.producedText
@@ -331,6 +375,9 @@ final class KeyboardMonitor: @unchecked Sendable {
 
     func finishUnverifiedPostedConversion(expectedSequence: UInt64) {
         guard isStagedCompletionCurrent(expectedSequence: expectedSequence) else { return }
+        _ = inputSession.finishUnverifiedStagedCompletion(
+            expectedSequence: expectedSequence
+        )
         wordBeforeBoundaryLength = 0
         boundaryCount = 0
         prevWordKeys = []
@@ -341,7 +388,7 @@ final class KeyboardMonitor: @unchecked Sendable {
         inputSession.sequence == expectedSequence && inputSession.currentKeys.isEmpty
     }
 
-    func manualTokenSnapshot() -> ManualTokenSnapshot? {
+    func manualTokenSnapshot(completion: @escaping (ManualTokenSnapshot?) -> Void) {
         let keys: [TypedKey]
         let boundary: InputBoundary
         if !inputSession.currentKeys.isEmpty {
@@ -351,24 +398,58 @@ final class KeyboardMonitor: @unchecked Sendable {
             keys = prevWordKeys
             boundary = .space(count: max(1, boundaryCount))
         } else {
-            return nil
+            completion(nil)
+            return
         }
-        let app = NSWorkspace.shared.frontmostApplication
-        let focus = FocusedElementIdentity(
-            processID: app?.processIdentifier ?? 0,
-            bundleID: app?.bundleIdentifier,
-            identifier: app.flatMap { focusedElementIdentifier(processID: $0.processIdentifier) }
-        )
-        return ManualTokenSnapshot(
-            keys: keys,
-            boundary: boundary,
-            focus: focus,
-            sequence: inputSession.sequence,
-            editRevision: inputSession.editRevision,
-            integrity: inputSession.integrity
-        )
+        resolveManualSnapshot(keys: keys, boundary: boundary, completion: completion)
     }
 
+    func manualEditorSnapshot(completion: @escaping (ManualTokenSnapshot?) -> Void) {
+        resolveManualSnapshot(keys: [], boundary: .punctuation(""), completion: completion)
+    }
+
+    private func resolveManualSnapshot(
+        keys: [TypedKey],
+        boundary: InputBoundary,
+        completion: @escaping (ManualTokenSnapshot?) -> Void
+    ) {
+        guard let app = NSWorkspace.shared.frontmostApplication else {
+            completion(nil)
+            return
+        }
+        let processID = app.processIdentifier
+        let bundleID = app.bundleIdentifier
+        let expectedSequence = inputSession.sequence
+        let expectedRevision = inputSession.editRevision
+        let expectedIntegrity = inputSession.integrity
+        let completion = ManualSnapshotCompletionBox(completion)
+        focusIdentityResolver.resolveAsync(
+            processID: processID,
+            bundleID: bundleID,
+            deadlineMilliseconds: 250
+        ) { [weak self] focus in
+            DispatchQueue.main.async { [weak self] in
+                guard let self,
+                      let frontmost = NSWorkspace.shared.frontmostApplication,
+                      frontmost.processIdentifier == processID,
+                      frontmost.bundleIdentifier == bundleID,
+                      self.inputSession.sequence == expectedSequence,
+                      self.inputSession.editRevision == expectedRevision,
+                      self.inputSession.integrity == expectedIntegrity else {
+                    completion.callback(nil)
+                    return
+                }
+                completion.callback(ManualTokenSnapshot(
+                    keys: keys,
+                    boundary: boundary,
+                    focus: focus,
+                    sequence: expectedSequence,
+                    editRevision: expectedRevision,
+                    integrity: expectedIntegrity
+                ))
+            }
+        }
+    }
     func stageManualConversion(
         expectedSequence: UInt64,
         expectedRevision: UInt64,
@@ -386,27 +467,6 @@ final class KeyboardMonitor: @unchecked Sendable {
         guard isStagedCompletionCurrent(expectedSequence: expectedSequence) else { return }
         inputSession.invalidate(clearContext: true)
         keysTypedSinceConversion = true
-    }
-
-    private func focusedElementIdentifier(processID: pid_t) -> String? {
-        let app = AXUIElementCreateApplication(processID)
-        var focusedRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            app,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedRaw
-        ) == .success, let focusedRaw,
-          CFGetTypeID(focusedRaw) == AXUIElementGetTypeID() else { return nil }
-        let element = unsafeDowncast(focusedRaw, to: AXUIElement.self)
-        var identifierRaw: AnyObject?
-        if AXUIElementCopyAttributeValue(
-            element,
-            kAXIdentifierAttribute as CFString,
-            &identifierRaw
-        ) == .success, let identifier = identifierRaw as? String, !identifier.isEmpty {
-            return identifier
-        }
-        return "axhash:\(CFHash(element))"
     }
 
     private func notifyTokenChanged() {
@@ -484,7 +544,7 @@ final class KeyboardMonitor: @unchecked Sendable {
         if SettingsManager.shared.remoteDesktopMode, keyCode == 0 {
             // ⌘A/⌘C/⌘X и т.п. по удалёнке прилетают как символ 'a' (keyCode 0) с флагом Cmd.
             // НЕ копим их в буфер: иначе ⌘A добавляет лишнюю «ф» (keyCode 0 = 'ф' в ЙЦУКЕН)
-            // и рушит выделение. Сбрасываем буфер — триггер уйдёт по clipboard-пути (выделение).
+            // и рушит выделение. Сбрасываем буфер; ручной триггер отдельно проверит AX-selection.
             // Локальный аналог этого guard — ниже, на ветке модификаторов (PR #13).
             let modifiers = flags.intersection([.maskCommand, .maskControl, .maskAlternate])
             if !modifiers.isEmpty { fullReset(invalidated: true); onEditingInvalidated?(); return false }

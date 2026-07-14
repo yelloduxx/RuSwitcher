@@ -40,20 +40,17 @@ public struct ReplacementRequest: Equatable, Sendable {
     public let deliveredKeyCount: Int
     public let currentFocus: FocusedElementIdentity
     public let currentRevision: UInt64
-    public let allowUnavailablePreflight: Bool
 
     public init(
         transaction: ConversionTransaction,
         deliveredKeyCount: Int,
         currentFocus: FocusedElementIdentity,
-        currentRevision: UInt64,
-        allowUnavailablePreflight: Bool = true
+        currentRevision: UInt64
     ) {
         self.transaction = transaction
         self.deliveredKeyCount = deliveredKeyCount
         self.currentFocus = currentFocus
         self.currentRevision = currentRevision
-        self.allowUnavailablePreflight = allowUnavailablePreflight
     }
 }
 
@@ -73,10 +70,13 @@ public protocol FocusedTextContextReading: AnyObject {
     )
 }
 
-@MainActor
-public protocol SelectedTextReplacing: AnyObject {
-    func replaceSelectedText(
-        with replacement: String,
+public protocol FocusedTextReplacing: AnyObject {
+    @MainActor
+    func replaceSuffix(
+        original: String,
+        replacement: String,
+        focus: FocusedElementIdentity,
+        deadlineMilliseconds: Int,
         completion: @escaping (ReplacementOutcome) -> Void
     )
 }
@@ -104,12 +104,18 @@ public protocol ReplacementCoordinating: AnyObject {
 public final class NativeReplacementCoordinator: ReplacementCoordinating {
     private let reader: FocusedTextContextReading
     private let poster: KeyboardEventPosting
+    private let textReplacer: FocusedTextReplacing?
     private let lock = NSLock()
     private var committedIdentities: [ConversionExecutionIdentity] = []
 
-    public init(reader: FocusedTextContextReading, poster: KeyboardEventPosting) {
+    public init(
+        reader: FocusedTextContextReading,
+        poster: KeyboardEventPosting,
+        textReplacer: FocusedTextReplacing? = nil
+    ) {
         self.reader = reader
         self.poster = poster
+        self.textReplacer = textReplacer
     }
 
     @discardableResult
@@ -138,16 +144,12 @@ public final class NativeReplacementCoordinator: ReplacementCoordinating {
         guard preflight != .mismatch else {
             return .blocked(.expectedSuffixMismatch)
         }
-        guard preflight != .unavailable || request.allowUnavailablePreflight else {
+        guard preflight != .unavailable else {
             return .blocked(.contextUnavailable)
         }
 
-        let plan = EventReplacementPlan(
-            transaction: transaction,
-            deliveredKeyCount: request.deliveredKeyCount
-        )
-        guard poster.post(plan, to: transaction.focus.processID) else {
-            return .failed(.eventPostFailed)
+        if !transaction.automatic, textReplacer == nil {
+            return .blocked(.contextUnavailable)
         }
 
         lock.lock()
@@ -157,20 +159,47 @@ public final class NativeReplacementCoordinator: ReplacementCoordinating {
         }
         lock.unlock()
 
+        if !transaction.automatic {
+            guard let textReplacer else { return .blocked(.contextUnavailable) }
+            textReplacer.replaceSuffix(
+                original: transaction.expectedOriginalSuffix,
+                replacement: transaction.replacement + transaction.boundary.replayText,
+                focus: transaction.focus,
+                deadlineMilliseconds: 250,
+                completion: { outcome in
+                    DispatchQueue.main.async { completion(outcome) }
+                }
+            )
+            return .postedUnverified
+        }
+
+        let plan = EventReplacementPlan(
+            transaction: transaction,
+            deliveredKeyCount: request.deliveredKeyCount
+        )
+        guard poster.post(plan, to: transaction.focus.processID) else {
+            lock.lock()
+            committedIdentities.removeAll { $0 == transaction.executionIdentity }
+            lock.unlock()
+            return .failed(.eventPostFailed)
+        }
+
         let expected = transaction.replacement + transaction.boundary.replayText
         reader.verify(
             expectedSuffix: expected,
             focus: transaction.focus,
             deadlineMilliseconds: ReplacementTiming.postedEventVerificationDeadlineMilliseconds
         ) { result in
+            let outcome: ReplacementOutcome
             switch result {
             case .match:
-                completion(.verified)
+                outcome = .verified
             case .unavailable:
-                completion(.postedUnverified)
+                outcome = .postedUnverified
             case .mismatch:
-                completion(.failed(.verificationMismatch))
+                outcome = .failed(.verificationMismatch)
             }
+            DispatchQueue.main.async { completion(outcome) }
         }
         return .postedUnverified
     }

@@ -6,6 +6,7 @@ import RuSwitcherCore
 
 enum SelectedTextConversionOutcome: Equatable {
     case none
+    case unavailable
     case converted
     case postedUnverified
     case failed
@@ -17,6 +18,12 @@ struct BufferedManualConversion {
     let sourceLayoutID: String?
 }
 
+struct BufferedManualReconversion {
+    let current: String
+    let replacement: String
+    let targetLayoutID: String?
+}
+
 private enum ReplacementVerification: Sendable {
     case match
     case unchanged
@@ -24,26 +31,10 @@ private enum ReplacementVerification: Sendable {
     case unavailable
 }
 
-private typealias SelectedTextConversion = (
-    converted: String,
-    sourceLanguage: String,
-    targetLanguage: String,
-    targetLayoutID: String?
-)
-
 /// Конвертация текста между раскладками
 @MainActor
 final class TextConverter {
-    private static let transientPasteboardType = NSPasteboard.PasteboardType(
-        "org.nspasteboard.TransientType"
-    )
-    private var savedClipboardItems: [NSPasteboardItem]?
-    private var clipboardRestoreWork: DispatchWorkItem?
-    private var clipboardTemporaryChangeCount: Int?
     private var isConverting = false
-    /// Очередь для инжекта нажатий буферного движка — чтобы usleep не блокировал
-    /// main-поток, на котором висит event tap (иначе тап голодает → лаги/потери нажатий).
-    nonisolated private let injectQueue = DispatchQueue(label: "com.ruswitcher.inject", qos: .userInteractive)
     nonisolated private let manualQueue = DispatchQueue(label: "com.ruswitcher.manual-ax", qos: .userInitiated)
 
     private final class SelectionSnapshot: @unchecked Sendable {
@@ -71,7 +62,7 @@ final class TextConverter {
     private enum SelectionReadResult: @unchecked Sendable {
         case none
         case selected(SelectionSnapshot)
-        case fallback(selectionKnown: Bool, snapshot: SelectionSnapshot?)
+        case unavailable(selectionKnown: Bool)
     }
 
     // Состояние движка перепечатки (буфер нажатий → юникод-вставка)
@@ -92,7 +83,6 @@ final class TextConverter {
     // MARK: - Public API
 
     func convertSelectedText(
-        allowClipboardFallback: Bool = true,
         completion: @escaping (SelectedTextConversionOutcome) -> Void
     ) {
         guard !isConverting else {
@@ -112,7 +102,6 @@ final class TextConverter {
             Task { @MainActor [weak self] in
                 self?.handleSelectionRead(
                     result,
-                    allowClipboardFallback: allowClipboardFallback,
                     completion: completion
                 )
             }
@@ -121,24 +110,15 @@ final class TextConverter {
 
     private func handleSelectionRead(
         _ result: SelectionReadResult,
-        allowClipboardFallback: Bool,
         completion: ManualCompletionBox
     ) {
         switch result {
         case .none:
             isConverting = false
             completion.callback(.none)
-        case let .fallback(selectionKnown, snapshot):
-            guard allowClipboardFallback else {
-                isConverting = false
-                completion.callback(.none)
-                return
-            }
-            convertSelectionViaClipboardAsync(
-                selectionKnown: selectionKnown,
-                snapshot: snapshot,
-                completion: completion
-            )
+        case let .unavailable(selectionKnown):
+            isConverting = false
+            completion.callback(selectionKnown ? .failed : .unavailable)
         case let .selected(snapshot):
             guard let conversion = DynamicKeyMapping.convertSelectedText(snapshot.text) else {
                 isConverting = false
@@ -191,6 +171,8 @@ final class TextConverter {
         replacement: String,
         pollForDelayedCommit: Bool
     ) -> ReplacementVerification {
+        guard selectionStillMatches(snapshot) else { return .mismatch }
+        AXUIElementSetMessagingTimeout(snapshot.element, 0.25)
         let setResult = AXUIElementSetAttributeValue(
             snapshot.element,
             kAXSelectedTextAttribute as CFString,
@@ -236,11 +218,9 @@ final class TextConverter {
             isConverting = false
             completion.callback(.converted)
         case .unchanged:
-            convertSelectionViaClipboardAsync(
-                selectionKnown: true,
-                snapshot: snapshot,
-                completion: completion
-            )
+            lastLearningPair = nil
+            isConverting = false
+            completion.callback(.failed)
         case .mismatch, .unavailable:
             lastLearningPair = nil
             isConverting = false
@@ -258,9 +238,15 @@ final class TextConverter {
             &focusedRaw
         ) == .success, let focusedRaw,
           CFGetTypeID(focusedRaw) == AXUIElementGetTypeID() else {
-            return .fallback(selectionKnown: false, snapshot: nil)
+            return .unavailable(selectionKnown: false)
         }
         let element = unsafeDowncast(focusedRaw, to: AXUIElement.self)
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        var elementProcessID: pid_t = 0
+        guard AXUIElementGetPid(element, &elementProcessID) == .success,
+              elementProcessID == processID else {
+            return .unavailable(selectionKnown: false)
+        }
         var rangeRaw: AnyObject?
         guard AXUIElementCopyAttributeValue(
             element,
@@ -268,13 +254,13 @@ final class TextConverter {
             &rangeRaw
         ) == .success, let rangeRaw,
           CFGetTypeID(rangeRaw) == AXValueGetTypeID() else {
-            return .fallback(selectionKnown: false, snapshot: nil)
+            return .unavailable(selectionKnown: false)
         }
         let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
         var range = CFRange()
         guard AXValueGetType(rangeValue) == .cfRange,
               AXValueGetValue(rangeValue, .cfRange, &range) else {
-            return .fallback(selectionKnown: false, snapshot: nil)
+            return .unavailable(selectionKnown: false)
         }
         guard range.length > 0 else { return .none }
         var textRaw: AnyObject?
@@ -283,7 +269,7 @@ final class TextConverter {
             kAXSelectedTextAttribute as CFString,
             &textRaw
         ) == .success, let text = textRaw as? String, !text.isEmpty else {
-            return .fallback(selectionKnown: true, snapshot: nil)
+            return .unavailable(selectionKnown: true)
         }
         return .selected(SelectionSnapshot(
             processID: processID,
@@ -291,6 +277,43 @@ final class TextConverter {
             range: range,
             text: text
         ))
+    }
+
+    nonisolated private func selectionStillMatches(_ snapshot: SelectionSnapshot) -> Bool {
+        let app = AXUIElementCreateApplication(snapshot.processID)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        var focusedRaw: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            app,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedRaw
+        ) == .success, let focusedRaw,
+          CFGetTypeID(focusedRaw) == AXUIElementGetTypeID() else { return false }
+        let focused = unsafeDowncast(focusedRaw, to: AXUIElement.self)
+        AXUIElementSetMessagingTimeout(focused, 0.25)
+        var processID: pid_t = 0
+        guard AXUIElementGetPid(focused, &processID) == .success,
+              processID == snapshot.processID,
+              CFEqual(focused, snapshot.element) else { return false }
+
+        var rangeRaw: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            focused,
+            kAXSelectedTextRangeAttribute as CFString,
+            &rangeRaw
+        ) == .success, let rangeRaw,
+          CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return false }
+        let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
+        var range = CFRange()
+        guard AXValueGetType(rangeValue) == .cfRange,
+              AXValueGetValue(rangeValue, .cfRange, &range),
+              range.location == snapshot.range.location,
+              range.length == snapshot.range.length,
+              selectedText(from: focused)?.precomposedStringWithCanonicalMapping
+                == snapshot.text.precomposedStringWithCanonicalMapping else {
+            return false
+        }
+        return true
     }
 
     func prepareBufferedConversion(keys: [TypedKey]) -> BufferedManualConversion? {
@@ -363,39 +386,40 @@ final class TextConverter {
         lastWasBuffer = true
     }
 
-    /// Повторная конвертация (второй триггер) — на тот движок, которым делали последнюю.
-    func reconvert(trailingSpaces: Int = 0) -> Bool {
-        guard !isConverting else { return false }
-        if lastWasBuffer {
-            guard !lastConverted.isEmpty else { return false }
-            isConverting = true
-            rslog("buffer reconvert")
-            let extraSpaces: Int
-            if let transaction = lastTransaction, case .punctuation = transaction.boundary {
-                extraSpaces = max(0, trailingSpaces)
-            } else {
-                extraSpaces = 0
-            }
-            let spaces = String(repeating: " ", count: extraSpaces)
-            let current = lastConverted + spaces
-            let insert = lastOriginal + spaces
-            let bsCount = current.count
-            lastOriginal = current
-            lastConverted = insert
-            lastTransaction = nil
-            injectQueue.async { [weak self] in
-                guard let self else { return }
-                self.backspace(bsCount)
-                usleep(20_000)
-                self.insertText(insert)
-                Task { @MainActor in self.isConverting = false }
-            }
-            return true
+    func prepareReconversion(trailingSpaces: Int = 0) -> BufferedManualReconversion? {
+        guard !isConverting, lastWasBuffer, !lastConverted.isEmpty else { return nil }
+        isConverting = true
+        let extraSpaces: Int
+        if let transaction = lastTransaction, case .punctuation = transaction.boundary {
+            extraSpaces = max(0, trailingSpaces)
+        } else {
+            extraSpaces = 0
         }
-        return false
+        let spaces = String(repeating: " ", count: extraSpaces)
+        return BufferedManualReconversion(
+            current: lastConverted + spaces,
+            replacement: lastOriginal + spaces,
+            targetLayoutID: lastTransaction?.sourceLayoutID
+        )
+    }
+
+    func recordVerifiedReconversion(
+        _ reconversion: BufferedManualReconversion,
+        transaction: ConversionTransaction
+    ) {
+        lastOriginal = reconversion.current
+        lastConverted = reconversion.replacement
+        lastTransaction = transaction
+        lastWasBuffer = true
+        isConverting = false
+    }
+
+    func cancelPendingReconversion() {
+        isConverting = false
     }
 
     func clearState() {
+        isConverting = false
         lastOriginal = ""
         lastConverted = ""
         lastWasBuffer = false
@@ -461,267 +485,6 @@ final class TextConverter {
         return .mismatch
     }
 
-    private func convertSelectionViaClipboardAsync(
-        selectionKnown: Bool,
-        snapshot: SelectionSnapshot?,
-        completion: ManualCompletionBox
-    ) {
-        let pasteboard = NSPasteboard.general
-        cancelClipboardRestore()
-        if savedClipboardItems == nil {
-            savedClipboardItems = snapshotPasteboard(pasteboard)
-        }
-        attemptClipboardCopy(
-            attempt: 0,
-            selectionKnown: selectionKnown,
-            snapshot: snapshot,
-            completion: completion
-        )
-    }
-
-    private func attemptClipboardCopy(
-        attempt: Int,
-        selectionKnown: Bool,
-        snapshot: SelectionSnapshot?,
-        completion: ManualCompletionBox
-    ) {
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        clipboardTemporaryChangeCount = pasteboard.changeCount
-        let clearedCount = pasteboard.changeCount
-        simKey(keyCode: KC.letterC, flags: .maskCommand)
-        pollClipboardCopy(
-            clearedCount: clearedCount,
-            deadline: Date().addingTimeInterval(attempt == 0 ? 0.08 : 0.12),
-            attempt: attempt,
-            selectionKnown: selectionKnown,
-            snapshot: snapshot,
-            completion: completion
-        )
-    }
-
-    private func pollClipboardCopy(
-        clearedCount: Int,
-        deadline: Date,
-        attempt: Int,
-        selectionKnown: Bool,
-        snapshot: SelectionSnapshot?,
-        completion: ManualCompletionBox
-    ) {
-        let pasteboard = NSPasteboard.general
-        if pasteboard.changeCount != clearedCount,
-           let text = pasteboard.string(forType: .string), !text.isEmpty,
-           let conversion = DynamicKeyMapping.convertSelectedText(text) {
-            markPasteboardTransient(pasteboard)
-            finishClipboardConversion(
-                text: text,
-                conversion: conversion,
-                snapshot: snapshot,
-                completion: completion
-            )
-            return
-        }
-        if Date() < deadline {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) { [weak self] in
-                self?.pollClipboardCopy(
-                    clearedCount: clearedCount,
-                    deadline: deadline,
-                    attempt: attempt,
-                    selectionKnown: selectionKnown,
-                    snapshot: snapshot,
-                    completion: completion
-                )
-            }
-            return
-        }
-        if attempt < 2 {
-            attemptClipboardCopy(
-                attempt: attempt + 1,
-                selectionKnown: selectionKnown,
-                snapshot: snapshot,
-                completion: completion
-            )
-        } else {
-            isConverting = false
-            restoreClipboardNow()
-            completion.callback(selectionKnown ? .failed : .none)
-        }
-    }
-
-    private func finishClipboardConversion(
-        text: String,
-        conversion: SelectedTextConversion,
-        snapshot: SelectionSnapshot?,
-        completion: ManualCompletionBox
-    ) {
-        let replacement = manualReplacement(
-            typed: text,
-            converted: conversion.converted,
-            targetLanguage: conversion.targetLanguage
-        )
-        let pasteboard = NSPasteboard.general
-        let item = NSPasteboardItem()
-        item.setString(replacement, forType: .string)
-        item.setData(Data(), forType: Self.transientPasteboardType)
-        pasteboard.clearContents()
-        pasteboard.writeObjects([item])
-        clipboardTemporaryChangeCount = pasteboard.changeCount
-        simKey(keyCode: KC.letterV, flags: .maskCommand)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            guard let self else { return }
-            guard let snapshot else {
-                self.lastLearningPair = nil
-                self.lastManualTargetLayoutID = nil
-                self.isConverting = false
-                self.scheduleClipboardRestore()
-                completion.callback(.postedUnverified)
-                return
-            }
-            self.manualQueue.async { [weak self] in
-                guard let self else { return }
-                let verified = self.verifyReplacement(
-                    replacement,
-                    original: text,
-                    originalRange: snapshot.range,
-                    element: snapshot.element
-                )
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if verified == .match {
-                        self.lastManualTargetLayoutID = conversion.targetLayoutID
-                        self.lastLearningPair = (text, replacement)
-                        self.lastWasBuffer = false
-                        self.isConverting = false
-                        self.scheduleClipboardRestore()
-                        completion.callback(.converted)
-                    } else {
-                        self.lastLearningPair = nil
-                        self.lastManualTargetLayoutID = nil
-                        self.isConverting = false
-                        self.restoreClipboardNow()
-                        completion.callback(.failed)
-                    }
-                }
-            }
-        }
-    }
-
-    private func markPasteboardTransient(_ pasteboard: NSPasteboard) {
-        pasteboard.addTypes([Self.transientPasteboardType], owner: nil)
-        pasteboard.setData(Data(), forType: Self.transientPasteboardType)
-        clipboardTemporaryChangeCount = pasteboard.changeCount
-    }
-
-    /// Стирает n символов (Backspace × n) — для движка перепечатки.
-    nonisolated private func backspace(_ n: Int) {
-        for _ in 0..<n {
-            simKey(keyCode: KC.backspace, flags: [])
-            usleep(3_000)
-        }
-    }
-
-    /// Впечатывает строку напрямую (юникод-вставка), без буфера обмена.
-    nonisolated private func insertText(_ text: String) {
-        guard !text.isEmpty, let source = makeSource() else { return }
-        let utf16 = Array(text.utf16)
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return }
-        // Text input belongs to keyDown. Attaching the same Unicode payload to
-        // keyUp makes some WebKit/Electron controls insert it a second time.
-        utf16.withUnsafeBufferPointer { buf in
-            down.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
-        }
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
-    }
-
-    /// Отменяет отложенное восстановление clipboard
-    private func cancelClipboardRestore() {
-        clipboardRestoreWork?.cancel()
-        clipboardRestoreWork = nil
-    }
-
-    /// Немедленно возвращает буфер обмена пользователю (для путей-неудач).
-    private func restoreClipboardNow() {
-        cancelClipboardRestore()
-        guard let saved = savedClipboardItems else { return }
-        let pasteboard = NSPasteboard.general
-        if let owned = clipboardTemporaryChangeCount,
-           pasteboard.changeCount != owned {
-            savedClipboardItems = nil
-            clipboardTemporaryChangeCount = nil
-            return
-        }
-        pasteboard.clearContents()
-        if !saved.isEmpty { pasteboard.writeObjects(saved) }
-        savedClipboardItems = nil
-        clipboardTemporaryChangeCount = nil
-    }
-
-    /// Сбрасывает отложенное восстановление немедленно — вызывается перед
-    /// завершением приложения, чтобы не потерять буфер в 2-секундном окне.
-    func flushPendingClipboardRestore() {
-        guard clipboardRestoreWork != nil else { return }
-        restoreClipboardNow()
-    }
-
-    /// Планирует восстановление clipboard через 2 секунды
-    /// (если за это время придёт reconvert — отменится и перепланируется)
-    private func scheduleClipboardRestore() {
-        cancelClipboardRestore()
-        let saved = self.savedClipboardItems
-        let work = DispatchWorkItem { [weak self] in
-            let pasteboard = NSPasteboard.general
-            guard let self else { return }
-            guard let owned = self.clipboardTemporaryChangeCount,
-                  pasteboard.changeCount == owned else {
-                self.savedClipboardItems = nil
-                self.clipboardTemporaryChangeCount = nil
-                return
-            }
-            pasteboard.clearContents()
-            if let saved, !saved.isEmpty {
-                pasteboard.writeObjects(saved)
-            }
-            self.savedClipboardItems = nil
-            self.clipboardTemporaryChangeCount = nil
-            rslog("clipboard_restored")
-        }
-        clipboardRestoreWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
-    }
-
-    /// Делает глубокую копию всех pasteboard items (со всеми типами данных).
-    /// Это нужно потому, что NSPasteboardItem становится невалидным после
-    /// pasteboard.clearContents() — поэтому копируем data по каждому типу
-    /// в новые NSPasteboardItem.
-    private func snapshotPasteboard(_ pb: NSPasteboard) -> [NSPasteboardItem] {
-        guard let items = pb.pasteboardItems else { return [] }
-        return items.map { oldItem in
-            let newItem = NSPasteboardItem()
-            for type in oldItem.types {
-                if let data = oldItem.data(forType: type) {
-                    newItem.setData(data, forType: type)
-                }
-            }
-            return newItem
-        }
-    }
-
-    /// Симулирует нажатие клавиши с маркером (чтобы наш monitor игнорировал)
-    nonisolated private func simKey(keyCode: UInt16, flags: CGEventFlags) {
-        guard let source = makeSource() else { return }
-
-        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
-        else { return }
-
-        keyDown.flags = flags
-        keyUp.flags = flags
-
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
-    }
 }
 
 extension TextConverter: KeyboardEventPosting {

@@ -9,6 +9,16 @@ public struct ReleaseVersion: Equatable, Comparable, Sendable {
         self.build = build
     }
 
+    public init?(validatingVersion version: String, build: Int) {
+        let parts = version.split(separator: ".", omittingEmptySubsequences: false)
+        guard (2...4).contains(parts.count),
+              parts.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) && Int($0) != nil }),
+              build > 0 else {
+            return nil
+        }
+        self.init(version: version, build: build)
+    }
+
     public var identifier: String { "\(version)+\(build)" }
 
     public static func < (lhs: ReleaseVersion, rhs: ReleaseVersion) -> Bool {

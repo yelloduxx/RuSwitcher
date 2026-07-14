@@ -11,7 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let textConverter = TextConverter()
     private lazy var replacementCoordinator = NativeReplacementCoordinator(
         reader: textContextReader,
-        poster: textConverter
+        poster: textConverter,
+        textReplacer: textContextReader
     )
     private let languageModel = LanguageModelStore.bundled
     private let textContextReader = FocusedTextContextReader()
@@ -47,11 +48,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Native integration host entry point. It wires the same production monitor
     /// and replacement path without update checks, onboarding, or login-item UI.
-    func startHIDProbeMonitoring() {
+    @discardableResult
+    func startHIDProbeMonitoring() -> Bool {
         SettingsManager.shared.migrateAdaptiveRulesIfNeeded()
         setupStatusItem()
         setupSettingsCallbacks()
         startMonitoring(offerSetup: false)
+        return monitoringActive
     }
 
     private func setupSettingsCallbacks() {
@@ -101,6 +104,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var sessionNegativePairs: Set<String> = []
     private(set) var postedAutomaticReplacementCount = 0
     private(set) var verifiedAutomaticReplacementCount = 0
+    private(set) var postedManualReplacementCount = 0
+    private(set) var verifiedManualReplacementCount = 0
+    private(set) var lastManualReplacementOutcomeCode: String?
+
+    private func recordManualReplacementOutcome(_ outcome: ReplacementOutcome) {
+        switch outcome {
+        case .verified:
+            verifiedManualReplacementCount += 1
+            lastManualReplacementOutcomeCode = "verified"
+        case .postedUnverified:
+            lastManualReplacementOutcomeCode = "posted-unverified"
+        case .switchedOnly:
+            lastManualReplacementOutcomeCode = "switched-only"
+        case let .blocked(reason):
+            lastManualReplacementOutcomeCode = "blocked-\(reason)"
+        case let .failed(failure):
+            lastManualReplacementOutcomeCode = "failed-\(failure)"
+        }
+    }
 
     private func learningKey(original: String, converted: String, appBundleID: String?) -> String {
         [
@@ -296,7 +318,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func restartApp() {
         rslog("application_restarting")
-        AppRelauncher.relaunch()
+        if !AppRelauncher.relaunch() {
+            rslog("application_restart_failed")
+        }
     }
 
     // MARK: - Start Monitoring
@@ -323,9 +347,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     rslog("trigger: blocked secure-input")
                     return
                 }
-                self.textConverter.convertSelectedText(
-                    allowClipboardFallback: !self.keyboardMonitor.hasManualToken
-                ) { [weak self] outcome in
+                guard !AutoSwitchPolicy.isDeniedApp(frontID) else {
+                    rslog("manual_trigger_blocked_denied_app")
+                    return
+                }
+                self.textConverter.convertSelectedText { [weak self] outcome in
                     self?.finishManualTriggerAfterSelection(outcome, frontID: frontID)
                 }
                 return
@@ -378,42 +404,123 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         frontID: String?
     ) {
         guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else { return }
+        let selectionUnavailable: Bool
         switch selectionOutcome {
         case .converted:
+            recordManualReplacementOutcome(.verified)
             finishManualConversion(
                 frontID: frontID,
                 targetLayoutID: textConverter.lastManualTargetLayoutID
             )
             return
         case .postedUnverified:
+            recordManualReplacementOutcome(.postedUnverified)
             return
         case .failed:
+            recordManualReplacementOutcome(.failed(.verificationMismatch))
             return
         case .none:
-            break
+            selectionUnavailable = false
+        case .unavailable:
+            selectionUnavailable = true
+        }
+
+        if keyboardMonitor.hasPendingAutomaticCompletion {
+            waitForPendingAutomaticCompletion(
+                frontID: frontID,
+                expectedVerifiedCount: verifiedAutomaticReplacementCount + 1,
+                selectionUnavailable: selectionUnavailable,
+                deadline: Date().addingTimeInterval(0.2)
+            )
+            return
         }
 
         let boundaryCount = keyboardMonitor.boundaryCount
         if keyboardMonitor.currentWordKeys.isEmpty,
            keyboardMonitor.prevWordKeys.isEmpty,
            keyboardMonitor.shouldReconvert {
-            if textConverter.reconvert(trailingSpaces: boundaryCount) {
-                keyboardMonitor.markConverted()
-                LayoutSwitcher.switchToOpposite()
-                updateStatusIcon()
-                learnFromUndo()
+            guard let reconversion = textConverter.prepareReconversion(
+                trailingSpaces: boundaryCount
+            ) else { return }
+            keyboardMonitor.manualEditorSnapshot { [weak self] snapshot in
+                guard let self,
+                      NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID,
+                      let snapshot else {
+                    self?.textConverter.cancelPendingReconversion()
+                    return
+                }
+                self.submitManualReconversion(
+                    reconversion,
+                    snapshot: snapshot,
+                    frontID: frontID
+                )
             }
             return
         }
-        guard let snapshot = keyboardMonitor.manualTokenSnapshot(),
-              let conversion = textConverter.prepareBufferedConversion(keys: snapshot.keys) else {
-            guard !AutoSwitchPolicy.isDeniedApp(frontID) else { return }
+        guard keyboardMonitor.hasManualToken else {
+            guard !selectionUnavailable else {
+                recordManualReplacementOutcome(.blocked(.contextUnavailable))
+                return
+            }
             keyboardMonitor.markConverted()
             LayoutSwitcher.switchToOpposite()
             updateStatusIcon()
+            recordManualReplacementOutcome(.switchedOnly)
             return
         }
-        submitManualBufferedConversion(conversion, snapshot: snapshot, frontID: frontID)
+        keyboardMonitor.manualTokenSnapshot { [weak self] snapshot in
+            guard let self,
+                  NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID,
+                  let snapshot else { return }
+            guard let conversion = self.textConverter.prepareBufferedConversion(keys: snapshot.keys) else {
+                guard !selectionUnavailable else {
+                    self.recordManualReplacementOutcome(.blocked(.contextUnavailable))
+                    return
+                }
+                self.keyboardMonitor.markConverted()
+                LayoutSwitcher.switchToOpposite()
+                self.updateStatusIcon()
+                self.recordManualReplacementOutcome(.switchedOnly)
+                return
+            }
+            self.submitManualBufferedConversion(
+                conversion,
+                snapshot: snapshot,
+                frontID: frontID
+            )
+        }
+    }
+
+    private func waitForPendingAutomaticCompletion(
+        frontID: String?,
+        expectedVerifiedCount: Int,
+        selectionUnavailable: Bool,
+        deadline: Date
+    ) {
+        guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else { return }
+        if !keyboardMonitor.hasPendingAutomaticCompletion {
+            guard verifiedAutomaticReplacementCount >= expectedVerifiedCount else {
+                recordManualReplacementOutcome(.blocked(.contextUnavailable))
+                return
+            }
+            finishManualTriggerAfterSelection(
+                selectionUnavailable ? .unavailable : .none,
+                frontID: frontID
+            )
+            return
+        }
+        guard Date() < deadline else {
+            recordManualReplacementOutcome(.blocked(.contextUnavailable))
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) { [weak self] in
+            self?.waitForPendingAutomaticCompletion(
+                frontID: frontID,
+                expectedVerifiedCount: expectedVerifiedCount,
+                selectionUnavailable: selectionUnavailable,
+                deadline: deadline
+            )
+        }
     }
 
     private func submitManualBufferedConversion(
@@ -441,11 +548,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 transaction: transaction,
                 deliveredKeyCount: snapshot.keys.count + snapshot.boundary.replayText.count,
                 currentFocus: snapshot.focus,
-                currentRevision: snapshot.editRevision,
-                allowUnavailablePreflight: snapshot.integrity == .clean
+                currentRevision: snapshot.editRevision
             )
         ) { [weak self] outcome in
             guard let self, let stagedSequence else { return }
+            self.recordManualReplacementOutcome(outcome)
             guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else {
                 self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
                 return
@@ -465,12 +572,101 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 break
             }
         }
-        guard initial == .postedUnverified else { return }
+        guard initial == .postedUnverified else {
+            recordManualReplacementOutcome(initial)
+            return
+        }
+        postedManualReplacementCount += 1
         stagedSequence = keyboardMonitor.stageManualConversion(
             expectedSequence: snapshot.sequence,
             expectedRevision: snapshot.editRevision,
             hadCurrentToken: hadCurrentToken
         )
+    }
+
+    private func submitManualReconversion(
+        _ reconversion: BufferedManualReconversion,
+        snapshot: ManualTokenSnapshot,
+        frontID: String?
+    ) {
+        let transaction = ConversionTransaction(
+            original: reconversion.current,
+            replacement: reconversion.replacement,
+            boundary: .punctuation(""),
+            focus: snapshot.focus,
+            sourceLayoutID: LayoutSwitcher.currentLayoutID(),
+            targetLayoutID: reconversion.targetLayoutID,
+            sequence: snapshot.sequence,
+            editRevision: snapshot.editRevision,
+            expectedOriginalSuffix: reconversion.current,
+            automatic: false
+        )
+        var stagedSequence: UInt64?
+        let initial = replacementCoordinator.submit(
+            ReplacementRequest(
+                transaction: transaction,
+                deliveredKeyCount: reconversion.current.count,
+                currentFocus: snapshot.focus,
+                currentRevision: snapshot.editRevision
+            )
+        ) { [weak self] outcome in
+            guard let self, let stagedSequence else { return }
+            self.recordManualReplacementOutcome(outcome)
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else {
+                self.textConverter.cancelPendingReconversion()
+                self.keyboardMonitor.invalidateStagedCompletion(
+                    expectedSequence: stagedSequence
+                )
+                return
+            }
+            switch outcome {
+            case .verified:
+                guard self.keyboardMonitor.isStagedCompletionCurrent(
+                    expectedSequence: stagedSequence
+                ) else {
+                    self.textConverter.cancelPendingReconversion()
+                    return
+                }
+                self.textConverter.recordVerifiedReconversion(
+                    reconversion,
+                    transaction: transaction
+                )
+                self.keyboardMonitor.markConverted()
+                if let targetLayoutID = reconversion.targetLayoutID {
+                    LayoutSwitcher.switchTo(layoutID: targetLayoutID)
+                } else {
+                    LayoutSwitcher.switchToOpposite()
+                }
+                self.updateStatusIcon()
+                self.learnFromUndo()
+            case .postedUnverified:
+                self.textConverter.cancelPendingReconversion()
+                self.keyboardMonitor.finishUnverifiedPostedConversion(
+                    expectedSequence: stagedSequence
+                )
+            case .failed(.verificationMismatch):
+                self.textConverter.cancelPendingReconversion()
+                self.keyboardMonitor.invalidateStagedCompletion(
+                    expectedSequence: stagedSequence
+                )
+            case .failed, .blocked, .switchedOnly:
+                self.textConverter.cancelPendingReconversion()
+            }
+        }
+        guard initial == .postedUnverified else {
+            recordManualReplacementOutcome(initial)
+            textConverter.cancelPendingReconversion()
+            return
+        }
+        postedManualReplacementCount += 1
+        stagedSequence = keyboardMonitor.stageManualConversion(
+            expectedSequence: snapshot.sequence,
+            expectedRevision: snapshot.editRevision,
+            hadCurrentToken: false
+        )
+        if stagedSequence == nil {
+            textConverter.cancelPendingReconversion()
+        }
     }
 
     private func finishManualConversion(frontID: String?, targetLayoutID: String?) {
@@ -685,8 +881,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 transaction: transaction,
                 deliveredKeyCount: snapshot.deliveredKeyCount,
                 currentFocus: snapshot.focus,
-                currentRevision: snapshot.editRevision,
-                allowUnavailablePreflight: snapshot.integrity == .clean
+                currentRevision: snapshot.editRevision
             )
         ) { [weak self] outcome in
             self?.finishAutomaticReplacement(
@@ -1178,14 +1373,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        // Не теряем буфер обмена в 2-секундном окне отложенного восстановления
-        // (актуально и при само-обновлении, которое завершает процесс).
-        textConverter.flushPendingClipboardRestore()
-    }
-
     @objc private func quit() {
-        textConverter.flushPendingClipboardRestore()
         perAppLayoutManager.stop()
         keyboardMonitor.stop()
         NSApplication.shared.terminate(nil)

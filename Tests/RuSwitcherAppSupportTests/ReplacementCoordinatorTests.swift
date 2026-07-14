@@ -9,8 +9,12 @@ final class ReplacementCoordinatorTests: XCTestCase {
         let poster = Poster(result: true)
         let coordinator = NativeReplacementCoordinator(reader: reader, poster: poster)
         var completions: [ReplacementOutcome] = []
+        let completionDelivered = expectation(description: "verification delivered asynchronously")
 
-        let initial = coordinator.submit(request()) { completions.append($0) }
+        let initial = coordinator.submit(request()) {
+            completions.append($0)
+            completionDelivered.fulfill()
+        }
 
         XCTAssertEqual(initial, .postedUnverified)
         XCTAssertEqual(poster.plans.count, 1)
@@ -22,6 +26,7 @@ final class ReplacementCoordinatorTests: XCTestCase {
         )
 
         reader.complete(.match)
+        wait(for: [completionDelivered], timeout: 1)
         XCTAssertEqual(completions, [.verified])
     }
 
@@ -29,11 +34,35 @@ final class ReplacementCoordinatorTests: XCTestCase {
         let reader = Reader(preflight: .match)
         let coordinator = NativeReplacementCoordinator(reader: reader, poster: Poster(result: true))
         var completion: ReplacementOutcome?
+        let completionDelivered = expectation(description: "unavailable delivered asynchronously")
 
-        XCTAssertEqual(coordinator.submit(request()) { completion = $0 }, .postedUnverified)
+        XCTAssertEqual(coordinator.submit(request()) {
+            completion = $0
+            completionDelivered.fulfill()
+        }, .postedUnverified)
         reader.complete(.unavailable)
+        wait(for: [completionDelivered], timeout: 1)
 
         XCTAssertEqual(completion, .postedUnverified)
+    }
+
+    func testAcceptedPostWithMismatchingReadbackFailsVerification() {
+        let reader = Reader(preflight: .match)
+        let poster = Poster(result: true)
+        let coordinator = NativeReplacementCoordinator(reader: reader, poster: poster)
+        var completion: ReplacementOutcome?
+        let completionDelivered = expectation(description: "mismatch delivered asynchronously")
+
+        XCTAssertEqual(coordinator.submit(request()) {
+            completion = $0
+            completionDelivered.fulfill()
+        }, .postedUnverified)
+        XCTAssertEqual(poster.plans.count, 1)
+
+        reader.complete(.mismatch)
+        wait(for: [completionDelivered], timeout: 1)
+
+        XCTAssertEqual(completion, .failed(.verificationMismatch))
     }
 
     func testMismatchBeforePostingBlocksTransaction() {
@@ -47,21 +76,13 @@ final class ReplacementCoordinatorTests: XCTestCase {
         XCTAssertTrue(poster.plans.isEmpty)
     }
 
-    func testUnavailablePreflightBlocksInvalidatedEditor() {
+    func testUnavailablePreflightAlwaysBlocksBeforePosting() {
         let reader = Reader(preflight: .unavailable)
         let poster = Poster(result: true)
         let coordinator = NativeReplacementCoordinator(reader: reader, poster: poster)
-        var request = request()
-        request = ReplacementRequest(
-            transaction: request.transaction,
-            deliveredKeyCount: request.deliveredKeyCount,
-            currentFocus: request.currentFocus,
-            currentRevision: request.currentRevision,
-            allowUnavailablePreflight: false
-        )
 
         XCTAssertEqual(
-            coordinator.submit(request) { _ in XCTFail("must not verify") },
+            coordinator.submit(request()) { _ in XCTFail("must not verify") },
             .blocked(.contextUnavailable)
         )
         XCTAssertTrue(poster.plans.isEmpty)
@@ -78,7 +99,47 @@ final class ReplacementCoordinatorTests: XCTestCase {
         XCTAssertEqual(poster.plans.count, 1)
     }
 
-    private func request() -> ReplacementRequest {
+    func testManualReplacementUsesVerifiedTextMutationInsteadOfKeyEvents() {
+        let reader = Reader(preflight: .match)
+        let poster = Poster(result: true)
+        let replacer = TextReplacer()
+        let coordinator = NativeReplacementCoordinator(
+            reader: reader,
+            poster: poster,
+            textReplacer: replacer
+        )
+        var completion: ReplacementOutcome?
+        let completionDelivered = expectation(description: "manual completion delivered asynchronously")
+
+        let initial = coordinator.submit(request(automatic: false)) {
+            completion = $0
+            completionDelivered.fulfill()
+        }
+
+        XCTAssertEqual(initial, .postedUnverified)
+        XCTAssertTrue(poster.plans.isEmpty)
+        XCTAssertEqual(replacer.requests.count, 1)
+        XCTAssertEqual(replacer.requests[0].original, "ghbdtn ")
+        XCTAssertEqual(replacer.requests[0].replacement, "привет ")
+        replacer.complete(.verified)
+        XCTAssertNil(completion)
+        wait(for: [completionDelivered], timeout: 1)
+        XCTAssertEqual(completion, .verified)
+    }
+
+    func testManualReplacementWithoutAtomicReplacerIsBlockedBeforeKeyEvents() {
+        let reader = Reader(preflight: .match)
+        let poster = Poster(result: true)
+        let coordinator = NativeReplacementCoordinator(reader: reader, poster: poster)
+
+        XCTAssertEqual(
+            coordinator.submit(request(automatic: false)) { _ in XCTFail("must not complete") },
+            .blocked(.contextUnavailable)
+        )
+        XCTAssertTrue(poster.plans.isEmpty)
+    }
+
+    private func request(automatic: Bool = true) -> ReplacementRequest {
         let focus = FocusedElementIdentity(processID: 42, bundleID: "test.host", identifier: "field")
         return ReplacementRequest(
             transaction: ConversionTransaction(
@@ -90,13 +151,46 @@ final class ReplacementCoordinatorTests: XCTestCase {
                 targetLayoutID: "ru",
                 sequence: 7,
                 editRevision: 3,
-                expectedOriginalSuffix: "ghbdtn",
-                automatic: true
+                expectedOriginalSuffix: automatic ? "ghbdtn" : "ghbdtn ",
+                automatic: automatic
             ),
             deliveredKeyCount: 6,
             currentFocus: focus,
             currentRevision: 3
         )
+    }
+}
+
+@MainActor
+private final class TextReplacer: FocusedTextReplacing {
+    struct Request {
+        let original: String
+        let replacement: String
+        let focus: FocusedElementIdentity
+        let deadlineMilliseconds: Int
+    }
+
+    var requests: [Request] = []
+    private var completion: ((ReplacementOutcome) -> Void)?
+
+    func replaceSuffix(
+        original: String,
+        replacement: String,
+        focus: FocusedElementIdentity,
+        deadlineMilliseconds: Int,
+        completion: @escaping (ReplacementOutcome) -> Void
+    ) {
+        requests.append(Request(
+            original: original,
+            replacement: replacement,
+            focus: focus,
+            deadlineMilliseconds: deadlineMilliseconds
+        ))
+        self.completion = completion
+    }
+
+    func complete(_ outcome: ReplacementOutcome) {
+        completion?(outcome)
     }
 }
 

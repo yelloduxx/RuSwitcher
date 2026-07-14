@@ -113,6 +113,20 @@ final class PhysicalKeyLatticeTests: XCTestCase {
         XCTAssertTrue(first.contains(where: { $0.isLiteral }))
     }
 
+    func testTrailingDecorationCanAlternateTargetLiteralAndTargetKeys() {
+        let typed = "ghjdthrf&\"?"
+        let converted = KeyMapping.convert(typed)
+        let replacements = PhysicalKeyLattice.candidates(
+            typed: typed,
+            converted: converted
+        ).map(\.replacement)
+
+        XCTAssertTrue(
+            replacements.contains("проверка?\","),
+            "candidates=\(replacements)"
+        )
+    }
+
     private var lexicalPrefix: [PhysicalKeyStroke] {
         zip(Array("ntcn"), Array("тест")).map {
             PhysicalKeyStroke(literal: String($0), opposite: String($1))

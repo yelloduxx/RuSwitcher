@@ -48,7 +48,10 @@ final class ContextualLayoutDecoderTests: XCTestCase {
 
     func testHighConfidenceCannotOverrideBothKnownSafetyGate() {
         let converted = KeyMapping.convert("here")
-        let index = PhysicalKeyLattice.hypotheses(typed: "here", converted: converted)
+        let index = RuSwitcherExperimentalV4.PhysicalKeyLattice.hypotheses(
+            typed: "here",
+            converted: converted
+        )
             .firstIndex { $0.text == "руку" }!
         let result = evaluate("here", context: ["подними"], selectedIndex: index, winningLogit: 8)
         XCTAssertEqual(result.outcome, .abstain)

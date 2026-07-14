@@ -27,7 +27,7 @@ final class V3LayoutEngineTests: XCTestCase {
         XCTAssertEqual(evaluation.selected.decision.candidate.replacement, "статью")
     }
 
-    func testRankerMayRefineMixedPunctuationToWholeLayoutPath() throws {
+    func testRankerPreservesCorrectedMixedPunctuationPath() throws {
         let typed = "uhzpye."
         let converted = KeyMapping.convert(typed)
         let evaluation = evaluate(
@@ -38,12 +38,12 @@ final class V3LayoutEngineTests: XCTestCase {
         )
 
         XCTAssertEqual(evaluation.baseline.decision.verdict, .switchToConverted)
-        XCTAssertNotEqual(evaluation.baseline.decision.candidate.replacement, converted)
+        XCTAssertEqual(evaluation.baseline.decision.candidate.replacement, converted)
         XCTAssertEqual(evaluation.selected.decision.verdict, .switchToConverted)
         XCTAssertEqual(evaluation.selected.decision.candidate.replacement, converted)
     }
 
-    func testRankerMayRefineStrongUnknownWholeLayoutPath() throws {
+    func testRankerPreservesCorrectedStrongUnknownWholeLayoutPath() throws {
         let typed = ",b,kbc"
         let converted = KeyMapping.convert(typed)
         XCTAssertNil(languageModel.wordLogProbability(converted, language: "ru"))
@@ -57,7 +57,7 @@ final class V3LayoutEngineTests: XCTestCase {
         )
 
         XCTAssertEqual(evaluation.baseline.decision.verdict, .switchToConverted)
-        XCTAssertNotEqual(evaluation.baseline.decision.candidate.replacement, converted)
+        XCTAssertEqual(evaluation.baseline.decision.candidate.replacement, converted)
         XCTAssertEqual(evaluation.selected.decision.candidate.replacement, converted)
     }
 

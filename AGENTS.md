@@ -14,13 +14,13 @@ installed build changes.
 - Automatic conversion is off by default until the user enables it.
 - Primary repository: `rashn/RuSwitcher`; local branch used for this work:
   `codex/caramba-autoconvert`.
-- The stabilization release is `4.0.0` build `88`. Verify the installed binary
+- The stabilization release is `4.0.0` build `89`. Verify the installed binary
   hash and PID after every local replacement; do not infer the running build
   from `version.json` alone.
 - The installed app is `/Applications/RuSwitcher.app`, signed with the reusable
   identity `RuSwitcher Local Code Signing`.
-- Installed build-88 executable SHA-256:
-  `844028ed198a64bd2a9bd43a16240ba17dbc001c0d888a397dd0f81a7492102c`.
+- Installed build-89 executable SHA-256:
+  `d76d3294a0ec62b3881ac26c1a59bb7a229f188188792072926218c9afb656d1`.
 
 ## User Requirements
 
@@ -38,8 +38,8 @@ installed build changes.
 
 - `Sources/RuSwitcherCore`: pure/testable V3 decoder, language model, state and
   transaction data.
-- `Sources/RuSwitcherAppSupport`: testable native replacement, event,
-  pasteboard, logging and release-version contracts.
+- `Sources/RuSwitcherAppSupport`: testable native replacement, event, logging,
+  updater and release-version contracts.
 - `Experimental/V4`: separate Swift package for the Core ML research project;
   it is absent from the root package graph and production bundle.
 - `Sources/RuSwitcher`: AppKit application, event tap, layout switching, AX
@@ -125,11 +125,12 @@ keep; it never activates another automatic decoder.
 - The user 5,000-phrase corpus is unchanged for both V3 and model-11 V3.1:
   58,945/59,388 correct tokens, 443 safe misses, zero false/wrong replacements
   and zero duplicate transactions.
-- The opened OPUS GlobalVoices regression corpus now measures V3 at 52,855
-  correct, 0 false positives, 45 wrong replacements and 817 safe misses. V3.1
-  measures 52,867 correct, 0 false positives, 45 wrong replacements and 805
-  safe misses. Promotion remains rejected because the 45 wrong punctuation
-  paths are not fixed.
+- After the generalized wrapper/punctuation lattice fix, the opened OPUS
+  GlobalVoices regression corpus measures V3 at 52,894 correct, 0 false
+  positives, 0 wrong replacements and 823 safe misses. V3.1 measures 52,906
+  correct, 0 false positives, 0 wrong replacements and 811 safe misses.
+  Promotion remains rejected because model-11 failed its earlier Tatoeba
+  validation accuracy and wrong-layout recall gates.
 - GlobalVoices is regression-only, not an independent final gate. Keep the
   pinned TED2020 source unopened until the design passes all existing safety
   and recall gates; then use it once for the promotion decision and do not tune
@@ -139,10 +140,12 @@ keep; it never activates another automatic decoder.
 
 - Candidate generation preserves leading/trailing wrappers and explores the
   physical-key interpretation of punctuation keys.
-- A single punctuation key that produces punctuation in both layouts follows
+- A punctuation key that produces punctuation in both layouts follows
   the target physical-key interpretation when the word converts. This fixes an
   English-layout `?` intended as a Russian comma and `&` intended as a Russian
-  question mark. Multi-mark suffixes such as `?!` and `...` remain literal.
+  question mark. Natural multi-mark suffixes such as `?!` and `...` remain
+  literal, while wrapper-interleaved paths are selected only when they share the
+  same physical lexical stem.
 - Typed punctuation remains literal when the opposite layout would turn it into
   a letter and the punctuation candidate is the valid word, as in `ghbdtn,`.
 - Examples covered by tests:
@@ -228,19 +231,19 @@ The configured trigger is currently used as double Shift by the user. Priority:
 4. Undo/reconvert the immediately preceding automatic correction.
 5. Switch layout only.
 
-Selection direction is based on dominant script, not the active layout. AX
-selected-text replacement is preferred; clipboard fallback preserves pasteboard
-types. Failure must leave selection and layout unchanged.
+Selection direction is based on dominant script, not the active layout. Real
+selection replacement is AX-only and must pass read-back. If the selected range
+or replacement cannot be verified, text and layout remain unchanged. Current-
+token and previous-token conversion use the captured physical-key buffer and do
+not require a selection.
 
-Current-token and previous-token conversion do not use `NSPasteboard`. When a
-real selection is unreadable through AX, the clipboard fallback marks both its
-copy and replacement values with `org.nspasteboard.TransientType`; clipboard
-managers may ignore these entries when their transient-content option is enabled.
+No manual or automatic conversion path writes text to `NSPasteboard`. This is
+intentional: clipboard managers must not collect conversion payloads.
 
 For an in-process `NSTextView` host, selected-text AX mutation must run on the
 main thread. Calling `AXUIElementSetAttributeValue` for a local AppKit element
 from the manual AX queue triggers AppKit's queue assertion and crashes. External
-AX mutation remains asynchronous and polls bounded read-back before fallback.
+AX mutation remains asynchronous and polls bounded read-back.
 
 Adaptive learning behavior:
 
@@ -336,10 +339,13 @@ bash scripts/run_headless_native_parity_test.sh
 bash scripts/verify_v3_only_build.sh
 ```
 
-After adding the lattice/ranker research checks, the root suite contains 186
+After adding the native support and updater checks, the root suite contains 218
 tests. V4's 12 research tests run
 only from its separate package. The headless event-stream fixture must pass and
 its intentionally wrong expected output must fail.
+
+The build-89 coverage run reports 94.83% line coverage for `RuSwitcherCore`
+(4,013/4,232) and 89.77% for `RuSwitcherAppSupport` (544/606).
 
 The 443 misses in the 5,000-phrase corpus are abstentions, not wrong
 replacements. Keep this safety invariant when improving recall.
@@ -383,7 +389,7 @@ bash scripts/run_hid_stress_tests.sh
 - `headless-native-parity-trap.json` is shared by the headless simulator and the
   native host. Its 13 phases and 121 physical characters cover both-known
   context, short words, dead-key quotes, punctuation/layout-letter ambiguity,
-  email, `plan B`, double spaces and a rare Russian word. Build 88 produced the
+  email, `plan B`, double spaces and a rare Russian word. Build 89 produced the
   same exact text in both paths: 9 planned headless transactions and 9/9 native
   posted/verified transactions, with no external input, layout mismatch or
   boundary timeout. The native host disables macOS double-space period and
@@ -422,14 +428,14 @@ Install atomically:
 5. Move staging to `/Applications/RuSwitcher.app`.
 6. Open the app and verify version, architectures, signature, SHA-256 and process.
 
-Current observed footprint for build 88:
+Current observed footprint for build 89:
 
-- App bundle: about 10.49 MiB on disk.
+- App bundle: 11,792,384 bytes (about 11.25 MiB) on disk.
 - V3 language model: 7,296,305 bytes.
-- Idle process: 0.0% CPU and about 74.1 MiB RSS on the development Mac.
+- Idle process: 0.0% CPU and about 76.0 MiB RSS on the development Mac.
 - Decoder inference in the simulator: under roughly 4 ms p99 per completed token.
 
-The installed binary SHA-256 after build 88 is
-`844028ed198a64bd2a9bd43a16240ba17dbc001c0d888a397dd0f81a7492102c`.
+The installed build-89 executable SHA-256 is
+`d76d3294a0ec62b3881ac26c1a59bb7a229f188188792072926218c9afb656d1`.
 Always compare installed and freshly built hashes rather than trusting the build
 number alone.

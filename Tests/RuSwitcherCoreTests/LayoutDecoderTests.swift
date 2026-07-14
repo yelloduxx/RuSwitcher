@@ -74,7 +74,7 @@ final class LayoutDecoderTests: XCTestCase {
             XCTAssertEqual(
                 result.decision.verdict,
                 .switchToConverted,
-                "\(fixture.intended): typed=\(typed) candidate=\(result.decision.candidate.replacement)"
+                "\(fixture.intended): typed=\(typed) candidate=\(result.decision.candidate.replacement) margin=\(result.confidenceMargin) threshold=\(result.threshold) evidence=\(result.evidence)"
             )
             XCTAssertEqual(
                 result.decision.candidate.replacement,
@@ -131,6 +131,266 @@ final class LayoutDecoderTests: XCTestCase {
             "candidate=\(quotedResult.decision.candidate.replacement) reason=\(quotedResult.decision.reason) evidence=\(quotedResult.evidence)"
         )
         XCTAssertEqual(quotedResult.decision.candidate.replacement, quoted)
+    }
+
+    func testWholeLayoutPathDoesNotMixBoundaryPunctuationIntoConvertedToken() {
+        var russianBelief = LanguageBelief.neutral
+        for _ in 0..<4 { russianBelief.observe(language: "ru") }
+        let russianFixtures: [(intended: String, context: [String])] = [
+            ("беспредел", ["Социальный"]),
+            ("Либерию", ["покинул"]),
+            ("грязную", ["эту"]),
+            ("персонаж", ["известный"]),
+            ("юго-востоке", ["на"]),
+            ("лояльностью", ["пользовались"]),
+            ("Колумб", ["и"]),
+            ("Испанию", ["в"]),
+            ("Видеорепортаж", []),
+            ("блоггерами", ["с"]),
+        ]
+        for fixture in russianFixtures {
+            let typed = KeyMapping.convert(fixture.intended)
+            let result = evaluate(
+                typed,
+                context: fixture.context,
+                belief: russianBelief
+            )
+            XCTAssertEqual(
+                result.decision.verdict,
+                .switchToConverted,
+                "\(fixture.intended): typed=\(typed) candidate=\(result.decision.candidate.replacement)"
+            )
+            XCTAssertEqual(
+                result.decision.candidate.replacement,
+                fixture.intended,
+                "\(fixture.intended): typed=\(typed) evidence=\(result.evidence)"
+            )
+        }
+    }
+
+    func testWholeLayoutPathTranslatesPunctuationWhenLexicalCoreIsUnchanged() {
+        var russianBelief = LanguageBelief.neutral
+        for _ in 0..<4 { russianBelief.observe(language: "ru") }
+        let russianFixtures = [
+            "мама\")",
+            "песок\",",
+            "что?\"",
+            "может\",",
+            "государством\",",
+        ]
+        for intended in russianFixtures {
+            let typed = KeyMapping.convert(intended)
+            let result = evaluate(typed, context: ["это"], belief: russianBelief)
+            XCTAssertEqual(result.decision.verdict, .switchToConverted, intended)
+            XCTAssertEqual(result.decision.candidate.replacement, intended, "typed=\(typed)")
+        }
+
+        var englishBelief = LanguageBelief.neutral
+        for _ in 0..<4 { englishBelief.observe(language: "en") }
+        for intended in ["Country'?", "normal?”", "'unfashionable'?", "#beautifulkyoto"] {
+            let typed = KeyMapping.convert(intended)
+            let result = evaluate(
+                typed,
+                current: "ru",
+                target: "en",
+                context: ["this", "is"],
+                belief: englishBelief
+            )
+            XCTAssertEqual(result.decision.verdict, .switchToConverted, intended)
+            XCTAssertEqual(result.decision.candidate.replacement, intended, "typed=\(typed)")
+        }
+    }
+
+    func testTranslatedQuestionMarkBeforeLiteralClosingQuoteWinsInRussianContext() {
+        var russianBelief = LanguageBelief.neutral
+        for _ in 0..<4 { russianBelief.observe(language: "ru") }
+
+        let typed = "ytn&\""
+        let result = evaluate(
+            typed,
+            context: ["Ты", "уже", "проверил", "use", "или", "ещё"],
+            belief: russianBelief
+        )
+
+        XCTAssertEqual(
+            result.decision.verdict,
+            .switchToConverted,
+            "candidate=\(result.decision.candidate.replacement) margin=\(result.confidenceMargin) threshold=\(result.threshold) evidence=\(result.evidence)"
+        )
+        XCTAssertEqual(result.decision.candidate.replacement, "нет?\"")
+    }
+
+    func testCorrectEnglishQuestionBeforeClosingQuoteStaysUnchanged() {
+        var englishBelief = LanguageBelief.neutral
+        for _ in 0..<4 { englishBelief.observe(language: "en") }
+
+        let result = evaluate(
+            "not?\"",
+            context: ["we", "are", "ready", "or"],
+            belief: englishBelief
+        )
+
+        XCTAssertNotEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testTranslatedQuestionMarkSurvivesMultipleClosingWrappers() {
+        var russianBelief = LanguageBelief.neutral
+        for _ in 0..<4 { russianBelief.observe(language: "ru") }
+
+        for (typed, expected) in [
+            ("lf&\")", "да?\")"),
+            ("rfr&\")", "как?\")"),
+            ("ghjdthrf&\")", "проверка?\")"),
+            ("ghjdthrf&\"?", "проверка?\","),
+        ] {
+            let result = evaluate(
+                typed,
+                context: ["ты", "уже", "закончил"],
+                belief: russianBelief
+            )
+            XCTAssertEqual(result.decision.verdict, .switchToConverted, typed)
+            XCTAssertEqual(result.decision.candidate.replacement, expected, typed)
+        }
+    }
+
+    func testSafetySentinelNeverCommitsAmbiguousPartialLayoutPath() {
+        let fixtures: [(typed: String, context: [String])] = [
+            ("<j,", []),
+            ("'[j", []),
+            ("\"kbcf", ["Парагвая", "в", "ОАГ"]),
+            ("{b", []),
+            ("{'hhbc", []),
+            ("\"dj", ["президент"]),
+        ]
+        for fixture in fixtures {
+            let typed = fixture.typed
+            let fullLayout = KeyMapping.convert(typed)
+            let result = evaluate(typed, context: fixture.context)
+            XCTAssertFalse(
+                result.decision.verdict == .switchToConverted
+                    && result.decision.candidate.replacement != fullLayout,
+                "typed=\(typed) full=\(fullLayout) actual=\(result.decision.candidate.replacement)"
+            )
+        }
+
+        let unambiguousWrapper = evaluate("{z")
+        XCTAssertEqual(unambiguousWrapper.decision.verdict, .switchToConverted)
+        XCTAssertEqual(unambiguousWrapper.decision.candidate.replacement, "{я")
+
+        var russianBelief = LanguageBelief.neutral
+        for _ in 0..<4 { russianBelief.observe(language: "ru") }
+        for typed in ["b[", "b[?", "dcnhtxf[?", "irjkf[?", "ghj,ktvf[?"] {
+            let fullLayout = KeyMapping.convert(typed)
+            let result = evaluate(
+                typed,
+                context: ["это", "важный", "русский", "контекст"],
+                belief: russianBelief
+            )
+            XCTAssertEqual(
+                result.decision.verdict,
+                .switchToConverted,
+                "typed=\(typed) full=\(fullLayout) actual=\(result.decision.candidate.replacement)"
+            )
+            XCTAssertEqual(
+                result.decision.candidate.replacement,
+                fullLayout,
+                "typed=\(typed) evidence=\(result.evidence)"
+            )
+        }
+
+        let unknownName = "Vfy,bl;?"
+        let unknownNameFullLayout = KeyMapping.convert(unknownName)
+        let unknownNameResult = evaluate(
+            unknownName,
+            context: ["это", "важный", "русский", "контекст"],
+            belief: russianBelief
+        )
+        XCTAssertFalse(
+            unknownNameResult.decision.verdict == .switchToConverted
+                && unknownNameResult.decision.candidate.replacement
+                    != unknownNameFullLayout
+        )
+    }
+
+    func testCandidateSelectionIsIndependentOfEvaluationOrder() {
+        func candidate(_ replacement: String) -> AutoConvertCandidate {
+            AutoConvertCandidate(
+                typedRaw: "source",
+                convertedRaw: replacement,
+                convertedWord: replacement,
+                suffix: "",
+                kind: .directWord
+            )
+        }
+        func evaluation(_ replacement: String, threshold: Double) -> LayoutDecoderEvaluation {
+            LayoutDecoderEvaluation(
+                decision: AutoConvertDecision(
+                    verdict: .switchToConverted,
+                    reason: .dictionary,
+                    candidate: candidate(replacement)
+                ),
+                literalScore: 0,
+                convertedScore: 2,
+                threshold: threshold,
+                evidence: [.characterModel]
+            )
+        }
+
+        let alpha = evaluation("альфа", threshold: 1)
+        let beta = evaluation("бета", threshold: 0.999_999_4)
+        let gamma = evaluation("гамма", threshold: 0.999_998_8)
+        let permutations = [
+            [alpha, beta, gamma], [alpha, gamma, beta],
+            [beta, alpha, gamma], [beta, gamma, alpha],
+            [gamma, alpha, beta], [gamma, beta, alpha],
+        ]
+        for values in permutations {
+            let selected = LayoutDecoder.selectCandidateEvaluation(
+                values,
+                targetLanguage: "ru",
+                strongTargetContext: false,
+                model: model
+            )
+            XCTAssertEqual(selected?.decision.candidate.replacement, "гамма")
+        }
+    }
+
+    func testNaturalMultiMarkDoesNotOverrideAWordWithDifferentLexicalCore() {
+        func evaluation(
+            word: String,
+            suffix: String,
+            convertedScore: Double
+        ) -> LayoutDecoderEvaluation {
+            let replacement = word + suffix
+            let candidate = AutoConvertCandidate(
+                typedRaw: "source",
+                convertedRaw: replacement,
+                convertedWord: word,
+                suffix: suffix,
+                kind: .trailingPunctuation
+            )
+            return LayoutDecoderEvaluation(
+                decision: AutoConvertDecision(
+                    verdict: .switchToConverted,
+                    reason: .dictionary,
+                    candidate: candidate
+                ),
+                literalScore: 0,
+                convertedScore: convertedScore,
+                threshold: 0,
+                evidence: [.punctuationPath]
+            )
+        }
+
+        let lexicalWinner = evaluation(word: "результат", suffix: ".", convertedScore: 10)
+        let unrelatedMarks = evaluation(word: "слово", suffix: "?!", convertedScore: 1)
+        let selected = LayoutDecoder.selectCandidateEvaluation(
+            [unrelatedMarks, lexicalWinner],
+            targetLanguage: "ru",
+            strongTargetContext: false,
+            model: model
+        )
+        XCTAssertEqual(selected?.decision.candidate.replacement, "результат.")
     }
 
     func testCorrectSocialIdentifiersAndPlausibleLatinWordsStayLiteral() {
@@ -423,6 +683,33 @@ final class LayoutDecoderTests: XCTestCase {
         XCTAssertEqual(result.decision.verdict, .switchToConverted)
     }
 
+    func testUnambiguousPunctuationPathsSurviveOppositeContext() {
+        var russianBelief = LanguageBelief.neutral
+        russianBelief.observe(language: "ru", weight: 1.4)
+        russianBelief.observe(language: "ru", weight: 1.4)
+        let buffer = evaluate(
+            "[,eath;",
+            context: ["следующий", "приложение"],
+            belief: russianBelief
+        )
+        XCTAssertEqual(buffer.decision.verdict, .switchToConverted)
+        XCTAssertEqual(buffer.decision.candidate.replacement, "[буфер;")
+
+        var strongerRussianBelief = LanguageBelief.neutral
+        for language in ["en", "ru", "ru", "ru", "ru", "ru", "ru"] {
+            strongerRussianBelief.observe(language: language, weight: 1.4)
+        }
+        let delete = evaluate(
+            "вудуеуж",
+            current: "ru",
+            target: "en",
+            context: ["доставка", "запусти", "переключение", "измени", "папка"],
+            belief: strongerRussianBelief
+        )
+        XCTAssertEqual(delete.decision.verdict, .switchToConverted)
+        XCTAssertEqual(delete.decision.candidate.replacement, "delete;")
+    }
+
     func testLongestKnownPunctuationSuffixWins() {
         let result = evaluate("htpekmnfn?!", context: ["это"])
         XCTAssertEqual(result.decision.candidate.replacement, "результат?!")
@@ -488,6 +775,20 @@ final class LayoutDecoderTests: XCTestCase {
             let result = evaluate(typed, context: ["это"])
             XCTAssertEqual(result.decision.candidate.replacement, expected, typed)
             XCTAssertEqual(result.decision.verdict, .switchToConverted, typed)
+        }
+    }
+
+    func testClosingWrappersRemainPunctuationInStrongTargetContext() {
+        var russianBelief = LanguageBelief.neutral
+        for _ in 0..<4 { russianBelief.observe(language: "ru") }
+        for (typed, expected) in [("jy]", "он]"), ("rfr}", "как}")] {
+            let result = evaluate(
+                typed,
+                context: ["это", "обычный", "русский", "контекст"],
+                belief: russianBelief
+            )
+            XCTAssertEqual(result.decision.verdict, .switchToConverted, typed)
+            XCTAssertEqual(result.decision.candidate.replacement, expected, typed)
         }
     }
 

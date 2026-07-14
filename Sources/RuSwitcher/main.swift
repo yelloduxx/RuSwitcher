@@ -1,7 +1,15 @@
 import AppKit
 
 if CommandLine.arguments.count >= 3,
-   ["--hid-probe", "--hid-probe-file", "--hid-transport-probe-file"].contains(CommandLine.arguments[1]) {
+   CommandLine.arguments[1] == "--hid-monitor" {
+    HIDMonitorProbe.run(statusPath: CommandLine.arguments[2])
+} else if CommandLine.arguments.count >= 3,
+   [
+       "--hid-probe",
+       "--hid-probe-file",
+       "--hid-transport-probe",
+       "--hid-transport-probe-file",
+   ].contains(CommandLine.arguments[1]) {
     let resultPath: String?
     if let index = CommandLine.arguments.firstIndex(of: "--result"),
        CommandLine.arguments.indices.contains(index + 1) {
@@ -16,7 +24,11 @@ if CommandLine.arguments.count >= 3,
             startProductionMonitoring: CommandLine.arguments[1] == "--hid-probe-file"
         )
     } else {
-        HIDIntegrationProbe.run(scenarioName: CommandLine.arguments[2], resultPath: resultPath)
+        HIDIntegrationProbe.run(
+            scenarioName: CommandLine.arguments[2],
+            resultPath: resultPath,
+            startProductionMonitoring: CommandLine.arguments[1] == "--hid-probe"
+        )
     }
 } else {
     let app = NSApplication.shared

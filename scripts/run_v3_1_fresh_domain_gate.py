@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import urllib.request
 import zipfile
+from itertools import zip_longest
 from pathlib import Path
 
 
@@ -177,7 +178,24 @@ def generate(manifest: dict[str, object]) -> tuple[int, int]:
         with archive.open(str(manifest["englishEntry"])) as english, archive.open(
             str(manifest["russianEntry"])
         ) as russian:
-            for line_number, (en_raw, ru_raw) in enumerate(zip(english, russian), start=1):
+            missing = object()
+            pairs = zip_longest(english, russian, fillvalue=missing)
+            for line_number, (en_raw, ru_raw) in enumerate(pairs, start=1):
+                if en_raw is missing or ru_raw is missing:
+                    exhausted = (
+                        str(manifest["englishEntry"])
+                        if en_raw is missing
+                        else str(manifest["russianEntry"])
+                    )
+                    remaining = (
+                        str(manifest["russianEntry"])
+                        if en_raw is missing
+                        else str(manifest["englishEntry"])
+                    )
+                    raise ValueError(
+                        "fresh corpus line count mismatch at line "
+                        f"{line_number}: {exhausted} ended before {remaining}"
+                    )
                 en = en_raw.decode("utf-8").strip()
                 ru = ru_raw.decode("utf-8").strip()
                 if not en or not ru or len(en) > 800 or len(ru) > 800:
@@ -199,26 +217,85 @@ def generate(manifest: dict[str, object]) -> tuple[int, int]:
     return len(selected), sum(len(value["steps"]) for value in selected)
 
 
-def run_engine(engine: str) -> tuple[dict[str, object], dict[str, int]]:
-    report = BUILD / f"v3.1-fresh-domain-{engine}-report.json"
-    traces = BUILD / f"v3.1-fresh-domain-{engine}-traces.jsonl"
-    empty = BUILD / "v3.1-fresh-domain-empty.jsonl"
-    empty.write_text("", encoding="utf-8")
-    command = [
-        "swift", "run", "-c", "release", "RuSwitcherSimulator",
-        "--engine", engine, "--jobs", "8", "--input", str(empty),
-        "--phrase-input", str(FIXTURES), "--output", str(report),
-        "--phrase-results", str(traces),
-    ]
-    ranker_path = os.environ.get("V3_1_RANKER_PATH")
-    if engine == "v3.1" and ranker_path:
-        command.extend(["--ranker-path", ranker_path])
-    subprocess.run(command, cwd=ROOT, check=False, stdout=subprocess.DEVNULL)
-    summary = json.loads(report.read_text(encoding="utf-8"))
+def fixture_shape(path: Path) -> list[tuple[str, int]]:
+    shape: list[tuple[str, int]] = []
+    with path.open(encoding="utf-8") as input_file:
+        for line_number, line in enumerate(input_file, start=1):
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(f"invalid fixture JSONL at line {line_number}") from error
+            if not isinstance(value, dict):
+                raise ValueError(f"fixture JSONL line {line_number} is not an object")
+            identifier = value.get("id")
+            steps = value.get("steps")
+            if not isinstance(identifier, str) or not isinstance(steps, list):
+                raise ValueError(f"invalid fixture shape at line {line_number}")
+            shape.append((identifier, len(steps)))
+    if len({identifier for identifier, _ in shape}) != len(shape):
+        raise ValueError("fixture IDs must be unique")
+    return shape
+
+
+def load_engine_outputs(
+    engine: str,
+    report: Path,
+    traces: Path,
+    expected_shape: list[tuple[str, int]],
+) -> tuple[dict[str, object], dict[str, int]]:
+    try:
+        summary = json.loads(report.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{engine} simulator report is missing or invalid") from error
+    if not isinstance(summary, dict):
+        raise ValueError(f"{engine} simulator report is not an object")
+
     counts = {"correct": 0, "falsePositives": 0, "wrongReplacements": 0, "safeMisses": 0}
-    with traces.open(encoding="utf-8") as input_file:
-        for line in input_file:
-            for step in json.loads(line)["steps"]:
+    actual_shape: list[tuple[str, int]] = []
+    phrase_passed = 0
+    try:
+        input_file = traces.open(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ValueError(f"{engine} simulator traces are missing or invalid") from error
+    with input_file:
+        for line_number, line in enumerate(input_file, start=1):
+            if not line.strip():
+                continue
+            try:
+                phrase = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(
+                    f"invalid {engine} simulator trace JSON at line {line_number}"
+                ) from error
+            if not isinstance(phrase, dict):
+                raise ValueError(f"{engine} simulator trace line {line_number} is not an object")
+            identifier = phrase.get("id")
+            steps = phrase.get("steps")
+            passed = phrase.get("passed")
+            if (
+                not isinstance(identifier, str)
+                or not isinstance(steps, list)
+                or not isinstance(passed, bool)
+            ):
+                raise ValueError(f"invalid {engine} simulator trace at line {line_number}")
+            actual_shape.append((identifier, len(steps)))
+            phrase_passed += int(passed)
+            for step_number, step in enumerate(steps, start=1):
+                if not isinstance(step, dict):
+                    raise ValueError(
+                        f"invalid {engine} simulator step at line {line_number}:{step_number}"
+                    )
+                if (
+                    not isinstance(step.get("passed"), bool)
+                    or step.get("expectedVerdict") not in ("keep", "switch")
+                    or not isinstance(step.get("actualResolved"), str)
+                    or not isinstance(step.get("typed"), str)
+                ):
+                    raise ValueError(
+                        f"invalid {engine} simulator step at line {line_number}:{step_number}"
+                    )
                 if step["passed"]:
                     counts["correct"] += 1
                 elif step["expectedVerdict"] == "keep":
@@ -227,7 +304,69 @@ def run_engine(engine: str) -> tuple[dict[str, object], dict[str, int]]:
                     counts["safeMisses"] += 1
                 else:
                     counts["wrongReplacements"] += 1
+
+    if actual_shape != expected_shape:
+        raise ValueError(f"{engine} simulator traces do not match current fixtures")
+    expected_summary = {
+        "total": len(expected_shape),
+        "passed": phrase_passed,
+        "failed": len(expected_shape) - phrase_passed,
+        "phraseTotal": len(expected_shape),
+        "phrasePassed": phrase_passed,
+    }
+    if summary.get("engine") != engine:
+        raise ValueError(f"{engine} simulator report has the wrong engine")
+    for field, expected in expected_summary.items():
+        value = summary.get(field)
+        if type(value) is not int or value != expected:
+            raise ValueError(
+                f"{engine} simulator report field {field} is inconsistent with traces"
+            )
     return summary, counts
+
+
+def run_engine(engine: str) -> tuple[dict[str, object], dict[str, int]]:
+    report = BUILD / f"v3.1-fresh-domain-{engine}-report.json"
+    traces = BUILD / f"v3.1-fresh-domain-{engine}-traces.jsonl"
+    empty = BUILD / "v3.1-fresh-domain-empty.jsonl"
+    report.unlink(missing_ok=True)
+    traces.unlink(missing_ok=True)
+    empty.write_text("", encoding="utf-8")
+    expected_shape = fixture_shape(FIXTURES)
+
+    with tempfile.TemporaryDirectory(
+        prefix=f"v3.1-fresh-domain-{engine}-",
+        dir=BUILD,
+    ) as temporary_directory:
+        run_directory = Path(temporary_directory)
+        run_report = run_directory / "report.json"
+        run_traces = run_directory / "traces.jsonl"
+        command = [
+            "swift", "run", "-c", "release", "RuSwitcherSimulator",
+            "--engine", engine, "--jobs", "8", "--input", str(empty),
+            "--phrase-input", str(FIXTURES), "--output", str(run_report),
+            "--phrase-results", str(run_traces),
+        ]
+        ranker_path = os.environ.get("V3_1_RANKER_PATH")
+        if engine == "v3.1" and ranker_path:
+            command.extend(["--ranker-path", ranker_path])
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        if completed.returncode not in (0, 1):
+            raise subprocess.CalledProcessError(completed.returncode, command)
+        summary, counts = load_engine_outputs(
+            engine,
+            run_report,
+            run_traces,
+            expected_shape,
+        )
+        run_report.replace(report)
+        run_traces.replace(traces)
+        return summary, counts
 
 
 def main() -> int:
