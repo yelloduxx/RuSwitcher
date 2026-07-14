@@ -127,6 +127,8 @@ The app adds itself to the permission lists automatically — you only need to f
 - `CGEvent.keyboardSetUnicodeString` to type the converted text directly — no clipboard, no pasteboard side effects.
 - `CGEventSource.userData` marker to filter the app's own simulated events.
 - A memory-mapped, versioned local RU/EN language model generated from pinned Google Books n-gram frequency data.
+- A physical-key lattice that enumerates valid word/punctuation interpretations before V3 scores them.
+- An offline V3.1 ranker research pipeline; its artifact is not loaded or packaged by the production app until it passes an independent domain gate.
 - A Core ML V4 research package under `Experimental/V4`; it is absent from the normal package graph and production application.
 - Read-only `AXUIElement` range probes for focus and suffix validation; selected-text conversion uses AX first and preserves every pasteboard type in its fallback.
 - `SMAppService` for login item management.

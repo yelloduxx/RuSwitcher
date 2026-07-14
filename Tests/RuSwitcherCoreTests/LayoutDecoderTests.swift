@@ -44,7 +44,11 @@ final class LayoutDecoderTests: XCTestCase {
         XCTAssertEqual(mistyped, "htdjk.wbz")
         let result = evaluate(mistyped)
         XCTAssertEqual(result.decision.candidate.replacement, "революция")
-        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+        XCTAssertEqual(
+            result.decision.verdict,
+            .switchToConverted,
+            "candidate=\(result.decision.candidate.replacement) reason=\(result.decision.reason) evidence=\(result.evidence)"
+        )
     }
 
     func testKnownDirectWordBeatsTrailingPunctuationAlternative() {
@@ -602,6 +606,77 @@ final class LayoutDecoderTests: XCTestCase {
     func testProtectedShapesNeverConvert() {
         for token in ["example.com", "me@example.com", "myURL", "NASA", "snake_case"] {
             XCTAssertEqual(evaluate(token).decision.verdict, .keep, token)
+        }
+    }
+
+    func testOpeningBracketAtWordEndRemainsTargetLayoutLetter() {
+        var russianBelief = LanguageBelief.neutral
+        for _ in 0..<3 { russianBelief.observe(language: "ru") }
+        let result = evaluate(
+            "dct[",
+            context: ["кампании", "и", "против"],
+            belief: russianBelief
+        )
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+        XCTAssertEqual(result.decision.candidate.replacement, "всех")
+    }
+
+    func testLeadingApostropheCanRemainTargetLayoutLetter() {
+        var russianBelief = LanguageBelief.neutral
+        for _ in 0..<4 { russianBelief.observe(language: "ru") }
+        let result = evaluate(
+            "'njuj",
+            context: ["И", "если", "да", "кто", "от"],
+            belief: russianBelief
+        )
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+        XCTAssertEqual(result.decision.candidate.replacement, "этого")
+    }
+
+    func testRussianColonUsesTargetPhysicalPunctuation() {
+        var russianBelief = LanguageBelief.neutral
+        for _ in 0..<4 { russianBelief.observe(language: "ru") }
+        let result = evaluate(
+            "Byljytpbb^",
+            context: ["Мигранты", "направили", "это", "письмо", "президенту"],
+            belief: russianBelief
+        )
+        XCTAssertEqual(
+            result.decision.verdict,
+            .switchToConverted,
+            "candidate=\(result.decision.candidate.replacement) reason=\(result.decision.reason) evidence=\(result.evidence)"
+        )
+        XCTAssertEqual(result.decision.candidate.replacement, "Индонезии:")
+    }
+
+    func testTargetCommaAfterClosingGuillemetIsConverted() {
+        var russianBelief = LanguageBelief.neutral
+        for _ in 0..<4 { russianBelief.observe(language: "ru") }
+        let result = evaluate(
+            "ltzntktq»?",
+            context: ["политических", "изданий", "сайтов", "депутатов", "политических"],
+            belief: russianBelief
+        )
+        XCTAssertEqual(result.decision.verdict, .switchToConverted)
+        XCTAssertEqual(result.decision.candidate.replacement, "деятелей»,")
+    }
+
+    func testExtendedLatinWordDoesNotBecomeMixedCyrillic() {
+        let result = evaluate("Hégire", context: ["the", "newspaper"])
+        XCTAssertNotEqual(result.decision.verdict, .switchToConverted)
+    }
+
+    func testUnknownLatinProperNameStaysInEnglishContext() {
+        var englishBelief = LanguageBelief.neutral
+        englishBelief.observe(language: "en")
+        englishBelief.observe(language: "en")
+        for word in ["Polska", "Ofcom"] {
+            let result = evaluate(
+                word,
+                context: ["the", "report"],
+                belief: englishBelief
+            )
+            XCTAssertNotEqual(result.decision.verdict, .switchToConverted, word)
         }
     }
 

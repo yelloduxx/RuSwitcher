@@ -1,0 +1,98 @@
+{
+  "formatVersion": 1,
+  "protocolVersion": "v3.1-layout-ranking-3",
+  "split": {
+    "unit": "normalized parallel sentence pair",
+    "quarantines": [
+      {
+        "name": "opened-v1-test",
+        "salt": "RuSwitcher-V3.1-Tatoeba-v1",
+        "buckets": [90, 99]
+      },
+      {
+        "name": "opened-v2-test",
+        "salt": "RuSwitcher-V3.1-Tatoeba-final-v2",
+        "buckets": [90, 99]
+      }
+    ],
+    "salt": "RuSwitcher-V3.1-Tatoeba-final-v3",
+    "hash": "SHA-256",
+    "trainBuckets": [0, 79],
+    "validationBuckets": [80, 89],
+    "testBuckets": [90, 99],
+    "rule": "First quarantine every previously opened test assignment; for every remaining pair assign bucket from first 64 bits of SHA-256(final salt + NUL + normalized English + NUL + normalized Russian) modulo 100",
+    "deduplicateBeforeSplit": true,
+    "corruptAfterSplit": true,
+    "quarantineRule": "Any test assignment opened during feature development can never re-enter training, validation or a later final test"
+  },
+  "sentenceCorpus": {
+    "name": "OPUS Tatoeba English-Russian",
+    "release": "v2023-04-12",
+    "url": "https://object.pouta.csc.fi/OPUS-Tatoeba/v2023-04-12/moses/en-ru.txt.zip",
+    "sha256": "bfd33998994ead97b769ecea87f4ca65f022807294dad47da6a91c72c0c433cc",
+    "englishEntry": "Tatoeba.en-ru.en",
+    "russianEntry": "Tatoeba.en-ru.ru",
+    "license": "CC BY 2.0 FR",
+    "upstream": "https://opus.nlpl.eu/Tatoeba/corpus/version/Tatoeba"
+  },
+  "exampleGeneration": {
+    "trainPairModulo": 32,
+    "validationPairModulo": 8,
+    "testPairModulo": 8,
+    "selectedTokensPerSentenceMaximum": 2,
+    "punctuationDistributionPercent": {
+      "comma": 28,
+      "period": 24,
+      "question": 14,
+      "exclamation": 12,
+      "semicolon": 8,
+      "colon": 6,
+      "questionExclamation": 4,
+      "ellipsis": 4
+    },
+    "wrapperDistributionPercent": {
+      "none": 75,
+      "straightQuotes": 10,
+      "parentheses": 8,
+      "guillemets": 7
+    },
+    "ambiguousGoldPolicy": "Exclude literal-punctuation examples when the identical observation yields another punctuation-only target around the same core; also exclude no-context observations with multiple distinct known target cores",
+    "scenarios": [
+      "clean",
+      "codeSwitchClean",
+      "wrongPhysical",
+      "wrongTargetPunctuation",
+      "wrongLiteralPunctuation",
+      "protectedClean"
+    ],
+    "storedData": "feature vectors, risks, labels and aggregate baseline outcomes; no sentence or token text"
+  },
+  "ranker": {
+    "type": "shared 8-unit tanh candidate scorer with a linear residual",
+    "linearAblation": "Rejected on validation because punctuation-short errors and correct paths were not linearly separable at the required safety bound",
+    "subwordFeatures": "signed hashed character 2-5-grams, 32 buckets per candidate language",
+    "contextFeatures": "signed hashed candidate-conditioned bigrams and trigrams over the last two completed tokens, 32 buckets per candidate language",
+    "optimizer": "deterministic mini-batch Adam in NumPy 2.3.5 with single-threaded BLAS",
+    "seed": 1729,
+    "batchSize": 256,
+    "epochs": 10,
+    "learningRate": 0.003,
+    "l2": 0.00001,
+    "calibration": "validation-only temperature search plus per-risk winner-margin thresholds selected jointly by dynamic programming under global Wilson-95 false-positive and wrong-replacement budgets; both-known risks require zero validation errors"
+  },
+  "regressionOnly": [
+    {
+      "name": "User mixed-layout stress corpus",
+      "path": "/Users/bezh/Downloads/mixed_word_layout_stress_test_pairs_5000.tsv",
+      "rule": "Never use for fitting, model weights, calibration, or threshold tuning. It may be used only for development regression and runtime-composition arbitration; no token-specific rule may be derived from it"
+    }
+  ],
+  "qualityGates": {
+    "protectedFalsePositives": 0,
+    "cleanTextFalsePositiveRateMaximum": 0.001,
+    "wrongReplacementRateUpper95Maximum": 0.001,
+    "punctuationPathRecallMinimum": 0.99,
+    "wrongLayoutRecallMustNotRegress": true,
+    "decoderP99MillisecondsMaximum": 1.0
+  }
+}

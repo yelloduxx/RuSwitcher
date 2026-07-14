@@ -48,3 +48,34 @@ word and phrase frequencies plus synthetic keyboard-layout corruptions. The
 checked bootstrap artifact does not contain Wikipedia, Tatoeba, user text, or
 other source sentences. Exact inputs, seed and artifact checksum are recorded
 in `scripts/v4_training_sources.json`.
+
+## OPUS Tatoeba English-Russian corpus
+
+The V3.1 offline training and independent evaluation pipeline uses the fixed
+OPUS Tatoeba `v2023-04-12` English-Russian release. Source sentences are not
+included in the application bundle. A compact derived ranker may contain only
+aggregate fitted weights and calibration values.
+
+- Source: https://opus.nlpl.eu/Tatoeba/corpus/version/Tatoeba
+- Snapshot: `v2023-04-12`
+- License: Creative Commons Attribution 2.0 France
+- Archive SHA-256: `bfd33998994ead97b769ecea87f4ca65f022807294dad47da6a91c72c0c433cc`
+- Reproduction manifest: `scripts/v3_1_training_sources.json`
+
+## OPUS GlobalVoices English-Russian corpus
+
+The fixed OPUS GlobalVoices `v2018q4` English-Russian release was initially
+opened as an independent V3.1 domain gate. Its failures were then used to find
+general Unicode, punctuation, and proper-name bugs, so it is now an opened
+diagnostic regression corpus and cannot serve as a final promotion gate. It is
+never used for model fitting, weight training, or calibration.
+
+- Source: https://opus.nlpl.eu/GlobalVoices/corpus/version/GlobalVoices
+- Snapshot: `v2018q4`
+- License: source articles are generally Creative Commons Attribution 3.0;
+  OPUS preserves source-specific licensing and attribution requirements.
+- Archive SHA-256: `4bd4960fb71e63323ab80362de3c7079c8770785aa6b972deda268571ecc3565`
+- Diagnostic manifest: `scripts/v3_1_fresh_domain_gate.json`
+
+The corpus is downloaded only by the opt-in gate script and is not distributed
+in the application bundle.

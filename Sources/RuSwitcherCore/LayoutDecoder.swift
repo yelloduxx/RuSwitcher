@@ -61,9 +61,14 @@ public enum LayoutDecoder {
         policy: AutoConvertPolicy,
         adaptiveBias: (String, String) -> Double = { _, _ in 0 },
         isConfirmed: (String, String) -> Bool = { _, _ in false },
+        physicalStrokes: [PhysicalKeyStroke]? = nil,
         model: LanguageModelStore
     ) -> LayoutDecoderEvaluation {
-        let generated = AutoConvertCandidateGenerator.candidates(typed: typed, converted: converted)
+        let generated = AutoConvertCandidateGenerator.candidates(
+            typed: typed,
+            converted: converted,
+            strokes: physicalStrokes
+        )
         if !typed.contains(where: \.isLetter) {
             let candidate = generated.first ?? AutoConvertCandidate(
                 typedRaw: typed,
@@ -123,6 +128,14 @@ public enum LayoutDecoder {
         return evaluations.max { lhs, rhs in
             if lhs.decision.verdict == .switchToConverted, rhs.decision.verdict != .switchToConverted { return false }
             if lhs.decision.verdict != .switchToConverted, rhs.decision.verdict == .switchToConverted { return true }
+            // Reject an unmatched leading quote before phrase evidence.
+            // Trailing punctuation stays below lexical evidence because `b[`
+            // can legitimately mean `и[` rather than the full-key path `их`.
+            let lhsLeadingStructure = leadingWrapperStructureScore(lhs.decision.candidate)
+            let rhsLeadingStructure = leadingWrapperStructureScore(rhs.decision.candidate)
+            if lhsLeadingStructure != rhsLeadingStructure {
+                return lhsLeadingStructure < rhsLeadingStructure
+            }
             let lhsHasPhraseEvidence = lhs.evidence.contains(.phraseContext)
             let rhsHasPhraseEvidence = rhs.evidence.contains(.phraseContext)
             if lhsHasPhraseEvidence != rhsHasPhraseEvidence {
@@ -139,6 +152,11 @@ public enum LayoutDecoder {
                 if lhsPunctuationScore != rhsPunctuationScore {
                     return lhsPunctuationScore < rhsPunctuationScore
                 }
+            }
+            let lhsStructure = punctuationStructureScore(lhs.decision.candidate)
+            let rhsStructure = punctuationStructureScore(rhs.decision.candidate)
+            if lhsStructure != rhsStructure {
+                return lhsStructure < rhsStructure
             }
             let lhsUsesTranslatedSuffix = usesTranslatedPunctuationSuffix(lhs.decision.candidate)
             let rhsUsesTranslatedSuffix = usesTranslatedPunctuationSuffix(rhs.decision.candidate)
@@ -178,12 +196,18 @@ public enum LayoutDecoder {
     /// still preferred when the other layout would turn punctuation into a
     /// letter, as in `ghbdtn,` -> `привет,`.
     private static func usesTranslatedPunctuationSuffix(_ candidate: AutoConvertCandidate) -> Bool {
-        guard candidate.suffix.count == 1,
+        guard !candidate.suffix.isEmpty,
               candidate.convertedRaw.hasSuffix(candidate.suffix),
               !candidate.typedRaw.hasSuffix(candidate.suffix) else { return false }
-        let typedSuffix = candidate.typedRaw.suffix(candidate.suffix.count)
-        return typedSuffix.allSatisfy(isDecoration)
-            && candidate.suffix.allSatisfy(isDecoration)
+        let typedSuffix = Array(candidate.typedRaw.suffix(candidate.suffix.count))
+        let targetSuffix = Array(candidate.suffix)
+        guard typedSuffix.count == targetSuffix.count,
+              typedSuffix.allSatisfy(isDecoration),
+              targetSuffix.allSatisfy(isDecoration) else { return false }
+        if targetSuffix.count == 1 { return true }
+        let differences = typedSuffix.indices.filter { typedSuffix[$0] != targetSuffix[$0] }
+        guard differences == [targetSuffix.count - 1] else { return false }
+        return targetSuffix.dropLast().allSatisfy(isClosingWrapper)
     }
 
     private static func evaluateCandidate(
@@ -251,6 +275,24 @@ public enum LayoutDecoder {
         let sourceKnown = model.wordLogProbability(literal, language: currentCanonical)
         let sourceExtendedRussian = currentCanonical == "ru" && model.isExtendedRussianWord(literal)
         let targetKnown = targetKnownForShape
+        let targetLexicallyKnown = targetKnown != nil || targetExtendedEnglish || targetExtendedRussian
+        let characterAdvantage = model.characterLogProbability(converted, language: targetCanonical)
+            - model.characterLogProbability(literal, language: currentCanonical)
+        if currentCanonical == "en", targetCanonical == "ru",
+           SmartTokenizer.isTitleCaseLexicalWord(candidate.typedRaw),
+           SmartTokenizer.languageHint(for: literal).map(LanguageCode.canonical) == currentCanonical,
+           !targetLexicallyKnown,
+           characterAdvantage < model.thresholds.russianOOVNeutral {
+            // Unknown proper and product names are common in mixed prose. Keep
+            // them unless the opposite hypothesis has independent lexical
+            // evidence. OOV layout mistakes remain eligible after confirmation.
+            return fixed(
+                baseCandidate,
+                verdict: .keep,
+                reason: .blockedContext,
+                evidence: [.codeSwitch, .blockedContext]
+            )
+        }
         let recentLanguages = contextWords.suffix(4).compactMap(SmartTokenizer.languageHint)
             .map(LanguageCode.canonical)
         let recentEnglishCount = recentLanguages.count(where: { $0 == "en" })
@@ -277,8 +319,6 @@ public enum LayoutDecoder {
             converted: converted,
             targetLanguage: targetLanguage
         )
-        let characterAdvantage = model.characterLogProbability(converted, language: targetCanonical)
-            - model.characterLogProbability(literal, language: currentCanonical)
         let strongExtendedEnglishTarget = currentCanonical == "ru"
             && targetExtendedEnglish
             && converted.count >= 4
@@ -519,8 +559,46 @@ public enum LayoutDecoder {
     private static func isDecoration(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy {
             CharacterSet.punctuationCharacters.contains($0)
-                || $0 == "&"
+                || "&^$@#".unicodeScalars.contains($0)
         }
+    }
+
+    private static func isClosingWrapper(_ character: Character) -> Bool {
+        ")]}>\"'»”’".contains(character)
+    }
+
+    private static func punctuationStructureScore(_ candidate: AutoConvertCandidate) -> Int {
+        let openingOnly = "([{<«„“‘"
+        let closingOnly = ")]}>»”’"
+        if candidate.suffix.contains(where: openingOnly.contains) { return -3 }
+        if candidate.prefix.contains(where: closingOnly.contains) { return -3 }
+
+        let pairs: [(Character, Character)] = [
+            ("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"),
+            ("«", "»"), ("„", "”"), ("“", "”"), ("‘", "’"),
+            ("\"", "\""), ("'", "'"),
+        ]
+        if pairs.contains(where: { opening, closing in
+            candidate.prefix.contains(opening) && candidate.suffix.contains(closing)
+        }) {
+            return 2
+        }
+        if candidate.prefix.contains(where: { openingOnly.contains($0) || $0 == "\"" || $0 == "'" }) {
+            return -1
+        }
+        return 0
+    }
+
+    private static func leadingWrapperStructureScore(_ candidate: AutoConvertCandidate) -> Int {
+        let pairs: [(Character, Character)] = [
+            ("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"),
+            ("«", "»"), ("„", "”"), ("“", "”"), ("‘", "’"),
+            ("\"", "\""), ("'", "'"),
+        ]
+        for (opening, closing) in pairs where candidate.prefix.contains(opening) {
+            if !candidate.suffix.contains(closing) { return -1 }
+        }
+        return 0
     }
 
     private static func trailingDecoration(of text: String) -> String {

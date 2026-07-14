@@ -26,6 +26,7 @@ private struct Result: Codable, Sendable {
     let replacement: String
     let margin: Double
     let reason: String
+    let latencyMicroseconds: Double
 }
 
 private struct PhraseStep: Codable, Sendable {
@@ -65,6 +66,7 @@ private struct PhraseStepResult: Codable, Sendable {
     let expectedResolved: String
     let actualResolved: String
     let passed: Bool
+    let latencyMicroseconds: Double
 }
 
 private struct PhraseResult: Codable, Sendable {
@@ -84,9 +86,29 @@ private struct Summary: Codable {
     let phrasePassed: Int
     let elapsedMilliseconds: Int
     let workers: Int
+    let latencyP50Microseconds: Double
+    let latencyP95Microseconds: Double
+    let latencyP99Microseconds: Double
+    let latencyMaxMicroseconds: Double
     let failures: [Result]
     let phraseFailures: [PhraseResult]
     let phraseSamples: [PhraseResult]
+}
+
+private enum SimulatorEngine: String {
+    case v3
+    case v31Shadow = "v3.1-shadow"
+    case v31 = "v3.1"
+
+    var mode: V3LayoutEngineMode {
+        switch self {
+        case .v3: return .baseline
+        case .v31Shadow: return .shadow
+        case .v31: return .active
+        }
+    }
+
+    var needsRanker: Bool { self != .v3 }
 }
 
 private struct Options {
@@ -97,6 +119,7 @@ private struct Options {
     var learnOutputPath: String?
     var jobs = max(1, ProcessInfo.processInfo.activeProcessorCount)
     var generatedLimit = 2_500
+    var engine = SimulatorEngine.v3
 }
 
 private final class ResultStore: @unchecked Sendable {
@@ -162,8 +185,15 @@ private func parseOptions() -> Options {
         case "--learn-output": options.learnOutputPath = value()
         case "--jobs": options.jobs = max(1, Int(value()) ?? 1)
         case "--limit": options.generatedLimit = max(1, Int(value()) ?? 2_500)
+        case "--engine":
+            let raw = value()
+            guard let engine = SimulatorEngine(rawValue: raw) else {
+                FileHandle.standardError.write(Data("unknown engine: \(raw)\n".utf8))
+                exit(64)
+            }
+            options.engine = engine
         case "--help":
-            print("RuSwitcherSimulator [--input words.jsonl] [--phrase-input phrases.jsonl] [--output report.json] [--phrase-results results.jsonl] [--learn-output rules.json] [--jobs N] [--limit N]")
+            print("RuSwitcherSimulator [--engine v3|v3.1-shadow|v3.1] [--input words.jsonl] [--phrase-input phrases.jsonl] [--output report.json] [--phrase-results results.jsonl] [--learn-output rules.json] [--jobs N] [--limit N]")
             exit(0)
         default:
             FileHandle.standardError.write(Data("unknown argument: \(argument)\n".utf8))
@@ -514,6 +544,7 @@ private func builtInFixtures(model: LanguageModelStore, limit: Int) -> [Fixture]
 private struct EngineDecision {
     let decision: AutoConvertDecision
     let margin: Double
+    let latencyMicroseconds: Double
 }
 
 private func evaluateEngine(
@@ -522,10 +553,13 @@ private func evaluateEngine(
     targetLanguage: String,
     context: [String],
     belief: LanguageBelief,
-    model: LanguageModelStore
+    model: LanguageModelStore,
+    ranker: LayoutRankerModel?,
+    engine: SimulatorEngine
 ) -> EngineDecision {
+    let started = DispatchTime.now().uptimeNanoseconds
     let converted = KeyMapping.convert(typed)
-    let v3 = LayoutDecoder.evaluate(
+    let evaluation = V3LayoutEngine.evaluate(
         typed: typed,
         converted: converted,
         currentLanguage: currentLanguage,
@@ -534,14 +568,22 @@ private func evaluateEngine(
         contextWords: context,
         languageBelief: belief,
         policy: .empty,
-        model: model
+        model: model,
+        ranker: ranker,
+        mode: engine.mode
     )
-    return EngineDecision(decision: v3.decision, margin: v3.confidenceMargin)
+    return EngineDecision(
+        decision: evaluation.selected.decision,
+        margin: evaluation.selected.confidenceMargin,
+        latencyMicroseconds: Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000
+    )
 }
 
 private func evaluate(
     _ fixture: Fixture,
-    model: LanguageModelStore
+    model: LanguageModelStore,
+    ranker: LayoutRankerModel?,
+    engine: SimulatorEngine
 ) -> Result {
     var belief = LanguageBelief.neutral
     let contextLanguage = fixture.context.last.flatMap(SmartTokenizer.languageHint)
@@ -555,7 +597,9 @@ private func evaluate(
         targetLanguage: fixture.targetLanguage,
         context: fixture.context,
         belief: belief,
-        model: model
+        model: model,
+        ranker: ranker,
+        engine: engine
     )
     let switched = evaluation.decision.verdict == .switchToConverted
     let expectedSwitch = fixture.expected == .switchLayout
@@ -571,13 +615,16 @@ private func evaluate(
         actual: String(describing: evaluation.decision.verdict),
         replacement: replacement,
         margin: evaluation.margin,
-        reason: String(describing: evaluation.decision.reason)
+        reason: String(describing: evaluation.decision.reason),
+        latencyMicroseconds: evaluation.latencyMicroseconds
     )
 }
 
 private func evaluatePhrase(
     _ fixture: PhraseFixture,
-    model: LanguageModelStore
+    model: LanguageModelStore,
+    ranker: LayoutRankerModel?,
+    engine: SimulatorEngine
 ) -> PhraseResult {
     var currentLanguage = fixture.initialLanguage
     var context: [String] = []
@@ -594,7 +641,9 @@ private func evaluatePhrase(
             targetLanguage: targetLanguage,
             context: context,
             belief: belief,
-            model: model
+            model: model,
+            ranker: ranker,
+            engine: engine
         )
         let switched = evaluation.decision.verdict == .switchToConverted
         let resolved = switched ? evaluation.decision.candidate.replacement : step.typed
@@ -608,7 +657,8 @@ private func evaluatePhrase(
             actualVerdict: String(describing: evaluation.decision.verdict),
             expectedResolved: step.expectedResolved,
             actualResolved: resolved,
-            passed: passed
+            passed: passed,
+            latencyMicroseconds: evaluation.latencyMicroseconds
         ))
         output += resolved + step.separator
         let contextToken = SmartTokenizer.lexicalCore(of: resolved)
@@ -635,6 +685,11 @@ private func run() -> Never {
         FileHandle.standardError.write(Data("language model unavailable\n".utf8))
         exit(70)
     }
+    let ranker = options.engine.needsRanker ? LayoutRankerModel.bundled : nil
+    if options.engine.needsRanker, ranker == nil {
+        FileHandle.standardError.write(Data("layout ranker unavailable\n".utf8))
+        exit(70)
+    }
     let fixtures: [Fixture]
     let phraseFixtures: [PhraseFixture]
     do {
@@ -659,7 +714,9 @@ private func run() -> Never {
         queue.async {
             results.set(evaluate(
                 fixtures[index],
-                model: model
+                model: model,
+                ranker: ranker,
+                engine: options.engine
             ), at: index)
             semaphore.signal()
             group.leave()
@@ -671,7 +728,9 @@ private func run() -> Never {
         queue.async {
             phraseResults.set(evaluatePhrase(
                 phraseFixtures[index],
-                model: model
+                model: model,
+                ranker: ranker,
+                engine: options.engine
             ), at: index)
             semaphore.signal()
             group.leave()
@@ -683,8 +742,12 @@ private func run() -> Never {
     let failures = completed.filter { !$0.passed }
     let completedPhrases = phraseResults.completed()
     let phraseFailures = completedPhrases.filter { !$0.passed }
+    let latencies = (
+        completed.map(\.latencyMicroseconds)
+            + completedPhrases.flatMap { $0.steps.map(\.latencyMicroseconds) }
+    ).sorted()
     let summary = Summary(
-        engine: "v3",
+        engine: options.engine.rawValue,
         total: completed.count + completedPhrases.count,
         passed: completed.count - failures.count + completedPhrases.count - phraseFailures.count,
         failed: failures.count + phraseFailures.count,
@@ -692,6 +755,10 @@ private func run() -> Never {
         phrasePassed: completedPhrases.count - phraseFailures.count,
         elapsedMilliseconds: Int(Date().timeIntervalSince(started) * 1_000),
         workers: options.jobs,
+        latencyP50Microseconds: percentile(latencies, quantile: 0.50),
+        latencyP95Microseconds: percentile(latencies, quantile: 0.95),
+        latencyP99Microseconds: percentile(latencies, quantile: 0.99),
+        latencyMaxMicroseconds: latencies.last ?? 0,
         failures: Array(failures.prefix(100)),
         phraseFailures: phraseFailures,
         phraseSamples: Array(completedPhrases.prefix(6))
@@ -733,6 +800,12 @@ private func run() -> Never {
     }
 
     exit(failures.isEmpty && phraseFailures.isEmpty ? 0 : 1)
+}
+
+private func percentile(_ sorted: [Double], quantile: Double) -> Double {
+    guard !sorted.isEmpty else { return 0 }
+    let index = Int((Double(sorted.count - 1) * quantile).rounded(.up))
+    return sorted[min(sorted.count - 1, max(0, index))]
 }
 
 run()

@@ -1,0 +1,22 @@
+{
+  "formatVersion": 1,
+  "name": "OPUS GlobalVoices English-Russian opened diagnostic corpus",
+  "status": "openedDiagnostic",
+  "release": "v2018q4",
+  "url": "https://object.pouta.csc.fi/OPUS-GlobalVoices/v2018q4/moses/en-ru.txt.zip",
+  "sha256": "4bd4960fb71e63323ab80362de3c7079c8770785aa6b972deda268571ecc3565",
+  "englishEntry": "GlobalVoices.en-ru.en",
+  "russianEntry": "GlobalVoices.en-ru.ru",
+  "license": "Source articles are CC BY 3.0 unless their source states otherwise; OPUS preserves source licensing",
+  "salt": "RuSwitcher-V3.1-GlobalVoices-final-v1",
+  "maximumPhrases": 5000,
+  "maximumTokensPerPhrase": 12,
+  "minimumTokensPerPhrase": 4,
+  "policy": "Opened on 2026-07-14 and used to discover Unicode, punctuation and proper-name failures. It is now a regression corpus, not an independent promotion gate and must never be used for model fitting or calibration.",
+  "gates": {
+    "falsePositives": 0,
+    "wrongReplacements": 0,
+    "correctTokensNotBelowV3": true,
+    "safeMissesNotAboveV3": true
+  }
+}

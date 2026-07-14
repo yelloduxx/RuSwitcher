@@ -614,6 +614,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                         appBundleID: frontID
                     )
                 },
+                physicalStrokes: pair.strokes,
                 model: languageModel
             )
             decision = evaluation.decision

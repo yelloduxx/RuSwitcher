@@ -81,6 +81,14 @@ private struct BatchSummary: Codable, Sendable {
     let failures: [BatchFailure]
 }
 
+private enum SimulatorEngine: String {
+    case v3
+    case v31 = "v3.1"
+
+    var mode: V3LayoutEngineMode { self == .v31 ? .active : .baseline }
+    var needsRanker: Bool { self == .v31 }
+}
+
 private final class BatchReportStore: @unchecked Sendable {
     private let lock = NSLock()
     private var values: [Report?]
@@ -119,6 +127,8 @@ private struct VirtualEditor {
 
 private struct HeadlessTypingSession {
     private let model: LanguageModelStore
+    private let ranker: LayoutRankerModel?
+    private let engine: SimulatorEngine
     private let focus = FocusedElementIdentity(
         processID: 1,
         bundleID: "com.ruswitcher.typing-simulator",
@@ -131,8 +141,10 @@ private struct HeadlessTypingSession {
     private var transactionCount = 0
     private var duplicateTransactionCount = 0
 
-    init(model: LanguageModelStore) {
+    init(model: LanguageModelStore, ranker: LayoutRankerModel?, engine: SimulatorEngine) {
         self.model = model
+        self.ranker = ranker
+        self.engine = engine
     }
 
     mutating func type(_ phase: Phase) {
@@ -161,7 +173,7 @@ private struct HeadlessTypingSession {
     func report(for fixture: Fixture) -> Report {
         Report(
             simulator: "headless-physical-event-stream",
-            engine: "v3",
+            engine: engine.rawValue,
             fixture: fixture.name,
             passed: editor.text == fixture.expectedText
                 && duplicateTransactionCount == 0
@@ -182,7 +194,7 @@ private struct HeadlessTypingSession {
         }
         let typed = snapshot.producedText ?? snapshot.keys.compactMap(\.producedText).joined()
         let targetLanguage = sourceLanguage == "ru" ? "en" : "ru"
-        let evaluation = LayoutDecoder.evaluate(
+        let engineEvaluation = V3LayoutEngine.evaluate(
             typed: typed,
             converted: KeyMapping.convert(typed),
             currentLanguage: sourceLanguage,
@@ -191,8 +203,11 @@ private struct HeadlessTypingSession {
             contextWords: snapshot.context.map(\.text),
             languageBelief: snapshot.languageBelief,
             policy: .empty,
-            model: model
+            model: model,
+            ranker: ranker,
+            mode: engine.mode
         )
+        let evaluation = engineEvaluation.selected
 
         let replacement = evaluation.decision.candidate.replacement
         var backspaceCount = 0
@@ -320,8 +335,13 @@ private func loadPhraseFixtures(_ path: String) throws -> [Fixture] {
     }
 }
 
-private func simulate(_ fixture: Fixture, model: LanguageModelStore) -> Report {
-    var session = HeadlessTypingSession(model: model)
+private func simulate(
+    _ fixture: Fixture,
+    model: LanguageModelStore,
+    ranker: LayoutRankerModel?,
+    engine: SimulatorEngine
+) -> Report {
+    var session = HeadlessTypingSession(model: model, ranker: ranker, engine: engine)
     for phase in fixture.phases {
         session.type(phase)
     }
@@ -343,12 +363,17 @@ private func write(_ data: Data, to path: String) throws {
     try data.write(to: url, options: .atomic)
 }
 
-private func runSingle(inputPath: String, model: LanguageModelStore) throws -> Never {
+private func runSingle(
+    inputPath: String,
+    model: LanguageModelStore,
+    ranker: LayoutRankerModel?,
+    engine: SimulatorEngine
+) throws -> Never {
     let fixture = try JSONDecoder().decode(
         Fixture.self,
         from: Data(contentsOf: URL(fileURLWithPath: inputPath))
     )
-    let report = simulate(fixture, model: model)
+    let report = simulate(fixture, model: model, ranker: ranker, engine: engine)
     let data = try encoded(report)
     if let outputPath = argument(after: "--output") { try write(data, to: outputPath) }
     FileHandle.standardOutput.write(data)
@@ -356,7 +381,12 @@ private func runSingle(inputPath: String, model: LanguageModelStore) throws -> N
     exit(report.passed ? 0 : 1)
 }
 
-private func runBatch(inputPath: String, model: LanguageModelStore) throws -> Never {
+private func runBatch(
+    inputPath: String,
+    model: LanguageModelStore,
+    ranker: LayoutRankerModel?,
+    engine: SimulatorEngine
+) throws -> Never {
     let fixtures = try loadPhraseFixtures(inputPath)
     let workers = max(1, Int(argument(after: "--jobs") ?? "")
         ?? ProcessInfo.processInfo.activeProcessorCount)
@@ -373,7 +403,12 @@ private func runBatch(inputPath: String, model: LanguageModelStore) throws -> Ne
         semaphore.wait()
         group.enter()
         queue.async {
-            store.set(simulate(fixtures[index], model: model), at: index)
+            store.set(simulate(
+                fixtures[index],
+                model: model,
+                ranker: ranker,
+                engine: engine
+            ), at: index)
             semaphore.signal()
             group.leave()
         }
@@ -390,7 +425,7 @@ private func runBatch(inputPath: String, model: LanguageModelStore) throws -> Ne
     )
     let summary = BatchSummary(
         simulator: "headless-physical-event-stream",
-        engine: "v3",
+        engine: engine.rawValue,
         passed: failed.isEmpty,
         fixtureTotal: reports.count,
         fixturePassed: reports.count - failed.count,
@@ -429,14 +464,24 @@ private func run() throws -> Never {
         FileHandle.standardError.write(Data("V3 language model unavailable\n".utf8))
         exit(70)
     }
+    let engineRaw = argument(after: "--engine") ?? "v3"
+    guard let engine = SimulatorEngine(rawValue: engineRaw) else {
+        FileHandle.standardError.write(Data("unknown engine: \(engineRaw)\n".utf8))
+        exit(64)
+    }
+    let ranker = engine.needsRanker ? LayoutRankerModel.bundled : nil
+    if engine.needsRanker, ranker == nil {
+        FileHandle.standardError.write(Data("V3.1 layout ranker unavailable\n".utf8))
+        exit(70)
+    }
     if let inputPath = argument(after: "--input") {
-        try runSingle(inputPath: inputPath, model: model)
+        try runSingle(inputPath: inputPath, model: model, ranker: ranker, engine: engine)
     }
     if let inputPath = argument(after: "--phrase-input") {
-        try runBatch(inputPath: inputPath, model: model)
+        try runBatch(inputPath: inputPath, model: model, ranker: ranker, engine: engine)
     }
     FileHandle.standardError.write(Data(
-        "usage: RuSwitcherTypingSimulator (--input fixture.json | --phrase-input phrases.jsonl) [--jobs N] [--output report.json] [--results results.jsonl]\n".utf8
+        "usage: RuSwitcherTypingSimulator (--input fixture.json | --phrase-input phrases.jsonl) [--engine v3|v3.1] [--jobs N] [--output report.json] [--results results.jsonl]\n".utf8
     ))
     exit(64)
 }

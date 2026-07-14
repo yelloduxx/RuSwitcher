@@ -78,14 +78,8 @@ public enum SmartTokenizer {
         var latin = 0
         var cyrillic = 0
         for scalar in text.unicodeScalars {
-            switch scalar.value {
-            case 0x0041...0x005A, 0x0061...0x007A:
-                latin += 1
-            case 0x0400...0x04FF:
-                cyrillic += 1
-            default:
-                break
-            }
+            if isLatin(scalar) { latin += 1 }
+            if isCyrillic(scalar) { cyrillic += 1 }
         }
         if latin > cyrillic { return "en" }
         if cyrillic > latin { return "ru" }
@@ -96,6 +90,12 @@ public enum SmartTokenizer {
         let letters = text.filter(\.isLetter)
         guard letters.count == 1, let letter = letters.first else { return false }
         return letter.isUppercase
+    }
+
+    public static func isTitleCaseLexicalWord(_ text: String) -> Bool {
+        let letters = lexicalCore(of: text).filter(\.isLetter)
+        guard letters.count >= 2, let first = letters.first, first.isUppercase else { return false }
+        return letters.dropFirst().allSatisfy(\.isLowercase)
     }
 
     private static func looksLikeIdentifier(_ raw: String) -> Bool {
@@ -115,16 +115,31 @@ public enum SmartTokenizer {
         var latin = false
         var cyrillic = false
         for scalar in text.unicodeScalars {
-            switch scalar.value {
-            case 0x0041...0x005A, 0x0061...0x007A:
-                latin = true
-            case 0x0400...0x04FF:
-                cyrillic = true
-            default:
-                break
-            }
+            if isLatin(scalar) { latin = true }
+            if isCyrillic(scalar) { cyrillic = true }
         }
         return latin && cyrillic
+    }
+
+    private static func isLatin(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x0041...0x005A, 0x0061...0x007A, 0x00C0...0x024F, 0x1D00...0x1D7F,
+             0x1D80...0x1DBF, 0x1E00...0x1EFF, 0x2C60...0x2C7F,
+             0xA720...0xA7FF, 0xAB30...0xAB6F, 0xFF21...0xFF5A:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func isCyrillic(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x0400...0x052F, 0x1C80...0x1C8F, 0x2DE0...0x2DFF,
+             0xA640...0xA69F:
+            return true
+        default:
+            return false
+        }
     }
 
     private static func isMember(_ char: Character, in set: CharacterSet) -> Bool {

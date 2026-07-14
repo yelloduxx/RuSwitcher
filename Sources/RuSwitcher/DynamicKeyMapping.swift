@@ -202,10 +202,12 @@ enum DynamicKeyMapping {
         // конвертит «руддщ»→«hello» независимо от того, какая раскладка активна на нём.
         if keys.allSatisfy({ $0.char != nil }) {
             let original = String(keys.compactMap { $0.char })
+            let converted = KeyMapping.convert(original)
             return ReconciledKeyText(
                 original: original,
-                converted: KeyMapping.convert(original),
-                sourceWasOpposite: false
+                converted: converted,
+                sourceWasOpposite: false,
+                strokes: PhysicalKeyStroke.aligned(typed: original, converted: converted)
             )
         }
         let settings = SettingsManager.shared
@@ -227,6 +229,7 @@ enum DynamicKeyMapping {
         }
 
         var original = "", converted = ""
+        var strokes: [PhysicalKeyStroke] = []
         for k in keys {
             guard let sc = translateKeycode(k.keyCode, layoutData: sourceData, shift: k.shift, caps: k.caps),
                   let tc = translateKeycode(k.keyCode, layoutData: targetData, shift: k.shift, caps: k.caps) else {
@@ -234,13 +237,21 @@ enum DynamicKeyMapping {
             }
             original.append(sc)
             converted.append(tc)
+            strokes.append(PhysicalKeyStroke(
+                literal: String(sc),
+                opposite: String(tc),
+                keyCode: k.keyCode,
+                shift: k.shift,
+                caps: k.caps
+            ))
         }
         let producedValues = keys.compactMap(\.producedText)
         let producedText = producedValues.count == keys.count ? producedValues.joined() : nil
         return KeyTextReconciler.reconcile(
             reconstructedOriginal: original,
             reconstructedConverted: converted,
-            producedText: producedText
+            producedText: producedText,
+            strokes: strokes
         )
     }
 

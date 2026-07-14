@@ -48,6 +48,8 @@ installed build changes.
 - `Sources/RuSwitcherTypingSimulator`: headless physical-event simulator over
   `InputSession`, V3 and replacement transaction plans. It supports one
   continuous fixture or independent phrase JSONL batches via `--jobs`.
+- `Sources/RuSwitcherModelTool`: development-only V3.1 feature generation,
+  training, calibration and evaluation CLI; it is not called by the app.
 - `Tests/RuSwitcherCoreTests`: unit, corpus, state-machine and transaction tests.
 - `Tests/RuSwitcherAppSupportTests`: native-contract tests with controlled fakes.
 - `Experimental/V4/Tests`: isolated V4 research tests.
@@ -64,6 +66,7 @@ SwiftPM targets:
 - `RuSwitcher` executable
 - `RuSwitcherSimulator` executable
 - `RuSwitcherTypingSimulator` executable
+- `RuSwitcherModelTool` executable (research/tooling only)
 - `RuSwitcherCoreTests`
 - `RuSwitcherAppSupportTests`
 
@@ -87,6 +90,7 @@ compares the literal-layout and opposite-layout hypotheses using:
 Important types:
 
 - `AutoConvertCandidate` and `AutoConvertCandidateGenerator`
+- `PhysicalKeyLattice` and `PhysicalKeyStroke`
 - `LayoutDecoder` (the sole production decision engine)
 - `LanguageBelief`, `CompoundWordAnalyzer`
 - `InputSession`, `TokenSnapshot`, `ConversionTransaction`
@@ -97,6 +101,31 @@ V4 is not part of the application runtime, settings, root simulator or app
 resources. Its Core ML model, lattice, adapter and decoder live only in the
 separate `Experimental/V4` package. For EN/RU, a missing V3 model causes a safe
 keep; it never activates another automatic decoder.
+
+### V3.1 research checkpoint (2026-07-14)
+
+- The root package contains an experimental calibrated candidate ranker,
+  `V3LayoutEngine`, its tests and a reproducible Tatoeba training pipeline.
+- Production still calls `LayoutDecoder` directly. Settings report `V3`, and
+  `build_app.sh` does not copy `layout-ranker-v1.json` into the app bundle.
+- The ranker artifact is a 62 KB, 8-unit tanh scorer over 222 deterministic
+  lattice/context features. It never generates text. Artifact SHA-256 is
+  `13a45b30663a20c42f306b230e935b82698f34d5d4b75e546f5601ef7ca6c1cf`;
+  training-manifest SHA-256 is
+  `0ce51e94651d4f80a3987c0d470e2d9470b3cd0b9575cfb0533b9669739cc582`.
+- Pinned Tatoeba data is split by normalized sentence pair before corruption.
+  Previously opened test assignments are quarantined. Training uses 145,549
+  examples, validation 72,184, and the untouched Tatoeba test 69,922.
+- Validation passed 71,968/72,184; the once-opened Tatoeba test passed
+  69,729/69,922. The user 5,000-phrase development corpus improves from
+  58,945 to 58,998 correct tokens with zero false/wrong replacements when the
+  ranker resolves only V3 `undecided` outcomes.
+- Promotion was rejected. The subsequently opened OPUS GlobalVoices diagnostic
+  corpus still has 24 false positives and 112 wrong replacements for V3.1
+  (V3: 13 and 110). GlobalVoices is now regression-only, not an independent
+  final gate. Tomorrow's continuation must fix general failure classes, freeze
+  the design, then use a never-opened source such as pinned TED2020 for the
+  one-shot promotion gate. Do not tune on that final source.
 
 ## Candidate and Punctuation Rules
 
@@ -299,13 +328,13 @@ bash scripts/run_headless_native_parity_test.sh
 bash scripts/verify_v3_only_build.sh
 ```
 
-After removing V2, the root suite contains 145 tests. V4's 12 research tests run
+After adding the lattice/ranker research checks, the root suite contains 174
+tests. V4's 12 research tests run
 only from its separate package. The headless event-stream fixture must pass and
 its intentionally wrong expected output must fail.
 
-The 443 safe misses in the 5,000-phrase corpus are six repeated ambiguous
-lexical bases: `где` 157, `next` 95, `I` 77, `буфер` 60, `я` 41 and `he` 13.
-They are abstentions, not wrong replacements.
+The 443 misses in the 5,000-phrase corpus are abstentions, not wrong
+replacements. Keep this safety invariant when improving recall.
 
 The full headless event-stream corpus mode keeps every phrase sequential and
 isolated while scheduling separate phrases in parallel. On the development Mac,

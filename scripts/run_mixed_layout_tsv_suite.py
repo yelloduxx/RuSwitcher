@@ -166,6 +166,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("tsv", type=Path)
     parser.add_argument("--jobs", type=int, default=8)
+    parser.add_argument("--engine", choices=("v3", "v3.1-shadow", "v3.1"), default="v3")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--audit", type=Path)
     args = parser.parse_args()
@@ -184,6 +185,7 @@ def main() -> int:
     print(f"Prepared {phrase_count} phrases / {len(token_patterns)} tokens", flush=True)
     command = [
         "swift", "run", "-c", "release", "RuSwitcherSimulator",
+        "--engine", args.engine,
         "--jobs", str(max(1, args.jobs)),
         "--input", str(empty_words),
         "--phrase-input", str(generated),

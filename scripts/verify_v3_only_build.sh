@@ -40,7 +40,7 @@ for removed in \
     fi
 done
 
-if rg -q 'SmartAutoConvertEngine|ContextualLayoutDecoder|ContextualLayoutModel|RuSwitcherExperimentalV4|LayoutDetector' \
+if rg -q 'SmartAutoConvertEngine|ContextualLayoutDecoder|ContextualLayoutModel|RuSwitcherExperimentalV4|LayoutDetector|V3LayoutEngine|LayoutRanker' \
     "$ROOT/Sources/RuSwitcher"; then
     echo "FAIL: production executable still references an alternate decoder"
     exit 1
@@ -52,6 +52,10 @@ jq -e '.engine == "v3" and .failed == 0' "$REPORT" >/dev/null
 if [ -d "$APP" ]; then
     BINARY="$APP/Contents/MacOS/RuSwitcher"
     test -f "$APP/Contents/Resources/language-model-v1.bin"
+    if [ -e "$APP/Contents/Resources/layout-ranker-v1.json" ]; then
+        echo "FAIL: experimental V3.1 ranker found in application bundle"
+        exit 1
+    fi
     if find "$APP/Contents" \( -iname '*v4*' -o -iname '*LayoutReranker*' \) -print -quit | grep -q .; then
         echo "FAIL: V4 artifact found in application bundle"
         exit 1

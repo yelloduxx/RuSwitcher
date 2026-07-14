@@ -9,6 +9,7 @@ let package = Package(
         .executable(name: "RuSwitcher", targets: ["RuSwitcher"]),
         .executable(name: "RuSwitcherSimulator", targets: ["RuSwitcherSimulator"]),
         .executable(name: "RuSwitcherTypingSimulator", targets: ["RuSwitcherTypingSimulator"]),
+        .executable(name: "RuSwitcherModelTool", targets: ["RuSwitcherModelTool"]),
     ],
     targets: [
         .target(
@@ -16,6 +17,7 @@ let package = Package(
             path: "Sources/RuSwitcherCore",
             resources: [
                 .process("Resources/language-model-v1.bin"),
+                .process("Resources/layout-ranker-v1.json"),
             ]
         ),
         .target(
@@ -45,6 +47,11 @@ let package = Package(
             name: "RuSwitcherTypingSimulator",
             dependencies: ["RuSwitcherCore"],
             path: "Sources/RuSwitcherTypingSimulator"
+        ),
+        .executableTarget(
+            name: "RuSwitcherModelTool",
+            dependencies: ["RuSwitcherCore"],
+            path: "Sources/RuSwitcherModelTool"
         ),
         .testTarget(
             name: "RuSwitcherCoreTests",

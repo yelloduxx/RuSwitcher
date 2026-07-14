@@ -16,6 +16,19 @@ final class SmartTokenizerTests: XCTestCase {
         XCTAssertEqual(SmartTokenizer.kind(of: "snake_case"), .identifier)
         XCTAssertEqual(SmartTokenizer.kind(of: "myURL"), .identifier)
         XCTAssertEqual(SmartTokenizer.kind(of: "abcЖ"), .mixedScript)
+        XCTAssertEqual(SmartTokenizer.kind(of: "Рéпшку"), .mixedScript)
+        XCTAssertEqual(SmartTokenizer.languageHint(for: "Hégire"), "en")
+        XCTAssertEqual(SmartTokenizer.languageHint(for: "café"), "en")
+        XCTAssertEqual(SmartTokenizer.languageHint(for: "ёлка"), "ru")
+    }
+
+    func testTitleCaseRecognitionIgnoresWrappersAndSupportsUnicode() {
+        for word in ["Polska", "(Ofcom)", "Hégire", "«Москва»"] {
+            XCTAssertTrue(SmartTokenizer.isTitleCaseLexicalWord(word), word)
+        }
+        for word in ["plan", "PLAN", "pLan", "A", ""] {
+            XCTAssertFalse(SmartTokenizer.isTitleCaseLexicalWord(word), word)
+        }
     }
 
     func testTrailingDecorationsDoNotTurnWordsIntoIdentifiers() {
