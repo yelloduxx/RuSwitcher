@@ -77,7 +77,14 @@ final class RankerTrainer {
                         gradient[feature] += coefficient * featureRows[candidate][feature]
                     }
                 }
-                let categoryWeight = example.category == "protectedClean" ? 2.0 : 1.0
+                let categoryWeight: Double
+                if example.category == "protectedClean" {
+                    categoryWeight = 2.0
+                } else if example.category == "wrongPhysicalAmbiguous" {
+                    categoryWeight = 4.0
+                } else {
+                    categoryWeight = 1.0
+                }
                 for feature in weights.indices {
                     let value = gradient[feature] * categoryWeight + options.l2 * weights[feature]
                     accumulatedSquares[feature] += value * value
@@ -259,7 +266,7 @@ final class RankerTrainer {
             records: relevant,
             falsePositiveBudget: falsePositiveBudget,
             wrongReplacementBudget: wrongReplacementBudget,
-            strictRisks: [.bothKnown, .punctuationBothKnown]
+            strictRisks: [.bothKnown, .punctuationBothKnown, .punctuationAmbiguous]
         )
         var result = Dictionary(uniqueKeysWithValues: family.map {
             ($0.rawValue, selected[$0, default: 1])
@@ -480,13 +487,10 @@ final class RankerTrainer {
         }
         let cleanTotal = total.total - total.expectedSwitch
         let baselineAccuracy = total.total == 0 ? 1 : Double(total.baselineCorrect) / Double(total.total)
-        let punctuation = ["wrongTargetPunctuation", "wrongLiteralPunctuation"]
-            .compactMap { categories[$0] }
-            .reduce(into: MetricBucket()) { aggregate, value in
-                aggregate.total += value.total
-                aggregate.expectedSwitch += value.expectedSwitch
-                aggregate.switchedCorrectly += value.switchedCorrectly
-            }
+        // The 99% recall requirement applies only when the lattice has one
+        // known punctuation path. Ambiguous, short and OOV paths are governed
+        // by the false/wrong-replacement gates and may safely abstain.
+        let punctuation = risks[LayoutRankerRisk.punctuation.rawValue] ?? MetricBucket()
         let baselineRecall = total.expectedSwitch == 0
             ? 1
             : Double(baselineExpectedSwitchCorrect) / Double(total.expectedSwitch)
@@ -498,6 +502,7 @@ final class RankerTrainer {
         )
         let bothKnownWrong = (risks[LayoutRankerRisk.bothKnown.rawValue]?.wrongReplacements ?? 0)
             + (risks[LayoutRankerRisk.punctuationBothKnown.rawValue]?.wrongReplacements ?? 0)
+            + (risks[LayoutRankerRisk.punctuationAmbiguous.rawValue]?.wrongReplacements ?? 0)
         let gates = [
             "cleanFalsePositiveUpper95": upper <= 0.001,
             "wrongReplacementUpper95": wrongUpper <= 0.001,

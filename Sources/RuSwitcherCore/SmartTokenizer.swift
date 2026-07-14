@@ -36,8 +36,9 @@ public struct TokenShape: Equatable, Sendable {
 }
 
 public enum SmartTokenizer {
-    private static let leadingPunctuation = CharacterSet(charactersIn: "([{<\"'«„“‘")
+    private static let leadingPunctuation = CharacterSet(charactersIn: "([{<\"'«„“‘@#")
     private static let trailingPunctuation = CharacterSet(charactersIn: ".,!?;:)]}>\"'»”’…_-—–")
+    private static let wrapperLeadingPunctuation = CharacterSet(charactersIn: "([{<\"'«„“‘")
 
     public static func shape(of raw: String) -> TokenShape {
         guard !raw.isEmpty else {
@@ -59,6 +60,7 @@ public enum SmartTokenizer {
     public static func kind(of raw: String, core: String? = nil) -> TokenKind {
         let token = core ?? raw
         guard !token.isEmpty else { return .empty }
+        if isSocialIdentifier(raw) { return .identifier }
         let lower = raw.lowercased()
         if lower.contains("://") || lower.hasPrefix("www.") { return .url }
         if raw.contains("@"), raw.contains(".") { return .email }
@@ -98,6 +100,20 @@ public enum SmartTokenizer {
         return letters.dropFirst().allSatisfy(\.isLowercase)
     }
 
+    public static func isSocialIdentifier(_ raw: String) -> Bool {
+        let chars = Array(raw)
+        var start = 0
+        var end = chars.count
+        while start < end, isMember(chars[start], in: wrapperLeadingPunctuation) { start += 1 }
+        while end > start, isMember(chars[end - 1], in: trailingPunctuation) { end -= 1 }
+        guard start < end, chars[start] == "@" || chars[start] == "#" else { return false }
+        let body = chars[(start + 1)..<end]
+        guard !body.isEmpty else { return false }
+        return body.allSatisfy {
+            $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" || $0 == "."
+        }
+    }
+
     private static func looksLikeIdentifier(_ raw: String) -> Bool {
         if raw.contains("/") || raw.contains("\\") || raw.contains("_") { return true }
         if raw.unicodeScalars.contains(where: CharacterSet.decimalDigits.contains) { return true }
@@ -108,6 +124,14 @@ public enum SmartTokenizer {
         let letters = raw.filter(\.isLetter)
         if letters.count > 1, letters == letters.uppercased() { return true }
         for (index, char) in raw.enumerated() where index > 0 && char.isUppercase { return true }
+        if raw.contains(where: {
+            guard !$0.isLetter, !$0.isNumber, $0 != "-", $0 != "'", $0 != "’" else {
+                return false
+            }
+            return KeyMapping.enToRu[$0] == nil && KeyMapping.ruToEn[$0] == nil
+        }) {
+            return true
+        }
         return false
     }
 

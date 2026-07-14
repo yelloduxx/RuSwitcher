@@ -40,7 +40,11 @@ def batches(path: Path, batch_size: int, feature_count: int, maximum: int | None
         yield batch
 
 
-def arrays(examples: list[dict[str, object]], feature_count: int):
+def arrays(
+    examples: list[dict[str, object]],
+    feature_count: int,
+    feature_indices: dict[str, int],
+):
     candidate_count = max(len(example["features"]) for example in examples)
     x = np.zeros((len(examples), candidate_count, feature_count), dtype=np.float64)
     mask = np.zeros((len(examples), candidate_count), dtype=bool)
@@ -53,6 +57,22 @@ def arrays(examples: list[dict[str, object]], feature_count: int):
         expected[row, example["expectedIndices"]] = True
         if example.get("category") == "protectedClean":
             sample_weight[row, 0] = 2.0
+        elif example.get("category") == "wrongPhysicalAmbiguous":
+            full_index = feature_indices["isFullOpposite"]
+            full_known_index = feature_indices["fullOppositeKnown"]
+            preserved_index = feature_indices["preservesTypedSuffix"]
+            preserved_known_index = feature_indices["preservedSuffixKnown"]
+            has_known_full = any(
+                candidate[full_index] > 0.5 and candidate[full_known_index] > 0.5
+                for candidate in example["features"]
+            )
+            has_known_preserved = any(
+                candidate[preserved_index] > 0.5
+                and candidate[preserved_known_index] > 0.5
+                for candidate in example["features"]
+            )
+            if has_known_full and has_known_preserved:
+                sample_weight[row, 0] = 4.0
     return x, mask, expected, sample_weight
 
 
@@ -87,6 +107,7 @@ def train(args: argparse.Namespace) -> dict[str, object]:
     schema = json.loads(args.schema.read_text(encoding="utf-8"))
     feature_names = schema["featureNames"]
     feature_count = len(feature_names)
+    feature_indices = {name: index for index, name in enumerate(feature_names)}
     hidden_size = args.hidden_size
     rng = np.random.default_rng(args.seed)
 
@@ -106,7 +127,11 @@ def train(args: argparse.Namespace) -> dict[str, object]:
         total_weight = 0.0
         epoch_examples = 0
         for examples in batches(args.train, args.batch_size, feature_count, args.max_examples):
-            x, mask, expected, sample_weight = arrays(examples, feature_count)
+            x, mask, expected, sample_weight = arrays(
+                examples,
+                feature_count,
+                feature_indices,
+            )
             hidden_values = np.tanh(np.einsum("bcf,hf->bch", x, hidden) + bias)
             logits = np.einsum("bcf,f->bc", x, linear) + np.einsum("bch,h->bc", hidden_values, output)
             logits = np.where(mask, logits, -1e30)

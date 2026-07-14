@@ -117,6 +117,7 @@ private struct Options {
     var outputPath: String?
     var phraseResultsPath: String?
     var learnOutputPath: String?
+    var rankerPath: String?
     var jobs = max(1, ProcessInfo.processInfo.activeProcessorCount)
     var generatedLimit = 2_500
     var engine = SimulatorEngine.v3
@@ -183,6 +184,7 @@ private func parseOptions() -> Options {
         case "--output": options.outputPath = value()
         case "--phrase-results": options.phraseResultsPath = value()
         case "--learn-output": options.learnOutputPath = value()
+        case "--ranker-path": options.rankerPath = value()
         case "--jobs": options.jobs = max(1, Int(value()) ?? 1)
         case "--limit": options.generatedLimit = max(1, Int(value()) ?? 2_500)
         case "--engine":
@@ -193,7 +195,7 @@ private func parseOptions() -> Options {
             }
             options.engine = engine
         case "--help":
-            print("RuSwitcherSimulator [--engine v3|v3.1-shadow|v3.1] [--input words.jsonl] [--phrase-input phrases.jsonl] [--output report.json] [--phrase-results results.jsonl] [--learn-output rules.json] [--jobs N] [--limit N]")
+            print("RuSwitcherSimulator [--engine v3|v3.1-shadow|v3.1] [--ranker-path model.json] [--input words.jsonl] [--phrase-input phrases.jsonl] [--output report.json] [--phrase-results results.jsonl] [--learn-output rules.json] [--jobs N] [--limit N]")
             exit(0)
         default:
             FileHandle.standardError.write(Data("unknown argument: \(argument)\n".utf8))
@@ -685,7 +687,12 @@ private func run() -> Never {
         FileHandle.standardError.write(Data("language model unavailable\n".utf8))
         exit(70)
     }
-    let ranker = options.engine.needsRanker ? LayoutRankerModel.bundled : nil
+    let ranker: LayoutRankerModel?
+    if options.engine.needsRanker, let path = options.rankerPath {
+        ranker = try? LayoutRankerModel(contentsOf: URL(fileURLWithPath: path))
+    } else {
+        ranker = options.engine.needsRanker ? LayoutRankerModel.bundled : nil
+    }
     if options.engine.needsRanker, ranker == nil {
         FileHandle.standardError.write(Data("layout ranker unavailable\n".utf8))
         exit(70)

@@ -70,7 +70,7 @@ final class ExampleGenerator {
                 pairID: pair.id,
                 seed: hash &+ 0x9e3779b97f4a7c15
             )
-            if hash % 128 == 0, let protected = protectedScenario(pair: pair, hash: hash) {
+            if hash % 32 == 0, let protected = protectedScenario(pair: pair, hash: hash) {
                 scenarios.append(protected)
             }
 
@@ -157,6 +157,13 @@ final class ExampleGenerator {
             : rare[Int((seed >> 16) % UInt64(rare.count))]
         var indices = [primary]
         if secondary != primary { indices.append(secondary) }
+        let ambiguous = eligible.filter { index in
+            isAmbiguousWholeLayoutTarget(tokens[index], language: language)
+        }
+        if !ambiguous.isEmpty {
+            let index = ambiguous[Int((seed >> 32) % UInt64(ambiguous.count))]
+            if !indices.contains(index) { indices.append(index) }
+        }
 
         let target = language
         let current = language == "en" ? "ru" : "en"
@@ -183,9 +190,12 @@ final class ExampleGenerator {
             if physical != intended,
                intendedShape.prefix.isEmpty,
                intendedShape.suffix.isEmpty {
+                let category = isAmbiguousWholeLayoutTarget(intended, language: language)
+                    ? "wrongPhysicalAmbiguous"
+                    : "wrongPhysical"
                 result.append(Scenario(
                     id: baseID + "-wrong",
-                    category: "wrongPhysical",
+                    category: category,
                     typed: physical,
                     intended: intended,
                     currentLanguage: current,
@@ -214,9 +224,13 @@ final class ExampleGenerator {
             let decoratedShape = SmartTokenizer.shape(of: decorated)
             let decoratedPhysical = KeyMapping.convert(decorated)
             if decoratedPhysical != decorated {
+                let category = hasCompetingPunctuationPath(
+                    typed: decoratedPhysical,
+                    intended: decorated
+                ) ? "wrongTargetPunctuationAmbiguous" : "wrongTargetPunctuation"
                 result.append(Scenario(
                     id: baseID + "-punctuation-target",
-                    category: "wrongTargetPunctuation",
+                    category: category,
                     typed: decoratedPhysical,
                     intended: decorated,
                     currentLanguage: current,
@@ -229,11 +243,14 @@ final class ExampleGenerator {
                 + KeyMapping.convert(decoratedShape.lexicalCore)
                 + decoratedShape.suffix
             if literalPunctuation != decorated,
-               literalPunctuation != decoratedPhysical,
-               !hasCompetingPunctuationPath(typed: literalPunctuation, intended: decorated) {
+               literalPunctuation != decoratedPhysical {
+                let category = hasCompetingPunctuationPath(
+                    typed: literalPunctuation,
+                    intended: decorated
+                ) ? "wrongLiteralPunctuationAmbiguous" : "wrongLiteralPunctuation"
                 result.append(Scenario(
                     id: baseID + "-punctuation-literal",
-                    category: "wrongLiteralPunctuation",
+                    category: category,
                     typed: literalPunctuation,
                     intended: decorated,
                     currentLanguage: current,
@@ -255,6 +272,23 @@ final class ExampleGenerator {
             !hypothesis.isLiteral
                 && hypothesis.text != intended
                 && FrequentWordLexicon.normalize(hypothesis.lexicalCore) == intendedCore
+        }
+    }
+
+    private func isAmbiguousWholeLayoutTarget(_ intended: String, language: String) -> Bool {
+        let shape = SmartTokenizer.shape(of: intended)
+        guard shape.prefix.isEmpty, shape.suffix.isEmpty else { return false }
+        let typed = KeyMapping.convert(intended)
+        guard typed != intended else { return false }
+        let intendedCore = FrequentWordLexicon.normalize(shape.lexicalCore)
+        guard isKnown(intendedCore, language: language) else { return false }
+        return PhysicalKeyLattice.hypotheses(
+            typed: typed,
+            converted: intended
+        ).contains { hypothesis in
+            guard !hypothesis.isLiteral, hypothesis.text != intended else { return false }
+            let core = FrequentWordLexicon.normalize(hypothesis.lexicalCore)
+            return core != intendedCore && isKnown(core, language: language)
         }
     }
 
@@ -376,12 +410,19 @@ final class ExampleGenerator {
             return nil
         }
         let token: String
-        switch hash % 4 {
+        switch hash % 8 {
         case 0: token = "https://\(core).example/path"
         case 1: token = "\(core)@example.com"
         case 2: token = "\(core)_value"
-        default: token = "\(core)2.0"
+        case 3: token = "\(core)2.0"
+        case 4: token = "@\(core)dev"
+        case 5: token = "#\(core)topic"
+        case 6: token = "«\(core)»"
+        default: token = "(\(core))"
         }
+        let foreignContext = Array(
+            pair.ru.split(whereSeparator: \.isWhitespace).suffix(4).map(String.init)
+        )
         return Scenario(
             id: pair.id + "-protected",
             category: "protectedClean",
@@ -389,7 +430,7 @@ final class ExampleGenerator {
             intended: token,
             currentLanguage: "en",
             targetLanguage: "ru",
-            context: ["technical"],
+            context: foreignContext.isEmpty ? ["контекст"] : foreignContext,
             expectedSwitch: false
         )
     }

@@ -49,6 +49,8 @@ public struct LayoutDecoderEvaluation: Equatable, Sendable {
 }
 
 public enum LayoutDecoder {
+    private static let maximumBoundaryCharacterPenalty = 1.5
+
     public static func evaluate(
         typed: String,
         converted: String,
@@ -98,13 +100,25 @@ public enum LayoutDecoder {
         let confirmedCandidates = generated.filter { candidate in
             isConfirmed(typed, candidate.replacement)
         }
+        let competitiveSpellingCandidates = spellingCandidates.filter { candidate in
+            guard !frequentCandidates.isEmpty else { return true }
+            return isPlausibleWholeLayoutSpellingCandidate(
+                candidate,
+                over: frequentCandidates,
+                targetLanguage: targetCanonical,
+                model: model
+            )
+        }
         // Frequency evidence dominates spelling-only membership, which in turn
         // dominates character-only interpretations of the same physical keys.
         let candidates: [AutoConvertCandidate]
         if !confirmedCandidates.isEmpty {
             candidates = confirmedCandidates
         } else if !frequentCandidates.isEmpty {
-            candidates = frequentCandidates
+            candidates = generated.filter {
+                frequentCandidates.contains($0)
+                    || competitiveSpellingCandidates.contains($0)
+            }
         } else if !spellingCandidates.isEmpty {
             candidates = spellingCandidates
         } else {
@@ -125,7 +139,7 @@ public enum LayoutDecoder {
                 model: model
             )
         }
-        return evaluations.max { lhs, rhs in
+        let selected = evaluations.max { lhs, rhs in
             if lhs.decision.verdict == .switchToConverted, rhs.decision.verdict != .switchToConverted { return false }
             if lhs.decision.verdict != .switchToConverted, rhs.decision.verdict == .switchToConverted { return true }
             // Reject an unmatched leading quote before phrase evidence.
@@ -135,6 +149,22 @@ public enum LayoutDecoder {
             let rhsLeadingStructure = leadingWrapperStructureScore(rhs.decision.candidate)
             if lhsLeadingStructure != rhsLeadingStructure {
                 return lhsLeadingStructure < rhsLeadingStructure
+            }
+            if prefersWholeLayoutPath(
+                lhs.decision.candidate,
+                over: rhs.decision.candidate,
+                targetLanguage: targetCanonical,
+                model: model
+            ) {
+                return false
+            }
+            if prefersWholeLayoutPath(
+                rhs.decision.candidate,
+                over: lhs.decision.candidate,
+                targetLanguage: targetCanonical,
+                model: model
+            ) {
+                return true
             }
             let lhsHasPhraseEvidence = lhs.evidence.contains(.phraseContext)
             let rhsHasPhraseEvidence = rhs.evidence.contains(.phraseContext)
@@ -181,6 +211,15 @@ public enum LayoutDecoder {
             return preservedDecorationCount(lhs.decision.candidate)
                 < preservedDecorationCount(rhs.decision.candidate)
         } ?? fallback(typed: typed, converted: converted)
+        if shouldAbstainFromAmbiguousHybrid(
+            selected,
+            evaluations: evaluations,
+            targetLanguage: targetCanonical,
+            model: model
+        ) {
+            return fallback(typed: typed, converted: converted)
+        }
+        return selected
     }
 
     private static func preservedDecorationCount(_ candidate: AutoConvertCandidate) -> Int {
@@ -246,12 +285,21 @@ public enum LayoutDecoder {
         if literal.isEmpty {
             return fixed(baseCandidate, verdict: .keep, reason: .blockedCodeLike, evidence: [.blockedCode])
         }
+        if SmartTokenizer.isSocialIdentifier(candidate.typedRaw) {
+            return fixed(baseCandidate, verdict: .keep, reason: .blockedCodeLike, evidence: [.blockedCode])
+        }
+        let wholeTargetSocialIdentifier = convertedShape.kind == .identifier
+            && SmartTokenizer.isSocialIdentifier(candidate.replacement)
+            && candidate.replacement == candidate.convertedRaw
+            && shape.kind == .lexical
+            && (targetKnownForShape != nil || targetExtendedEnglish || targetExtendedRussian)
         let sourceShapeIsProtected = shape.kind.blocksAutomaticConversion
             && !(convertedShape.kind == .lexical
                 && (targetKnownForShape != nil || targetExtendedEnglish || targetExtendedRussian))
         if SmartTokenizer.isSingleUppercaseLetter(candidate.typedRaw)
             || sourceShapeIsProtected
             || (convertedShape.kind.blocksAutomaticConversion
+                && !wholeTargetSocialIdentifier
                 && candidate.kind != .trailingPunctuation
                 && candidate.kind != .wrappingPunctuation) {
             return fixed(baseCandidate, verdict: .keep, reason: .blockedCodeLike, evidence: [.blockedCode])
@@ -328,6 +376,9 @@ public enum LayoutDecoder {
             && targetExtendedRussian
             && sourceKnown == nil
             && englishSourceConfidence == .unlikely
+        let compound = sourceKnown == nil
+            ? CompoundWordAnalyzer.analyze(converted, language: targetCanonical, model: model)
+            : nil
         if literal.count >= 2,
            sourceKnown != nil || sourceExtendedRussian,
            targetKnown != nil || targetExtendedEnglish || targetExtendedRussian,
@@ -358,6 +409,19 @@ public enum LayoutDecoder {
                 evidence: [.russianSourceDictionary]
             )
         }
+        if currentCanonical == "en", targetCanonical == "ru",
+           sourceKnown == nil,
+           targetKnown == nil,
+           !targetExtendedRussian,
+           compound == nil,
+           characterAdvantage <= 0 {
+            return fixed(
+                baseCandidate,
+                verdict: .keep,
+                reason: .keepCurrentWord,
+                evidence: [.characterModel, .codeSwitch, .blockedContext]
+            )
+        }
         if directConsumesLeadingPunctuation, strongExtendedRussianTarget {
             return fixed(
                 baseCandidate,
@@ -369,9 +433,6 @@ public enum LayoutDecoder {
         // A compound is evidence only when the literal hypothesis is not itself a
         // known word. This protects ordinary English prose from productive Russian
         // prefix decompositions that happen to share the same physical keys.
-        let compound = sourceKnown == nil
-            ? CompoundWordAnalyzer.analyze(converted, language: targetCanonical, model: model)
-            : nil
         var evidence: [DecoderEvidence] = []
 
         var literalScore = Self.lexicalScore(literal, language: currentCanonical, known: sourceKnown, model: model)
@@ -552,6 +613,155 @@ public enum LayoutDecoder {
         return fixed(candidate, verdict: .undecided, reason: .undecided, evidence: [])
     }
 
+    private static func prefersWholeLayoutPath(
+        _ candidate: AutoConvertCandidate,
+        over alternative: AutoConvertCandidate,
+        targetLanguage: String,
+        model: LanguageModelStore
+    ) -> Bool {
+        guard candidate.replacement == candidate.convertedRaw,
+              alternative.replacement != alternative.convertedRaw else { return false }
+        let fullCore = FrequentWordLexicon.normalize(
+            SmartTokenizer.lexicalCore(of: candidate.convertedWord)
+        )
+        let alternativeCore = FrequentWordLexicon.normalize(
+            SmartTokenizer.lexicalCore(of: alternative.convertedWord)
+        )
+        guard !fullCore.isEmpty else { return false }
+
+        let fullTier = lexicalEvidenceTier(fullCore, language: targetLanguage, model: model)
+        let alternativeTier = lexicalEvidenceTier(
+            alternativeCore,
+            language: targetLanguage,
+            model: model
+        )
+        guard fullTier > 0 else { return false }
+
+        if fullCore == alternativeCore {
+            if SmartTokenizer.isSocialIdentifier(candidate.replacement) { return true }
+            let fullStructure = punctuationStructureScore(
+                prefix: SmartTokenizer.shape(of: candidate.replacement).prefix,
+                suffix: SmartTokenizer.shape(of: candidate.replacement).suffix
+            )
+            let alternativeStructure = punctuationStructureScore(
+                prefix: SmartTokenizer.shape(of: alternative.replacement).prefix,
+                suffix: SmartTokenizer.shape(of: alternative.replacement).suffix
+            )
+            return fullStructure > alternativeStructure
+        }
+        if fullTier > alternativeTier { return true }
+
+        let differsByOneBoundaryLetter = fullCore.count == alternativeCore.count + 1
+            && (fullCore.hasPrefix(alternativeCore) || fullCore.hasSuffix(alternativeCore))
+        if differsByOneBoundaryLetter, fullTier == 2, alternativeTier == 3,
+           fullCore.count >= 3 {
+            return true
+        }
+        if differsByOneBoundaryLetter, fullTier == alternativeTier,
+           fullCore.count == 2, alternativeCore.count == 1,
+           alternative.suffix.allSatisfy({ ".,;:".contains($0) }) {
+            return true
+        }
+        return false
+    }
+
+    /// Extended dictionaries use compact probabilistic membership. When a
+    /// frequent punctuation-preserving interpretation exists, require the
+    /// character model to corroborate a spelling-only whole-layout path. This
+    /// keeps inflected words eligible without trusting Bloom-filter collisions
+    /// such as a bracket or semicolon interpreted as an extra letter.
+    private static func isPlausibleWholeLayoutSpellingCandidate(
+        _ candidate: AutoConvertCandidate,
+        over frequentCandidates: [AutoConvertCandidate],
+        targetLanguage: String,
+        model: LanguageModelStore
+    ) -> Bool {
+        guard candidate.replacement == candidate.convertedRaw else { return false }
+        let fullCore = FrequentWordLexicon.normalize(
+            SmartTokenizer.lexicalCore(of: candidate.convertedWord)
+        )
+        guard fullCore.count >= 3 else { return false }
+
+        let alternatives = frequentCandidates.compactMap { alternative -> String? in
+            let core = FrequentWordLexicon.normalize(
+                SmartTokenizer.lexicalCore(of: alternative.convertedWord)
+            )
+            guard core != fullCore,
+                  fullCore.count == core.count + 1,
+                  fullCore.hasPrefix(core) || fullCore.hasSuffix(core) else {
+                return nil
+            }
+            return core
+        }
+        guard !alternatives.isEmpty else { return false }
+
+        let fullScore = model.characterLogProbability(fullCore, language: targetLanguage)
+        let bestAlternativeScore = alternatives.map {
+            model.characterLogProbability($0, language: targetLanguage)
+        }.max() ?? -.infinity
+        return fullScore - bestAlternativeScore >= -maximumBoundaryCharacterPenalty
+    }
+
+    private static func shouldAbstainFromAmbiguousHybrid(
+        _ selected: LayoutDecoderEvaluation,
+        evaluations: [LayoutDecoderEvaluation],
+        targetLanguage: String,
+        model: LanguageModelStore
+    ) -> Bool {
+        guard selected.decision.verdict == .switchToConverted,
+              selected.decision.candidate.replacement
+                != selected.decision.candidate.convertedRaw,
+              !selected.evidence.contains(.phraseContext),
+              let whole = evaluations.first(where: {
+                  $0.decision.candidate.replacement == $0.decision.candidate.convertedRaw
+              }),
+              !whole.evidence.contains(.phraseContext) else { return false }
+
+        let selectedCore = FrequentWordLexicon.normalize(
+            SmartTokenizer.lexicalCore(of: selected.decision.candidate.convertedWord)
+        )
+        let wholeCore = FrequentWordLexicon.normalize(
+            SmartTokenizer.lexicalCore(of: whole.decision.candidate.convertedWord)
+        )
+        guard selectedCore != wholeCore,
+              lexicalEvidenceTier(selectedCore, language: targetLanguage, model: model) == 3,
+              lexicalEvidenceTier(wholeCore, language: targetLanguage, model: model) == 3 else {
+            return false
+        }
+        let selectedCharacterScore = model.characterLogProbability(
+            selectedCore,
+            language: targetLanguage
+        )
+        let wholeCharacterScore = model.characterLogProbability(
+            wholeCore,
+            language: targetLanguage
+        )
+        guard wholeCharacterScore - selectedCharacterScore
+                >= -maximumBoundaryCharacterPenalty else {
+            return false
+        }
+        return !prefersWholeLayoutPath(
+            whole.decision.candidate,
+            over: selected.decision.candidate,
+            targetLanguage: targetLanguage,
+            model: model
+        )
+    }
+
+    private static func lexicalEvidenceTier(
+        _ word: String,
+        language: String,
+        model: LanguageModelStore
+    ) -> Int {
+        if model.wordLogProbability(word, language: language) != nil
+            || FrequentWordLexicon.contains(word, language: language) {
+            return 3
+        }
+        if language == "en", model.isExtendedEnglishWord(word) { return 2 }
+        if language == "ru", model.isExtendedRussianWord(word) { return 2 }
+        return 0
+    }
+
     private static func isPunctuation(_ character: Character) -> Bool {
         character.unicodeScalars.allSatisfy(CharacterSet.punctuationCharacters.contains)
     }
@@ -568,10 +778,14 @@ public enum LayoutDecoder {
     }
 
     private static func punctuationStructureScore(_ candidate: AutoConvertCandidate) -> Int {
+        punctuationStructureScore(prefix: candidate.prefix, suffix: candidate.suffix)
+    }
+
+    private static func punctuationStructureScore(prefix: String, suffix: String) -> Int {
         let openingOnly = "([{<«„“‘"
         let closingOnly = ")]}>»”’"
-        if candidate.suffix.contains(where: openingOnly.contains) { return -3 }
-        if candidate.prefix.contains(where: closingOnly.contains) { return -3 }
+        if suffix.contains(where: openingOnly.contains) { return -3 }
+        if prefix.contains(where: closingOnly.contains) { return -3 }
 
         let pairs: [(Character, Character)] = [
             ("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"),
@@ -579,11 +793,11 @@ public enum LayoutDecoder {
             ("\"", "\""), ("'", "'"),
         ]
         if pairs.contains(where: { opening, closing in
-            candidate.prefix.contains(opening) && candidate.suffix.contains(closing)
+            prefix.contains(opening) && suffix.contains(closing)
         }) {
             return 2
         }
-        if candidate.prefix.contains(where: { openingOnly.contains($0) || $0 == "\"" || $0 == "'" }) {
+        if prefix.contains(where: { openingOnly.contains($0) || $0 == "\"" || $0 == "'" }) {
             return -1
         }
         return 0

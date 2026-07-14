@@ -37,7 +37,7 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
   --output "$MODEL_DIR/layout-ranker-v1.json" \
   --report "$MODEL_DIR/optimizer-report.json" \
   --manifest-sha256 "$MANIFEST_SHA" \
-  --model-version 2026.07-v3.1-ranker-9 \
+  --model-version 2026.07-v3.1-ranker-11 \
   --hidden-size 8 \
   --epochs 10
 
@@ -46,7 +46,7 @@ OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
   --model "$MODEL_DIR/layout-ranker-v1.json" \
   --output "$MODEL_DIR/layout-ranker-v1.json" \
   --report "$MODEL_DIR/validation-report.json" \
-  --enforce-validation-gates
+  --enforce-gates
 
 # The held-out test split is touched only after validation gates pass above.
 "$TOOL" generate \

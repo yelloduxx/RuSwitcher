@@ -23,6 +23,24 @@ final class LayoutRankerTests: XCTestCase {
         })
     }
 
+    func testEveryCompetingPunctuationPathUsesAmbiguousRisk() {
+        let items = LayoutRankerFeatureSchema.extract(
+            context: LayoutRankerContext(
+                typed: "ghbdtn,",
+                converted: "приветб",
+                currentLanguage: "en",
+                targetLanguage: "ru",
+                contextWords: ["это"],
+                languageBelief: russianBelief
+            ),
+            model: languageModel
+        )
+        let converted = items.filter { !$0.hypothesis.isLiteral }
+
+        XCTAssertGreaterThan(Set(converted.map(\.hypothesis.text)).count, 1)
+        XCTAssertTrue(converted.allSatisfy { $0.risk == .punctuationAmbiguous })
+    }
+
     func testHighConversionMarginSwitchesAndCalibratedThresholdCanAbstain() throws {
         let items = LayoutRankerFeatureSchema.extract(
             context: LayoutRankerContext(

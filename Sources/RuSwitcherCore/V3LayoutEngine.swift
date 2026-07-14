@@ -35,6 +35,9 @@ public struct V3LayoutEngineEvaluation: Equatable, Sendable {
 /// deterministic physical-key hypotheses; V3 safety and user rules remain
 /// authoritative, and a missing or invalid ranker falls back to the baseline.
 public enum V3LayoutEngine {
+    private static let maximumBoundaryCharacterPenalty = 1.5
+    private static let minimumUnknownBoundaryCharacterAdvantage = 0.25
+
     public static func evaluate(
         typed: String,
         converted: String,
@@ -90,13 +93,24 @@ public enum V3LayoutEngine {
             model: model
         )
         let prediction = ranker.predict(items: items)
-        let learned = mandatoryBaselineDecision(baseline, typed: typed)
+        let ranked = learnedEvaluation(
+            prediction: prediction,
+            items: items,
+            fallback: baseline
+        )
+        let learned = mandatoryBaselineDecision(
+            baseline,
+            ranked: ranked,
+            typed: typed,
+            converted: converted,
+            currentLanguage: currentLanguage,
+            targetLanguage: targetLanguage,
+            contextWords: contextWords,
+            languageBelief: languageBelief,
+            model: model
+        )
             ? baseline
-            : learnedEvaluation(
-                prediction: prediction,
-                items: items,
-                fallback: baseline
-            )
+            : ranked
         return V3LayoutEngineEvaluation(
             selected: mode == .active ? learned : baseline,
             baseline: baseline,
@@ -107,12 +121,46 @@ public enum V3LayoutEngine {
 
     private static func mandatoryBaselineDecision(
         _ baseline: LayoutDecoderEvaluation,
-        typed: String
+        ranked: LayoutDecoderEvaluation,
+        typed: String,
+        converted: String,
+        currentLanguage: String,
+        targetLanguage: String,
+        contextWords: [String],
+        languageBelief: LanguageBelief,
+        model: LanguageModelStore
     ) -> Bool {
-        // The learned layer is a calibrated resolver for V3 uncertainty, not a
-        // second decoder. Preserve every conclusive V3 switch/keep so a model
-        // cannot replace a correct punctuation path with another lattice path.
+        // A calibrated ranker may refine a conclusive switch only from a mixed
+        // punctuation path to the complete opposite-layout path. It still
+        // cannot turn a conclusive keep into a replacement or suppress a
+        // confirmed conversion.
+        if baseline.decision.verdict == .switchToConverted {
+            return !mayRefineToWholeLayoutPath(
+                baseline: baseline,
+                ranked: ranked,
+                converted: converted,
+                targetLanguage: targetLanguage,
+                model: model
+            )
+        }
         guard baseline.decision.verdict == .undecided else { return true }
+        let shape = SmartTokenizer.shape(of: typed)
+        if shape.kind.blocksAutomaticConversion { return true }
+        let current = LanguageCode.canonical(currentLanguage)
+        let target = LanguageCode.canonical(targetLanguage)
+        if current == "en", target == "ru" {
+            if !shape.prefix.isEmpty, !shape.suffix.isEmpty { return true }
+            if SmartTokenizer.isTitleCaseLexicalWord(typed) {
+                let recent = contextWords.suffix(4).compactMap(SmartTokenizer.languageHint)
+                    .map(LanguageCode.canonical)
+                let targetCount = recent.count(where: { $0 == target })
+                let currentCount = recent.count(where: { $0 == current })
+                if targetCount <= currentCount
+                    || languageBelief.probability(language: target) < 0.62 {
+                    return true
+                }
+            }
+        }
         switch baseline.decision.reason {
         case .blockedNever, .blockedCodeLike, .blockedLearned, .blockedEditing,
              .alwaysConvert, .confirmedByUser:
@@ -122,6 +170,42 @@ public enum V3LayoutEngine {
         default:
             return false
         }
+    }
+
+    private static func mayRefineToWholeLayoutPath(
+        baseline: LayoutDecoderEvaluation,
+        ranked: LayoutDecoderEvaluation,
+        converted: String,
+        targetLanguage: String,
+        model: LanguageModelStore
+    ) -> Bool {
+        let baselineReplacement = baseline.decision.candidate.replacement
+        guard ranked.decision.verdict == .switchToConverted,
+              baselineReplacement != converted,
+              ranked.decision.candidate.replacement == converted else {
+            return false
+        }
+
+        let baselineCore = FrequentWordLexicon.normalize(
+            SmartTokenizer.lexicalCore(of: baselineReplacement)
+        )
+        let fullCore = FrequentWordLexicon.normalize(
+            SmartTokenizer.lexicalCore(of: converted)
+        )
+        guard !fullCore.isEmpty else { return false }
+        if fullCore == baselineCore { return true }
+
+        let target = LanguageCode.canonical(targetLanguage)
+        let fullKnown = model.wordLogProbability(fullCore, language: target) != nil
+            || (target == "en" && model.isExtendedEnglishWord(fullCore))
+            || (target == "ru" && model.isExtendedRussianWord(fullCore))
+        let fullCharacter = model.characterLogProbability(fullCore, language: target)
+        let baselineCharacter = model.characterLogProbability(baselineCore, language: target)
+        let characterAdvantage = fullCharacter - baselineCharacter
+        if fullKnown {
+            return characterAdvantage >= -maximumBoundaryCharacterPenalty
+        }
+        return characterAdvantage >= minimumUnknownBoundaryCharacterAdvantage
     }
 
     private static func learnedEvaluation(

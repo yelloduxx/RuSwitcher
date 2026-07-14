@@ -167,6 +167,7 @@ def main() -> int:
     parser.add_argument("tsv", type=Path)
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--engine", choices=("v3", "v3.1-shadow", "v3.1"), default="v3")
+    parser.add_argument("--ranker-path", type=Path)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--audit", type=Path)
     args = parser.parse_args()
@@ -192,6 +193,8 @@ def main() -> int:
         "--output", str(report),
         "--phrase-results", str(traces),
     ]
+    if args.ranker_path is not None:
+        command.extend(["--ranker-path", str(args.ranker_path)])
     completed = subprocess.run(command, cwd=root, check=False, stdout=subprocess.DEVNULL)
     if not report.exists():
         return completed.returncode or 1

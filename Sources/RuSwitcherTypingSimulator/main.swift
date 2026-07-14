@@ -469,7 +469,12 @@ private func run() throws -> Never {
         FileHandle.standardError.write(Data("unknown engine: \(engineRaw)\n".utf8))
         exit(64)
     }
-    let ranker = engine.needsRanker ? LayoutRankerModel.bundled : nil
+    let ranker: LayoutRankerModel?
+    if engine.needsRanker, let path = argument(after: "--ranker-path") {
+        ranker = try LayoutRankerModel(contentsOf: URL(fileURLWithPath: path))
+    } else {
+        ranker = engine.needsRanker ? LayoutRankerModel.bundled : nil
+    }
     if engine.needsRanker, ranker == nil {
         FileHandle.standardError.write(Data("V3.1 layout ranker unavailable\n".utf8))
         exit(70)
@@ -481,7 +486,7 @@ private func run() throws -> Never {
         try runBatch(inputPath: inputPath, model: model, ranker: ranker, engine: engine)
     }
     FileHandle.standardError.write(Data(
-        "usage: RuSwitcherTypingSimulator (--input fixture.json | --phrase-input phrases.jsonl) [--engine v3|v3.1] [--jobs N] [--output report.json] [--results results.jsonl]\n".utf8
+        "usage: RuSwitcherTypingSimulator (--input fixture.json | --phrase-input phrases.jsonl) [--engine v3|v3.1] [--ranker-path model.json] [--jobs N] [--output report.json] [--results results.jsonl]\n".utf8
     ))
     exit(64)
 }

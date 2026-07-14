@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import tempfile
@@ -209,6 +210,9 @@ def run_engine(engine: str) -> tuple[dict[str, object], dict[str, int]]:
         "--phrase-input", str(FIXTURES), "--output", str(report),
         "--phrase-results", str(traces),
     ]
+    ranker_path = os.environ.get("V3_1_RANKER_PATH")
+    if engine == "v3.1" and ranker_path:
+        command.extend(["--ranker-path", ranker_path])
     subprocess.run(command, cwd=ROOT, check=False, stdout=subprocess.DEVNULL)
     summary = json.loads(report.read_text(encoding="utf-8"))
     counts = {"correct": 0, "falsePositives": 0, "wrongReplacements": 0, "safeMisses": 0}

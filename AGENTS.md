@@ -109,23 +109,31 @@ keep; it never activates another automatic decoder.
 - Production still calls `LayoutDecoder` directly. Settings report `V3`, and
   `build_app.sh` does not copy `layout-ranker-v1.json` into the app bundle.
 - The ranker artifact is a 62 KB, 8-unit tanh scorer over 222 deterministic
-  lattice/context features. It never generates text. Artifact SHA-256 is
-  `13a45b30663a20c42f306b230e935b82698f34d5d4b75e546f5601ef7ca6c1cf`;
+  lattice/context features. It never generates text. The current rejected
+  research artifact is model `2026.07-v3.1-ranker-11`, feature schema 8,
+  61,609 bytes, with SHA-256
+  `bafb65f557dde4d0e7b3bb6e9d5015e7b45006b9ecd4c1fb1abb50d27a688521`;
   training-manifest SHA-256 is
   `0ce51e94651d4f80a3987c0d470e2d9470b3cd0b9575cfb0533b9669739cc582`.
 - Pinned Tatoeba data is split by normalized sentence pair before corruption.
   Previously opened test assignments are quarantined. Training uses 145,549
-  examples, validation 72,184, and the untouched Tatoeba test 69,922.
-- Validation passed 71,968/72,184; the once-opened Tatoeba test passed
-  69,729/69,922. The user 5,000-phrase development corpus improves from
-  58,945 to 58,998 correct tokens with zero false/wrong replacements when the
-  ranker resolves only V3 `undecided` outcomes.
-- Promotion was rejected. The subsequently opened OPUS GlobalVoices diagnostic
-  corpus still has 24 false positives and 112 wrong replacements for V3.1
-  (V3: 13 and 110). GlobalVoices is now regression-only, not an independent
-  final gate. Tomorrow's continuation must fix general failure classes, freeze
-  the design, then use a never-opened source such as pinned TED2020 for the
-  one-shot promotion gate. Do not tune on that final source.
+  examples; model-11 validation contains 86,157 generated examples.
+- Model-11 validation produced 71,071 correct examples, 2 false positives,
+  0 wrong replacements and 15,084 safe misses. It failed the
+  `accuracyNotBelowBaseline` and `wrongLayoutRecallNotBelowBaseline` gates, so
+  the pipeline stopped before evaluating the held-out Tatoeba test.
+- The user 5,000-phrase corpus is unchanged for both V3 and model-11 V3.1:
+  58,945/59,388 correct tokens, 443 safe misses, zero false/wrong replacements
+  and zero duplicate transactions.
+- The opened OPUS GlobalVoices regression corpus now measures V3 at 52,855
+  correct, 0 false positives, 45 wrong replacements and 817 safe misses. V3.1
+  measures 52,867 correct, 0 false positives, 45 wrong replacements and 805
+  safe misses. Promotion remains rejected because the 45 wrong punctuation
+  paths are not fixed.
+- GlobalVoices is regression-only, not an independent final gate. Keep the
+  pinned TED2020 source unopened until the design passes all existing safety
+  and recall gates; then use it once for the promotion decision and do not tune
+  on it.
 
 ## Candidate and Punctuation Rules
 
@@ -328,7 +336,7 @@ bash scripts/run_headless_native_parity_test.sh
 bash scripts/verify_v3_only_build.sh
 ```
 
-After adding the lattice/ranker research checks, the root suite contains 174
+After adding the lattice/ranker research checks, the root suite contains 186
 tests. V4's 12 research tests run
 only from its separate package. The headless event-stream fixture must pass and
 its intentionally wrong expected output must fail.

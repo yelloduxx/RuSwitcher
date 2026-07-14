@@ -5,6 +5,7 @@ public enum LayoutRankerRisk: String, Codable, CaseIterable, Hashable, Sendable 
     case punctuation
     case punctuationShort
     case punctuationBothKnown
+    case punctuationAmbiguous
     case punctuationOOV
     case oov
     case short
@@ -60,7 +61,7 @@ public enum LayoutRankerFeatureSchema {
     private static let characterHashBuckets = 32
     private static let contextHashBuckets = 32
 
-    public static let version = 6
+    public static let version = 8
     public static let names: [String] = [
         "bias", "isLiteral", "isDirect", "isTrailingPunctuation", "isLayoutLetterTail",
         "isWrappingPunctuation", "candidateLanguageRU", "currentLanguageRU", "sourceLength",
@@ -266,7 +267,19 @@ public enum LayoutRankerFeatureSchema {
                 )
             )
         }
-        return deduplicated(items)
+        let uniqueItems = deduplicated(items)
+        let targetTexts = Set(uniqueItems.compactMap { item in
+            item.hypothesis.isLiteral ? nil : item.hypothesis.text
+        })
+        guard targetTexts.count > 1 else { return uniqueItems }
+        return uniqueItems.map { item in
+            guard !item.hypothesis.isLiteral else { return item }
+            return LayoutRankerItem(
+                hypothesis: item.hypothesis,
+                features: item.features,
+                risk: .punctuationAmbiguous
+            )
+        }
     }
 
     private enum PunctuationClass {

@@ -17,6 +17,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("tsv", type=Path)
     parser.add_argument("--jobs", type=int, default=8)
+    parser.add_argument("--engine", choices=("v3", "v3.1"), default="v3")
+    parser.add_argument("--ranker-path", type=Path)
     parser.add_argument("--max-safe-misses", type=int, default=443)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--results", type=Path)
@@ -33,11 +35,14 @@ def main() -> int:
     phrase_count, token_patterns = convert_corpus(args.tsv, generated)
     command = [
         "swift", "run", "-c", "release", "RuSwitcherTypingSimulator",
+        "--engine", args.engine,
         "--jobs", str(max(1, args.jobs)),
         "--phrase-input", str(generated),
         "--output", str(report),
         "--results", str(results),
     ]
+    if args.ranker_path is not None:
+        command.extend(["--ranker-path", str(args.ranker_path)])
     completed = subprocess.run(command, cwd=root, stdout=subprocess.DEVNULL, check=False)
     if completed.returncode not in (0, 1) or not report.exists() or not results.exists():
         return completed.returncode or 1
@@ -82,6 +87,7 @@ def main() -> int:
     )
     audit = {
         "qualityPassed": quality_passed,
+        "engine": args.engine,
         "phraseTotal": phrase_count,
         "phrasePassed": summary["fixturePassed"],
         "tokenTotal": len(traces),
