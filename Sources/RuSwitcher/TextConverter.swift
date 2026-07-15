@@ -253,32 +253,38 @@ final class TextConverter {
             return
         }
 
-        guard postSelection(characterCount: expected.count, to: focus.processID) else {
+        // Backspace the exact suffix, then insert Unicode. Do NOT use Shift+Left
+        // selection + insert: many editors ignore the selection for synthetic
+        // Unicode events and append, which duplicates the word on double-Shift
+        // toggle ( reconversion ).
+        let deleteCount = expected.count
+        guard deleteCount > 0,
+              postBackspaces(count: deleteCount, to: focus.processID),
+              postUnicodeText(replacement, to: focus.processID) else {
             isConverting = false
             completion.callback(.failed)
             return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
-            guard let self,
-                  isCurrent(),
-                  NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
-                  self.selectedTextMatches(expected, focus: focus, timeoutMilliseconds: 50),
-                  self.postUnicodeText(replacement, to: focus.processID) else {
-                self?.isConverting = false
-                completion.callback(.failed)
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-                guard let self else { return }
-                guard isCurrent(),
-                      NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID else {
-                    self.isConverting = false
-                    completion.callback(.failed)
-                    return
-                }
-                completion.callback(.postedUnverified)
-            }
+        isConverting = false
+        completion.callback(.postedUnverified)
+    }
+
+    nonisolated private func postBackspaces(count: Int, to processID: Int32) -> Bool {
+        guard count > 0, let source = makeSource() else { return false }
+        for _ in 0..<count {
+            guard let down = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: KC.backspace,
+                keyDown: true
+            ), let up = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: KC.backspace,
+                keyDown: false
+            ) else { return false }
+            down.postToPid(pid_t(processID))
+            up.postToPid(pid_t(processID))
         }
+        return true
     }
 
     private func handleSelectionRead(
@@ -395,7 +401,7 @@ final class TextConverter {
                 replacement,
                 original: snapshot.text,
                 originalRange: snapshot.range,
-                element: lease.element
+                lease: lease
             )
         }
 
@@ -406,7 +412,7 @@ final class TextConverter {
                 replacement,
                 original: snapshot.text,
                 originalRange: snapshot.range,
-                element: lease.element
+                lease: lease
             )
             if verification == .match || verification == .mismatch { break }
             if Date() < deadline { usleep(5_000) }
@@ -530,6 +536,9 @@ final class TextConverter {
                     range: suffixRange,
                     text: expected
                 )
+                // Never call kAXSelectedText unless the selection is confirmed.
+                // Setting it with an empty/wrong selection inserts and duplicates.
+                guard selectionMatches(snapshot, lease: lease) else { return .unchanged }
                 let verification = setAndVerifySelectedText(
                     snapshot: snapshot,
                     replacement: replacement,
@@ -854,32 +863,26 @@ final class TextConverter {
         )?.replacement ?? converted
     }
 
-    nonisolated private func selectedText(from element: AXUIElement) -> String? {
-        var textRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXSelectedTextAttribute as CFString,
-            &textRaw
-        ) == .success else { return nil }
-        return textRaw as? String
+    nonisolated private func selectedText(from lease: NativeAXElementLease) -> String? {
+        let read = lease.copyAttribute(kAXSelectedTextAttribute as CFString)
+        guard read.0 == .success else { return nil }
+        return read.1 as? String
     }
 
     nonisolated private func verifyReplacement(
         _ replacement: String,
         original: String,
         originalRange: CFRange,
-        element: AXUIElement
+        lease: NativeAXElementLease
     ) -> ReplacementVerification {
         var range = CFRange(location: originalRange.location, length: replacement.utf16.count)
         guard let rangeValue = AXValueCreate(.cfRange, &range) else { return .unavailable }
-        var textRaw: AnyObject?
-        guard AXUIElementCopyParameterizedAttributeValue(
-            element,
+        let read = lease.copyParameterizedAttribute(
             kAXStringForRangeParameterizedAttribute as CFString,
-            rangeValue,
-            &textRaw
-        ) == .success, let actual = textRaw as? String else {
-            guard let selected = selectedText(from: element) else { return .unavailable }
+            parameter: rangeValue
+        )
+        guard read.0 == .success, let actual = read.1 as? String else {
+            guard let selected = selectedText(from: lease) else { return .unavailable }
             let normalized = selected.precomposedStringWithCanonicalMapping
             if normalized == replacement.precomposedStringWithCanonicalMapping { return .match }
             if normalized == original.precomposedStringWithCanonicalMapping { return .unchanged }
@@ -1018,7 +1021,7 @@ final class TextConverter {
                             replacement,
                             original: text,
                             originalRange: snapshot.range,
-                            element: lease.element
+                            lease: lease
                         )
                     }
                 ) {

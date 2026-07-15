@@ -342,7 +342,10 @@ final class KeyboardMonitor: @unchecked Sendable {
         wordBeforeBoundaryLength = 0
         boundaryCount = 0
         prevWordKeys = []
-        keysTypedSinceConversion = true
+        // Keep reconversion enabled: the replacement was posted successfully even
+        // if AX could not read it back. Setting this true made double-Shift skip
+        // toggle and fall into a second insert path that duplicated the word.
+        keysTypedSinceConversion = false
     }
 
     func isStagedCompletionCurrent(expectedSequence: UInt64) -> Bool {
@@ -416,19 +419,11 @@ final class KeyboardMonitor: @unchecked Sendable {
     }
 
     private func focusedElementIdentifier(processID: pid_t) -> String? {
-        if let cached = focusedElementResolver.cachedIdentifier(processID: processID) {
-            return cached
-        }
-        switch focusedElementResolver.resolve(
-            processID: processID,
-            timeoutMilliseconds: 2,
-            allowTreeSearch: false
-        ) {
-        case let .resolved(resolution):
-            return resolution.identifier
-        case .unavailable:
-            return nil
-        }
+        // This is only an expected identity captured in the token snapshot. It
+        // never authorizes an edit: ReplacementCoordinator and TextConverter
+        // resolve it again and verify the exact suffix before mutation. Avoiding
+        // synchronous AX here keeps the event callback inside its 5 ms budget.
+        focusedElementResolver.cachedIdentifier(processID: processID)
     }
 
     private func notifyTokenChanged() {
