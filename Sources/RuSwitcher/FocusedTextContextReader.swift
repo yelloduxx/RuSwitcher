@@ -9,11 +9,6 @@ import RuSwitcherCore
 final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Sendable {
     private static let timeoutCooldown: TimeInterval = 1
 
-    private struct CachedPrefix {
-        let text: String
-        let capturedAt: Date
-    }
-
     private final class ResultBox: @unchecked Sendable {
         private let lock = NSLock()
         private var value: TextContextValidation?
@@ -37,34 +32,26 @@ final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Send
         }
     }
 
-    private let queue = DispatchQueue(label: "com.ruswitcher.ax-context", qos: .userInteractive)
+    private let validationQueue = DispatchQueue(
+        label: "com.ruswitcher.ax-validation",
+        qos: .userInteractive
+    )
+    private let verificationQueue = DispatchQueue(
+        label: "com.ruswitcher.ax-verification",
+        qos: .userInitiated
+    )
+    private let focusedElementResolver: NativeFocusedEditableResolver
     private var disabledUntil: [String: Date] = [:]
-    private let cacheLock = NSLock()
-    private var prefixCache: [String: CachedPrefix] = [:]
 
-    func cachedPrefix(for focus: FocusedElementIdentity, maximumAge: TimeInterval = 2) -> String? {
-        let key = Self.focusKey(focus)
-        cacheLock.lock(); defer { cacheLock.unlock() }
-        guard let cached = prefixCache[key], Date().timeIntervalSince(cached.capturedAt) <= maximumAge else {
-            prefixCache.removeValue(forKey: key)
-            return nil
-        }
-        return cached.text
+    init(focusedElementResolver: NativeFocusedEditableResolver) {
+        self.focusedElementResolver = focusedElementResolver
     }
 
-    /// Refreshes context for the next token. The event callback never waits for this
-    /// read, and the cache is scoped to the focused AX element.
-    func prefetchPrefix(for focus: FocusedElementIdentity) {
-        let key = Self.focusKey(focus)
-        queue.async { [weak self] in
-            guard let self, let text = Self.readPrefix(focus: focus, timeoutMilliseconds: 20) else { return }
-            self.cacheLock.lock()
-            self.prefixCache[key] = CachedPrefix(text: text, capturedAt: Date())
-            if self.prefixCache.count > 64 {
-                self.prefixCache = [key: CachedPrefix(text: text, capturedAt: Date())]
-            }
-            self.cacheLock.unlock()
-        }
+    @MainActor
+    func preflightDeadlineMilliseconds(for focus: FocusedElementIdentity) -> Int {
+        ReplacementTiming.preflightDeadlineMilliseconds(
+            isWarm: focusedElementResolver.cachedIdentifier(processID: focus.processID) != nil
+        )
     }
 
     @MainActor
@@ -79,46 +66,60 @@ final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Send
                 return actual.precomposedStringWithCanonicalMapping
                     == expectedSuffix.precomposedStringWithCanonicalMapping ? .match : .mismatch
             }
-            return Self.readAndCompare(
+            return readAndCompare(
                 expectedSuffix: expectedSuffix,
                 focus: focus,
                 timeoutMilliseconds: deadlineMilliseconds
             )
         }
         let key = Self.focusKey(focus)
+        let isWarm = focusedElementResolver.cachedIdentifier(processID: focus.processID) != nil
         if let until = disabledUntil[key] {
-            if until > Date() { return .unavailable }
+            // A warm cache is allowed to retry immediately: Ghostty-class apps
+            // often timeout once and then answer from the warmed element.
+            if until > Date(), !isWarm {
+                return .unavailable
+            }
             disabledUntil.removeValue(forKey: key)
         }
 
+        let effectiveDeadline = max(
+            1,
+            isWarm
+                ? max(deadlineMilliseconds, ReplacementTiming.warmPreflightDeadlineMilliseconds)
+                : deadlineMilliseconds
+        )
         let box = ResultBox()
         let semaphore = DispatchSemaphore(value: 0)
-        queue.async {
-            let first = Self.readAndCompare(
+        validationQueue.async { [self] in
+            let first = readAndCompare(
                 expectedSuffix: expectedSuffix,
                 focus: focus,
-                timeoutMilliseconds: max(1, deadlineMilliseconds - 1)
+                timeoutMilliseconds: max(1, effectiveDeadline - 1)
             )
             if first == .mismatch {
                 // Short tokens can reach the boundary before WebKit/Electron has
                 // published the last character through AX. Retry once inside the
                 // existing deadline; a real cursor/focus mismatch remains blocked.
                 usleep(750)
-                box.set(Self.readAndCompare(
+                box.set(readAndCompare(
                     expectedSuffix: expectedSuffix,
                     focus: focus,
-                    timeoutMilliseconds: max(1, deadlineMilliseconds - 1)
+                    timeoutMilliseconds: max(1, effectiveDeadline - 1)
                 ))
             } else {
                 box.set(first)
             }
             semaphore.signal()
         }
-        let timeout = DispatchTime.now() + .milliseconds(max(1, deadlineMilliseconds))
+        let timeout = DispatchTime.now() + .milliseconds(effectiveDeadline)
         guard semaphore.wait(timeout: timeout) == .success, let result = box.get() else {
             disabledUntil[key] = Date().addingTimeInterval(Self.timeoutCooldown)
             rslog("ax_probe_timeout")
             return .unavailable
+        }
+        if result == .match {
+            disabledUntil.removeValue(forKey: key)
         }
         return result
     }
@@ -141,12 +142,12 @@ final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Send
         completion: @escaping (TextContextValidation) -> Void
     ) {
         let callback = CallbackBox(completion)
-        queue.async {
+        verificationQueue.async { [self] in
             let deadline = Date().addingTimeInterval(Double(max(1, deadlineMilliseconds)) / 1_000)
             var result: TextContextValidation = .unavailable
             repeat {
                 let remaining = max(1, Int(deadline.timeIntervalSinceNow * 1_000))
-                result = Self.readAndCompare(
+                result = readAndCompare(
                     expectedSuffix: expectedSuffix,
                     focus: focus,
                     timeoutMilliseconds: min(4, remaining)
@@ -158,127 +159,92 @@ final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Send
         }
     }
 
-    private static func readAndCompare(
+    private func readAndCompare(
         expectedSuffix: String,
         focus: FocusedElementIdentity,
         timeoutMilliseconds: Int
     ) -> TextContextValidation {
-        let app = AXUIElementCreateApplication(focus.processID)
-        AXUIElementSetMessagingTimeout(app, Float(max(1, timeoutMilliseconds)) / 1_000)
-        var focusedRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            app,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedRaw
-        ) == .success, let focusedRaw,
-          CFGetTypeID(focusedRaw) == AXUIElementGetTypeID() else { return .unavailable }
-        let element = unsafeDowncast(focusedRaw, to: AXUIElement.self)
-
-        if let expectedIdentifier = focus.identifier {
-            if expectedIdentifier.hasPrefix("axhash:") {
-                guard expectedIdentifier == "axhash:\(CFHash(element))" else { return .mismatch }
-            } else {
-                var identifierRaw: AnyObject?
-                guard AXUIElementCopyAttributeValue(
-                    element,
-                    kAXIdentifierAttribute as CFString,
-                    &identifierRaw
-                ) == .success,
-                identifierRaw as? String == expectedIdentifier else { return .mismatch }
+        switch focusedElementResolver.withElement(
+            processID: focus.processID,
+            expectedIdentifier: focus.identifier,
+            timeoutMilliseconds: timeoutMilliseconds,
+            allowTreeSearch: false,
+            operation: { lease in
+                compareSuffix(expectedSuffix, lease: lease)
             }
+        ) {
+        case let .value(result):
+            return result
+        case let .unavailable(failure):
+            logLookupFailure(failure)
+            return failure == .identifierMismatch ? .mismatch : .unavailable
         }
+    }
 
-        var rangeRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXSelectedTextRangeAttribute as CFString,
-            &rangeRaw
-        ) == .success, let rangeRaw,
-          CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return .unavailable }
+    private func compareSuffix(
+        _ expectedSuffix: String,
+        lease: NativeAXElementLease
+    ) -> TextContextValidation {
+        let rangeRead = lease.copyAttribute(kAXSelectedTextRangeAttribute as CFString)
+        guard rangeRead.0 == .success, let rangeRaw = rangeRead.1,
+          CFGetTypeID(rangeRaw) == AXValueGetTypeID() else {
+            if rangeRead.0 == .cannotComplete {
+                rslog("ax_timeout")
+            } else {
+                rslog("ax_no_range")
+            }
+            return .unavailable
+        }
         let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
         var caret = CFRange()
         guard AXValueGetType(rangeValue) == .cfRange,
-              AXValueGetValue(rangeValue, .cfRange, &caret) else { return .unavailable }
-        guard caret.length == 0 else { return .mismatch }
+              AXValueGetValue(rangeValue, .cfRange, &caret) else {
+            rslog("ax_range_invalid")
+            return .unavailable
+        }
+        guard caret.length == 0 else {
+            rslog("ax_suffix_mismatch")
+            return .mismatch
+        }
 
         let expectedLength = expectedSuffix.utf16.count
-        guard caret.location >= expectedLength else { return .mismatch }
+        guard caret.location >= expectedLength else {
+            rslog("ax_suffix_mismatch")
+            return .mismatch
+        }
         var suffixRange = CFRange(location: caret.location - expectedLength, length: expectedLength)
         guard let suffixValue = AXValueCreate(.cfRange, &suffixRange) else { return .unavailable }
-        var suffixRaw: AnyObject?
-        let error = AXUIElementCopyParameterizedAttributeValue(
-            element,
+        let suffixRead = lease.copyParameterizedAttribute(
             kAXStringForRangeParameterizedAttribute as CFString,
-            suffixValue,
-            &suffixRaw
+            parameter: suffixValue
         )
-        guard error == .success, let actual = suffixRaw as? String else { return .unavailable }
-        return actual.precomposedStringWithCanonicalMapping
-            == expectedSuffix.precomposedStringWithCanonicalMapping ? .match : .mismatch
-    }
-
-    private static func readPrefix(
-        focus: FocusedElementIdentity,
-        timeoutMilliseconds: Int
-    ) -> String? {
-        guard let element = focusedElement(
-            matching: focus,
-            timeoutMilliseconds: timeoutMilliseconds
-        ) else { return nil }
-        var rangeRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXSelectedTextRangeAttribute as CFString,
-            &rangeRaw
-        ) == .success, let rangeRaw,
-          CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return nil }
-        let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
-        var caret = CFRange()
-        guard AXValueGetType(rangeValue) == .cfRange,
-              AXValueGetValue(rangeValue, .cfRange, &caret),
-              caret.length == 0 else { return nil }
-
-        let length = min(caret.location, InputContextLimits.maximumUTF8Bytes)
-        var prefixRange = CFRange(location: caret.location - length, length: length)
-        guard let prefixValue = AXValueCreate(.cfRange, &prefixRange) else { return nil }
-        var prefixRaw: AnyObject?
-        guard AXUIElementCopyParameterizedAttributeValue(
-            element,
-            kAXStringForRangeParameterizedAttribute as CFString,
-            prefixValue,
-            &prefixRaw
-        ) == .success else { return nil }
-        return prefixRaw as? String
-    }
-
-    private static func focusedElement(
-        matching focus: FocusedElementIdentity,
-        timeoutMilliseconds: Int
-    ) -> AXUIElement? {
-        let app = AXUIElementCreateApplication(focus.processID)
-        AXUIElementSetMessagingTimeout(app, Float(max(1, timeoutMilliseconds)) / 1_000)
-        var focusedRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            app,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedRaw
-        ) == .success, let focusedRaw,
-          CFGetTypeID(focusedRaw) == AXUIElementGetTypeID() else { return nil }
-        let element = unsafeDowncast(focusedRaw, to: AXUIElement.self)
-        if let expectedIdentifier = focus.identifier {
-            if expectedIdentifier.hasPrefix("axhash:") {
-                guard expectedIdentifier == "axhash:\(CFHash(element))" else { return nil }
+        guard suffixRead.0 == .success, let actual = suffixRead.1 as? String else {
+            if suffixRead.0 == .cannotComplete {
+                rslog("ax_timeout")
             } else {
-                var identifierRaw: AnyObject?
-                guard AXUIElementCopyAttributeValue(
-                    element,
-                    kAXIdentifierAttribute as CFString,
-                    &identifierRaw
-                ) == .success,
-                identifierRaw as? String == expectedIdentifier else { return nil }
+                rslog("ax_no_string_for_range")
             }
+            return .unavailable
         }
-        return element
+        let matches = actual.precomposedStringWithCanonicalMapping
+            == expectedSuffix.precomposedStringWithCanonicalMapping
+        if !matches { rslog("ax_suffix_mismatch") }
+        return matches ? .match : .mismatch
+    }
+
+    private func logLookupFailure(_ failure: FocusedEditableLookupFailure) {
+        switch failure {
+        case .noFocusedElement:
+            rslog("ax_no_focused")
+        case .noEditableElement:
+            rslog("ax_no_editable")
+        case .ambiguousFocusedElements:
+            rslog("ax_ambiguous_focused")
+        case .timedOut:
+            rslog("ax_timeout")
+        case .identifierMismatch:
+            rslog("ax_identifier_mismatch")
+        }
     }
 
     private static func focusKey(_ focus: FocusedElementIdentity) -> String {

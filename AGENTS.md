@@ -15,17 +15,21 @@ installed build changes.
 - Primary repository: `yelloduxx/RuSwitcher`; the production branch is `main`.
   `rashn/RuSwitcher` is the author's upstream repository, not a release source
   for this fork.
-- The stabilization release is `4.0.0` build `95`. It keeps build 94's V3
-  behavior while tightening AX preflight, unverified transaction handling,
-  manual non-AX replacement and layout-pair selection. Verify the installed
-  binary hash and PID after every local replacement; do not infer the running
-  build from `version.json` alone.
+- The stabilization release on `main` is `4.0.0` build `95` (Lab identity).
+- Branch `fix/ax-focused-editable-resolver` ships build `96` as a parallel
+  product **RuSwitcher AX** so it can coexist with Codex Lab work:
+  - Bundle: `RuSwitcherAX.app` → install to `/Applications/RuSwitcherAX.app`
+  - Bundle ID: `com.ruswitcher.ax` (not `com.ruswitcher.app` / `.lab`)
+  - Executable: `RuSwitcherAX`
+  - Dev tag: `ax`
+  - Logs: `~/Library/Logs/RuSwitcherAX/`
+  - Distinct synthetic event marker (`ProductIdentity.eventMarker`)
 - The author's original app remains `/Applications/RuSwitcher.app` (`2.7.0`
-  build `35`). The fork is installed separately as
-  `/Applications/RuSwitcher Lab.app`, bundle ID `com.ruswitcher.lab`, and is
-  signed with the reusable identity `RuSwitcher Local Code Signing`.
-- Installed build-95 Lab executable SHA-256:
-  `e8cdecf9a7dcfb0db31b29214863b9e78741c892b6697f36296732a963bbe71e`.
+  build `35`). Codex/Lab installs remain `/Applications/RuSwitcher Lab.app`,
+  bundle ID `com.ruswitcher.lab`. Never overwrite those from this branch.
+- Signing identity stays `RuSwitcher Local Code Signing` (reusable).
+- Verify the installed binary hash and PID after every local replacement; do
+  not infer the running build from `version.json` alone.
 
 ## User Requirements
 

@@ -15,7 +15,10 @@ final class ReplacementCoordinatorTests: XCTestCase {
         XCTAssertEqual(initial, .postedUnverified)
         XCTAssertEqual(poster.plans.count, 1)
         XCTAssertTrue(completions.isEmpty)
-        XCTAssertEqual(reader.validationDeadlines, [ReplacementTiming.preflightDeadlineMilliseconds])
+        XCTAssertEqual(
+            reader.validationDeadlines,
+            [ReplacementTiming.preflightDeadlineMilliseconds]
+        )
         XCTAssertEqual(
             reader.verificationDeadlines,
             [ReplacementTiming.postedEventVerificationDeadlineMilliseconds]
@@ -70,6 +73,18 @@ final class ReplacementCoordinatorTests: XCTestCase {
         XCTAssertEqual(poster.plans.count, 1)
     }
 
+    func testWarmFocusUsesExpandedPreflightDeadline() {
+        let reader = Reader(preflight: .match)
+        reader.warmFocusProcessIDs = [42]
+        let coordinator = NativeReplacementCoordinator(reader: reader, poster: Poster(result: true))
+
+        XCTAssertEqual(coordinator.submit(request()) { _ in }, .postedUnverified)
+        XCTAssertEqual(
+            reader.validationDeadlines,
+            [ReplacementTiming.warmPreflightDeadlineMilliseconds]
+        )
+    }
+
     private func request() -> ReplacementRequest {
         let focus = FocusedElementIdentity(processID: 42, bundleID: "test.host", identifier: "field")
         return ReplacementRequest(
@@ -94,11 +109,18 @@ final class ReplacementCoordinatorTests: XCTestCase {
 
 private final class Reader: FocusedTextContextReading {
     let preflight: TextContextValidation
+    var warmFocusProcessIDs: Set<Int32> = []
     private(set) var validationDeadlines: [Int] = []
     private(set) var verificationDeadlines: [Int] = []
     private var completion: ((TextContextValidation) -> Void)?
 
     init(preflight: TextContextValidation) { self.preflight = preflight }
+
+    func preflightDeadlineMilliseconds(for focus: FocusedElementIdentity) -> Int {
+        ReplacementTiming.preflightDeadlineMilliseconds(
+            isWarm: warmFocusProcessIDs.contains(focus.processID)
+        )
+    }
 
     func validate(expectedSuffix: String, focus: FocusedElementIdentity, deadlineMilliseconds: Int) -> TextContextValidation {
         validationDeadlines.append(deadlineMilliseconds)

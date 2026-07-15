@@ -4,8 +4,9 @@ import Foundation
 import RuSwitcherAppSupport
 import RuSwitcherCore
 
-/// Маркер для симулированных событий — KeyboardMonitor их игнорирует
-let kRuSwitcherEventMarker: Int64 = 0x52555300
+/// Маркер для симулированных событий — KeyboardMonitor их игнорирует.
+/// Branch-specific so parallel RuSwitcher installs do not treat each other as user input.
+let kRuSwitcherEventMarker: Int64 = ProductIdentity.eventMarker
 
 struct ManualTokenSnapshot {
     let keys: [TypedKey]
@@ -27,8 +28,8 @@ func rslog(_ msg: StaticString) {
 
     let line = "\(Date()): \(String(describing: msg))\n"
     rsLogQueue.async {
-        let logDir = NSHomeDirectory() + "/Library/Logs/RuSwitcher"
-        let path = logDir + "/ruswitcher.log"
+        let logDir = NSHomeDirectory() + "/Library/Logs/\(ProductIdentity.logDirectoryName)"
+        let path = logDir + "/ruswitcher-ax.log"
 
         // Создаём директорию если нет
         if !FileManager.default.fileExists(atPath: logDir) {
@@ -87,6 +88,7 @@ struct TriggerConfig {
 }
 
 final class KeyboardMonitor: @unchecked Sendable {
+    private let focusedElementResolver: NativeFocusedEditableResolver
     fileprivate var eventTap: CFMachPort?
     fileprivate private(set) var activeTap = false
     private var runLoopSource: CFRunLoopSource?
@@ -128,6 +130,8 @@ final class KeyboardMonitor: @unchecked Sendable {
     /// learning signal. Repeated signals make the rule persistent.
     var onCorrectionEdited: (() -> Void)?
     var onEditingInvalidated: (() -> Void)?
+    /// Fired after frontmost process changes so AX can be warmed for the new app.
+    var onFrontmostProcessChanged: ((pid_t) -> Void)?
     /// issue #10: любой ввод/клик пользователя — чтобы спрятать флаг у каретки во время печати.
     var onUserInput: (() -> Void)?
     /// issue #10: включена ли фича флага-у-каретки. Гейтит диспатч onUserInput на горячем пути,
@@ -143,6 +147,10 @@ final class KeyboardMonitor: @unchecked Sendable {
     // Для двойного тапа
     private var lastTapTime: Date?
     private let tapWindow: TimeInterval = 0.4
+
+    init(focusedElementResolver: NativeFocusedEditableResolver) {
+        self.focusedElementResolver = focusedElementResolver
+    }
 
     func start(onAltTap: @escaping () -> Void) -> Bool {
         self.onAltTap = onAltTap
@@ -408,24 +416,19 @@ final class KeyboardMonitor: @unchecked Sendable {
     }
 
     private func focusedElementIdentifier(processID: pid_t) -> String? {
-        let app = AXUIElementCreateApplication(processID)
-        var focusedRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            app,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedRaw
-        ) == .success, let focusedRaw,
-          CFGetTypeID(focusedRaw) == AXUIElementGetTypeID() else { return nil }
-        let element = unsafeDowncast(focusedRaw, to: AXUIElement.self)
-        var identifierRaw: AnyObject?
-        if AXUIElementCopyAttributeValue(
-            element,
-            kAXIdentifierAttribute as CFString,
-            &identifierRaw
-        ) == .success, let identifier = identifierRaw as? String, !identifier.isEmpty {
-            return identifier
+        if let cached = focusedElementResolver.cachedIdentifier(processID: processID) {
+            return cached
         }
-        return "axhash:\(CFHash(element))"
+        switch focusedElementResolver.resolve(
+            processID: processID,
+            timeoutMilliseconds: 2,
+            allowTreeSearch: false
+        ) {
+        case let .resolved(resolution):
+            return resolution.identifier
+        case .unavailable:
+            return nil
+        }
     }
 
     private func notifyTokenChanged() {
@@ -481,6 +484,9 @@ final class KeyboardMonitor: @unchecked Sendable {
             resetPhysicalTranslation()
             fullReset(invalidated: true)
             onEditingInvalidated?()
+            onFrontmostProcessChanged?(current)
+        } else if observedFrontmostProcessID == nil, let current = frontmostProcessID {
+            onFrontmostProcessChanged?(current)
         }
         observedFrontmostProcessID = frontmostProcessID
         triggerArmed = false

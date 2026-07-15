@@ -2,7 +2,12 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_NAME="RuSwitcher"
+# Parallel experimental product. Keeps SPM target name "RuSwitcher" but ships a
+# distinct bundle/executable so it can coexist with Codex Lab and upstream.
+SPM_PRODUCT_NAME="RuSwitcher"
+APP_NAME="RuSwitcherAX"
+APP_DISPLAY_NAME="RuSwitcher AX"
+BUNDLE_ID="com.ruswitcher.ax"
 APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
 # Universal-сборка кладёт продукт сюда (а не в .build/release)
 BUILD_DIR="$PROJECT_DIR/.build/apple/Products/Release"
@@ -20,12 +25,12 @@ if [ -z "$SHORT_VERSION" ]; then
     exit 1
 fi
 
-echo "=== Building $APP_NAME v$SHORT_VERSION (build $BUILD_VERSION) ==="
+echo "=== Building $APP_DISPLAY_NAME ($APP_NAME / $BUNDLE_ID) v$SHORT_VERSION (build $BUILD_VERSION) ==="
 
 # 1. Собираем release — universal (arm64 + x86_64), чтобы работало и на Intel-маках
 echo "→ swift build -c release --arch arm64 --arch x86_64 (universal)..."
 cd "$PROJECT_DIR"
-swift build -c release --arch arm64 --arch x86_64
+swift build -c release --arch arm64 --arch x86_64 --product "$SPM_PRODUCT_NAME"
 
 # 2. Создаём .app bundle
 echo "→ Creating app bundle..."
@@ -33,8 +38,12 @@ rm -rf "$APP_BUNDLE"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
-# 3. Копируем бинарник
-cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+# 3. Копируем бинарник (SPM product name → product executable name)
+if [ ! -f "$BUILD_DIR/$SPM_PRODUCT_NAME" ]; then
+    echo "ERROR: built product not found: $BUILD_DIR/$SPM_PRODUCT_NAME"
+    exit 1
+fi
+cp "$BUILD_DIR/$SPM_PRODUCT_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 
 # 3a. Самопроверка: бинарь обязан быть universal (arm64 + x86_64), иначе Intel-маки не запустят
 ARCHS=$(lipo -archs "$APP_BUNDLE/Contents/MacOS/$APP_NAME")
@@ -43,14 +52,18 @@ if [[ "$ARCHS" != *"arm64"* || "$ARCHS" != *"x86_64"* ]]; then
 fi
 echo "→ Universal OK: $ARCHS"
 
-# 4. Копируем Info.plist и штампуем версию из version.json
+# 4. Копируем Info.plist и штампуем версию / identity из version.json
 cp "$PROJECT_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_DISPLAY_NAME" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_DISPLAY_NAME" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $SHORT_VERSION" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_VERSION" "$APP_BUNDLE/Contents/Info.plist"
 # Dev-метка (буква) для непубликуемых сборок — пусто для релиза. Показывается в About/меню.
 /usr/libexec/PlistBuddy -c "Set :RSDevTag $DEV_TAG" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Add :RSDevTag string $DEV_TAG" "$APP_BUNDLE/Contents/Info.plist"
-echo "→ Stamped Info.plist: CFBundleShortVersionString=$SHORT_VERSION$DEV_TAG CFBundleVersion=$BUILD_VERSION"
+echo "→ Stamped Info.plist: $BUNDLE_ID $SHORT_VERSION$DEV_TAG ($BUILD_VERSION)"
 
 # 5. Копируем иконку
 cp "$PROJECT_DIR/RuSwitcher.icns" "$APP_BUNDLE/Contents/Resources/RuSwitcher.icns"

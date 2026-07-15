@@ -57,16 +57,17 @@ final class TextConverter {
     private var clipboardTemporaryChangeCount: Int?
     private var isConverting = false
     nonisolated private let manualQueue = DispatchQueue(label: "com.ruswitcher.manual-ax", qos: .userInitiated)
+    nonisolated private let focusedElementResolver: NativeFocusedEditableResolver
 
     private final class SelectionSnapshot: @unchecked Sendable {
         let processID: pid_t
-        let element: AXUIElement
+        let identifier: String
         let range: CFRange
         let text: String
 
-        init(processID: pid_t, element: AXUIElement, range: CFRange, text: String) {
+        init(processID: pid_t, identifier: String, range: CFRange, text: String) {
             self.processID = processID
-            self.element = element
+            self.identifier = identifier
             self.range = range
             self.text = text
         }
@@ -105,6 +106,10 @@ final class TextConverter {
         !isConverting && lastWasBuffer && !lastConverted.isEmpty
     }
 
+    init(focusedElementResolver: NativeFocusedEditableResolver) {
+        self.focusedElementResolver = focusedElementResolver
+    }
+
     /// Создаёт CGEventSource с маркером, чтобы KeyboardMonitor игнорировал наши события
     nonisolated private func makeSource() -> CGEventSource? {
         let source = CGEventSource(stateID: .hidSystemState)
@@ -131,7 +136,7 @@ final class TextConverter {
         let completion = ManualCompletionBox(completion)
         manualQueue.async { [weak self] in
             guard let self else { return }
-            let result = Self.readSelection(processID: processID)
+            let result = self.readSelection(processID: processID)
             Task { @MainActor [weak self] in
                 self?.handleSelectionRead(
                     result,
@@ -160,7 +165,7 @@ final class TextConverter {
         let completion = SuffixCompletionBox(completion)
         if CommandLine.arguments.contains("--force-synthetic-input-fallback") {
             finishFocusedSuffixReplacement(
-                .unavailable,
+                .unchanged,
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
@@ -218,7 +223,7 @@ final class TextConverter {
         switch verification {
         case .match:
             completion.callback(.verified)
-        case .unchanged, .unavailable:
+        case .unchanged:
             replaceFocusedSuffixViaSyntheticInput(
                 expected: expected,
                 replacement: replacement,
@@ -226,7 +231,7 @@ final class TextConverter {
                 isCurrent: isCurrent,
                 completion: completion
             )
-        case .mismatch:
+        case .mismatch, .unavailable:
             isConverting = false
             completion.callback(.failed)
         }
@@ -241,7 +246,8 @@ final class TextConverter {
     ) {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
               !expected.isEmpty,
-              isCurrent() else {
+              isCurrent(),
+              focusedSuffixMatches(expected, focus: focus, timeoutMilliseconds: 50) else {
             isConverting = false
             completion.callback(.failed)
             return
@@ -256,6 +262,7 @@ final class TextConverter {
             guard let self,
                   isCurrent(),
                   NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
+                  self.selectedTextMatches(expected, focus: focus, timeoutMilliseconds: 50),
                   self.postUnicodeText(replacement, to: focus.processID) else {
                 self?.isConverting = false
                 completion.callback(.failed)
@@ -346,10 +353,41 @@ final class TextConverter {
         replacement: String,
         pollForDelayedCommit: Bool
     ) -> ReplacementVerification {
-        let setResult = AXUIElementSetAttributeValue(
-            snapshot.element,
+        switch focusedElementResolver.withElement(
+            processID: snapshot.processID,
+            expectedIdentifier: snapshot.identifier,
+            timeoutMilliseconds: 250,
+            allowTreeSearch: true,
+            operation: { lease -> ReplacementVerification in
+                guard selectionMatches(snapshot, lease: lease) else {
+                    return ReplacementVerification.mismatch
+                }
+                return setAndVerifySelectedText(
+                    snapshot: snapshot,
+                    replacement: replacement,
+                    pollForDelayedCommit: pollForDelayedCommit,
+                    lease: lease
+                )
+            }
+        ) {
+        case let .value(result):
+            return result
+        case .unavailable(.identifierMismatch):
+            return .mismatch
+        case .unavailable:
+            return .unavailable
+        }
+    }
+
+    nonisolated private func setAndVerifySelectedText(
+        snapshot: SelectionSnapshot,
+        replacement: String,
+        pollForDelayedCommit: Bool,
+        lease: NativeAXElementLease
+    ) -> ReplacementVerification {
+        let setResult = lease.setAttribute(
             kAXSelectedTextAttribute as CFString,
-            replacement as CFString
+            value: replacement as CFString
         )
         guard setResult == .success else { return .unchanged }
         if !pollForDelayedCommit {
@@ -357,7 +395,7 @@ final class TextConverter {
                 replacement,
                 original: snapshot.text,
                 originalRange: snapshot.range,
-                element: snapshot.element
+                element: lease.element
             )
         }
 
@@ -368,7 +406,7 @@ final class TextConverter {
                 replacement,
                 original: snapshot.text,
                 originalRange: snapshot.range,
-                element: snapshot.element
+                element: lease.element
             )
             if verification == .match || verification == .mismatch { break }
             if Date() < deadline { usleep(5_000) }
@@ -403,49 +441,43 @@ final class TextConverter {
         }
     }
 
-    nonisolated private static func readSelection(processID: pid_t) -> SelectionReadResult {
-        let app = AXUIElementCreateApplication(processID)
-        AXUIElementSetMessagingTimeout(app, 0.25)
-        var focusedRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            app,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedRaw
-        ) == .success, let focusedRaw,
-          CFGetTypeID(focusedRaw) == AXUIElementGetTypeID() else {
-            return .fallback(selectionKnown: false, snapshot: nil)
-        }
-        let element = unsafeDowncast(focusedRaw, to: AXUIElement.self)
-        var rangeRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXSelectedTextRangeAttribute as CFString,
-            &rangeRaw
-        ) == .success, let rangeRaw,
-          CFGetTypeID(rangeRaw) == AXValueGetTypeID() else {
-            return .fallback(selectionKnown: false, snapshot: nil)
-        }
-        let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
-        var range = CFRange()
-        guard AXValueGetType(rangeValue) == .cfRange,
-              AXValueGetValue(rangeValue, .cfRange, &range) else {
-            return .fallback(selectionKnown: false, snapshot: nil)
-        }
-        guard range.length > 0 else { return .none }
-        var textRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXSelectedTextAttribute as CFString,
-            &textRaw
-        ) == .success, let text = textRaw as? String, !text.isEmpty else {
-            return .fallback(selectionKnown: true, snapshot: nil)
-        }
-        return .selected(SelectionSnapshot(
+    nonisolated private func readSelection(processID: pid_t) -> SelectionReadResult {
+        switch focusedElementResolver.withElement(
             processID: processID,
-            element: element,
-            range: range,
-            text: text
-        ))
+            timeoutMilliseconds: 250,
+            allowTreeSearch: true,
+            operation: { lease -> SelectionReadResult in
+                let rangeRead = lease.copyAttribute(kAXSelectedTextRangeAttribute as CFString)
+                guard rangeRead.0 == .success, let rangeRaw = rangeRead.1,
+                      CFGetTypeID(rangeRaw) == AXValueGetTypeID() else {
+                    return .fallback(selectionKnown: false, snapshot: nil)
+                }
+                let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
+                var range = CFRange()
+                guard AXValueGetType(rangeValue) == .cfRange,
+                      AXValueGetValue(rangeValue, .cfRange, &range) else {
+                    return .fallback(selectionKnown: false, snapshot: nil)
+                }
+                guard range.length > 0 else { return .none }
+                let textRead = lease.copyAttribute(kAXSelectedTextAttribute as CFString)
+                guard textRead.0 == .success,
+                      let text = textRead.1 as? String,
+                      !text.isEmpty else {
+                    return .fallback(selectionKnown: true, snapshot: nil)
+                }
+                return .selected(SelectionSnapshot(
+                    processID: processID,
+                    identifier: lease.identifier,
+                    range: range,
+                    text: text
+                ))
+            }
+        ) {
+        case let .value(result):
+            return result
+        case .unavailable:
+            return .fallback(selectionKnown: false, snapshot: nil)
+        }
     }
 
     nonisolated private func setAndVerifyFocusedSuffix(
@@ -454,91 +486,165 @@ final class TextConverter {
         focus: FocusedElementIdentity,
         pollForDelayedCommit: Bool
     ) -> ReplacementVerification {
-        let app = AXUIElementCreateApplication(focus.processID)
-        AXUIElementSetMessagingTimeout(app, 0.25)
-        var focusedRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            app,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedRaw
-        ) == .success, let focusedRaw,
-          CFGetTypeID(focusedRaw) == AXUIElementGetTypeID() else { return .unavailable }
-        let element = unsafeDowncast(focusedRaw, to: AXUIElement.self)
+        switch focusedElementResolver.withElement(
+            processID: focus.processID,
+            expectedIdentifier: focus.identifier,
+            timeoutMilliseconds: 250,
+            allowTreeSearch: true,
+            operation: { lease -> ReplacementVerification in
+                let rangeRead = lease.copyAttribute(kAXSelectedTextRangeAttribute as CFString)
+                guard rangeRead.0 == .success, let rangeRaw = rangeRead.1,
+                      CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return .unavailable }
+                let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
+                var caret = CFRange()
+                guard AXValueGetType(rangeValue) == .cfRange,
+                      AXValueGetValue(rangeValue, .cfRange, &caret),
+                      caret.length == 0 else { return .mismatch }
 
-        if let expectedIdentifier = focus.identifier {
-            if expectedIdentifier.hasPrefix("axhash:") {
-                guard expectedIdentifier == "axhash:\(CFHash(element))" else { return .mismatch }
-            } else {
-                var identifierRaw: AnyObject?
-                guard AXUIElementCopyAttributeValue(
-                    element,
-                    kAXIdentifierAttribute as CFString,
-                    &identifierRaw
-                ) == .success,
-                identifierRaw as? String == expectedIdentifier else { return .mismatch }
+                let expectedLength = expected.utf16.count
+                guard caret.location >= expectedLength else { return .mismatch }
+                var suffixRange = CFRange(
+                    location: caret.location - expectedLength,
+                    length: expectedLength
+                )
+                guard let suffixRangeValue = AXValueCreate(.cfRange, &suffixRange) else {
+                    return .unavailable
+                }
+                let suffixRead = lease.copyParameterizedAttribute(
+                    kAXStringForRangeParameterizedAttribute as CFString,
+                    parameter: suffixRangeValue
+                )
+                guard suffixRead.0 == .success,
+                      let actual = suffixRead.1 as? String else { return .unavailable }
+                guard actual.precomposedStringWithCanonicalMapping
+                        == expected.precomposedStringWithCanonicalMapping else { return .mismatch }
+
+                guard lease.setAttribute(
+                    kAXSelectedTextRangeAttribute as CFString,
+                    value: suffixRangeValue
+                ) == .success else { return .unchanged }
+
+                let snapshot = SelectionSnapshot(
+                    processID: focus.processID,
+                    identifier: lease.identifier,
+                    range: suffixRange,
+                    text: expected
+                )
+                let verification = setAndVerifySelectedText(
+                    snapshot: snapshot,
+                    replacement: replacement,
+                    pollForDelayedCommit: pollForDelayedCommit,
+                    lease: lease
+                )
+
+                var finalRange = verification == .match
+                    ? CFRange(location: suffixRange.location + replacement.utf16.count, length: 0)
+                    : caret
+                if let finalRangeValue = AXValueCreate(.cfRange, &finalRange) {
+                    _ = lease.setAttribute(
+                        kAXSelectedTextRangeAttribute as CFString,
+                        value: finalRangeValue
+                    )
+                }
+                return verification
             }
-        }
-
-        var rangeRaw: AnyObject?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXSelectedTextRangeAttribute as CFString,
-            &rangeRaw
-        ) == .success, let rangeRaw,
-          CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return .unavailable }
-        let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
-        var caret = CFRange()
-        guard AXValueGetType(rangeValue) == .cfRange,
-              AXValueGetValue(rangeValue, .cfRange, &caret),
-              caret.length == 0 else { return .mismatch }
-
-        let expectedLength = expected.utf16.count
-        guard caret.location >= expectedLength else { return .mismatch }
-        var suffixRange = CFRange(
-            location: caret.location - expectedLength,
-            length: expectedLength
-        )
-        guard let suffixRangeValue = AXValueCreate(.cfRange, &suffixRange) else {
+        ) {
+        case let .value(result):
+            return result
+        case .unavailable(.identifierMismatch):
+            return .mismatch
+        case .unavailable:
             return .unavailable
         }
-        var suffixRaw: AnyObject?
-        guard AXUIElementCopyParameterizedAttributeValue(
-            element,
-            kAXStringForRangeParameterizedAttribute as CFString,
-            suffixRangeValue,
-            &suffixRaw
-        ) == .success, let actual = suffixRaw as? String else { return .unavailable }
-        guard actual.precomposedStringWithCanonicalMapping
-                == expected.precomposedStringWithCanonicalMapping else { return .mismatch }
+    }
 
-        guard AXUIElementSetAttributeValue(
-            element,
-            kAXSelectedTextRangeAttribute as CFString,
-            suffixRangeValue
-        ) == .success else { return .unchanged }
-        let snapshot = SelectionSnapshot(
+    nonisolated private func selectionMatches(
+        _ snapshot: SelectionSnapshot,
+        lease: NativeAXElementLease
+    ) -> Bool {
+        let rangeRead = lease.copyAttribute(kAXSelectedTextRangeAttribute as CFString)
+        guard rangeRead.0 == .success, let rangeRaw = rangeRead.1,
+              CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return false }
+        let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
+        var range = CFRange()
+        guard AXValueGetType(rangeValue) == .cfRange,
+              AXValueGetValue(rangeValue, .cfRange, &range) else { return false }
+        guard range.location == snapshot.range.location,
+              range.length == snapshot.range.length else { return false }
+        let textRead = lease.copyAttribute(kAXSelectedTextAttribute as CFString)
+        guard textRead.0 == .success, let text = textRead.1 as? String else { return false }
+        return text.precomposedStringWithCanonicalMapping
+            == snapshot.text.precomposedStringWithCanonicalMapping
+    }
+
+    nonisolated private func focusedSuffixMatches(
+        _ expected: String,
+        focus: FocusedElementIdentity,
+        timeoutMilliseconds: Int
+    ) -> Bool {
+        switch focusedElementResolver.withElement(
             processID: focus.processID,
-            element: element,
-            range: suffixRange,
-            text: expected
-        )
-        let verification = setAndVerifySelectedText(
-            snapshot: snapshot,
-            replacement: replacement,
-            pollForDelayedCommit: pollForDelayedCommit
-        )
-
-        var finalRange = verification == .match
-            ? CFRange(location: suffixRange.location + replacement.utf16.count, length: 0)
-            : caret
-        if let finalRangeValue = AXValueCreate(.cfRange, &finalRange) {
-            AXUIElementSetAttributeValue(
-                element,
-                kAXSelectedTextRangeAttribute as CFString,
-                finalRangeValue
-            )
+            expectedIdentifier: focus.identifier,
+            timeoutMilliseconds: timeoutMilliseconds,
+            allowTreeSearch: true,
+            operation: { lease in
+                let rangeRead = lease.copyAttribute(kAXSelectedTextRangeAttribute as CFString)
+                guard rangeRead.0 == .success, let rangeRaw = rangeRead.1,
+                      CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return false }
+                let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
+                var caret = CFRange()
+                guard AXValueGetType(rangeValue) == .cfRange,
+                      AXValueGetValue(rangeValue, .cfRange, &caret),
+                      caret.length == 0 else { return false }
+                let expectedLength = expected.utf16.count
+                guard caret.location >= expectedLength else { return false }
+                var suffixRange = CFRange(
+                    location: caret.location - expectedLength,
+                    length: expectedLength
+                )
+                guard let suffixRangeValue = AXValueCreate(.cfRange, &suffixRange) else {
+                    return false
+                }
+                let suffixRead = lease.copyParameterizedAttribute(
+                    kAXStringForRangeParameterizedAttribute as CFString,
+                    parameter: suffixRangeValue
+                )
+                guard suffixRead.0 == .success, let actual = suffixRead.1 as? String else {
+                    return false
+                }
+                return actual.precomposedStringWithCanonicalMapping
+                    == expected.precomposedStringWithCanonicalMapping
+            }
+        ) {
+        case let .value(matched):
+            return matched
+        case .unavailable:
+            return false
         }
-        return verification
+    }
+
+    nonisolated private func selectedTextMatches(
+        _ expected: String,
+        focus: FocusedElementIdentity,
+        timeoutMilliseconds: Int
+    ) -> Bool {
+        switch focusedElementResolver.withElement(
+            processID: focus.processID,
+            expectedIdentifier: focus.identifier,
+            timeoutMilliseconds: timeoutMilliseconds,
+            allowTreeSearch: true,
+            operation: { lease in
+                let textRead = lease.copyAttribute(kAXSelectedTextAttribute as CFString)
+                guard textRead.0 == .success, let text = textRead.1 as? String else { return false }
+                return text.precomposedStringWithCanonicalMapping
+                    == expected.precomposedStringWithCanonicalMapping
+            }
+        ) {
+        case let .value(matched):
+            return matched
+        case .unavailable:
+            return false
+        }
     }
 
     func prepareBufferedConversion(keys: [TypedKey]) -> BufferedManualConversion? {
@@ -895,12 +1001,26 @@ final class TextConverter {
             }
             self.manualQueue.async { [weak self] in
                 guard let self else { return }
-                let verified = self.verifyReplacement(
-                    replacement,
-                    original: text,
-                    originalRange: snapshot.range,
-                    element: snapshot.element
-                )
+                let verified: ReplacementVerification
+                switch self.focusedElementResolver.withElement(
+                    processID: snapshot.processID,
+                    expectedIdentifier: snapshot.identifier,
+                    timeoutMilliseconds: 250,
+                    allowTreeSearch: true,
+                    operation: { lease in
+                        self.verifyReplacement(
+                            replacement,
+                            original: text,
+                            originalRange: snapshot.range,
+                            element: lease.element
+                        )
+                    }
+                ) {
+                case let .value(result):
+                    verified = result
+                case .unavailable:
+                    verified = .unavailable
+                }
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     if verified == .match {

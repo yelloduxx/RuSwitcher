@@ -1,7 +1,7 @@
 {
   "version": "4.0.0",
-  "build": "95",
-  "dev": "",
+  "build": "96",
+  "dev": "ax",
   "url": "https://github.com/yelloduxx/RuSwitcher",
   "sha256": ""
 }

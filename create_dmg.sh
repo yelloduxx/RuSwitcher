@@ -1,12 +1,12 @@
 #!/bin/bash
 set -e
 
-APP_NAME="RuSwitcher"
+APP_NAME="RuSwitcherAX"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Единый источник версии — version.json в корне репозитория.
 VERSION=$(/usr/bin/python3 -c "import json;print(json.load(open('version.json'))['version'])")
 BUILD=$(/usr/bin/python3 -c "import json;print(json.load(open('version.json')).get('build','1'))")
-DMG_NAME="${APP_NAME}-${VERSION}.dmg"
+DMG_NAME="${APP_NAME}-${VERSION}-b${BUILD}.dmg"
 # Keychain profile used for Apple notarization. Override with NOTARIZE_PROFILE=<name>.
 # Skip notarization entirely with SKIP_NOTARIZE=1.
 NOTARIZE_PROFILE="${NOTARIZE_PROFILE:-notarytool-studio}"
@@ -120,8 +120,8 @@ end tell
 APPLESCRIPT
 
 # 6. Set volume icon
-if [ -f "${APP_NAME}.icns" ]; then
-    cp "${APP_NAME}.icns" "$MOUNT_DIR/.VolumeIcon.icns"
+if [ -f "RuSwitcher.icns" ]; then
+    cp "RuSwitcher.icns" "$MOUNT_DIR/.VolumeIcon.icns"
     SetFile -c icnC "$MOUNT_DIR/.VolumeIcon.icns" 2>/dev/null || true
     SetFile -a C "$MOUNT_DIR" 2>/dev/null || true
 fi

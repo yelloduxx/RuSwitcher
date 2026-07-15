@@ -7,14 +7,21 @@ import RuSwitcherCore
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private static let healthItemTag = 742
     private var statusItem: NSStatusItem!
-    private let keyboardMonitor = KeyboardMonitor()
-    private let textConverter = TextConverter()
+    private let focusedElementResolver = NativeFocusedEditableResolver()
+    private lazy var keyboardMonitor = KeyboardMonitor(
+        focusedElementResolver: focusedElementResolver
+    )
+    private lazy var textConverter = TextConverter(
+        focusedElementResolver: focusedElementResolver
+    )
     private lazy var replacementCoordinator = NativeReplacementCoordinator(
         reader: textContextReader,
         poster: textConverter
     )
     private let languageModel = LanguageModelStore.bundled
-    private let textContextReader = FocusedTextContextReader()
+    private lazy var textContextReader = FocusedTextContextReader(
+        focusedElementResolver: focusedElementResolver
+    )
     private let settingsController = SettingsWindowController()
     private let perAppLayoutManager = PerAppLayoutManager()
     private var permissionCheckTimer: Timer?
@@ -229,7 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Сбрасывает старые записи разрешений для нашего bundle ID
     private func resetPermissions() {
-        let bundleID = Bundle.main.bundleIdentifier ?? "com.ruswitcher.app"
+        let bundleID = Bundle.main.bundleIdentifier ?? ProductIdentity.bundleIdentifier
         rslog("tcc_reset_started")
 
         for service in ["Accessibility", "ListenEvent"] {
@@ -342,13 +349,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         keyboardMonitor.onTokenCompleted = { [weak self] snapshot, proxy in
             self?.handleAutoConvert(snapshot, proxy: proxy) ?? .passThrough
         }
-        keyboardMonitor.onTokenChanged = nil
+        keyboardMonitor.onTokenChanged = { [weak self] draft in
+            self?.focusedElementResolver.prefetch(processID: draft.focus.processID)
+        }
         keyboardMonitor.onCorrectionEdited = { [weak self] in
             self?.learnFromUndo()
         }
         keyboardMonitor.onEditingInvalidated = { [weak self] in
             self?.textConverter.clearState()
             self?.lastAutoConverted = nil
+            self?.focusedElementResolver.invalidate()
+        }
+        keyboardMonitor.onFrontmostProcessChanged = { [weak self] processID in
+            self?.focusedElementResolver.prefetch(processID: processID)
         }
         keyboardMonitor.onUserInput = { [weak self] in self?.caretIndicator?.userTyped() }  // issue #10
         updateStatusIcon()        // сначала выставляем флаг меню-бара, пока индикатора ещё нет
@@ -361,6 +374,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Task { @MainActor in self?.updateStatusIcon() }
         }
         rslog("Monitoring started successfully")
+        if let processID = NSWorkspace.shared.frontmostApplication?.processIdentifier {
+            focusedElementResolver.prefetch(processID: processID)
+        }
 
         if SettingsManager.shared.perAppLayout {
             startPerAppLayout()
