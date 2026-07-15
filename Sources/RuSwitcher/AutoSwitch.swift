@@ -19,6 +19,32 @@ enum Dict {
     }
 }
 
+/// Hosts where Accessibility selection/`kAXSelectedText` is unreliable.
+/// Setting selected text without a real selection **inserts** and leaves the
+/// original word (duplicate: converted + original). Prefer Backspace+Unicode.
+enum ManualHostPolicy {
+    /// Explicitly observed: Codex desktop + Ghostty terminal.
+    private static let keyboardDeletionBundleIDs: Set<String> = [
+        "com.mitchellh.ghostty",
+        "com.openai.codex",
+    ]
+
+    static func prefersKeyboardDeletion(bundleID: String?) -> Bool {
+        guard let id = bundleID, !id.isEmpty else { return false }
+        if keyboardDeletionBundleIDs.contains(id) { return true }
+        // Terminals / IDEs from the default auto-deny list share the same
+        // broken selection model for manual double-Shift.
+        for entry in AutoSwitchPolicy.defaultDeniedApps {
+            if entry.hasSuffix("*") {
+                if id.hasPrefix(String(entry.dropLast())) { return true }
+            } else if entry == id {
+                return true
+            }
+        }
+        return false
+    }
+}
+
 /// Политика безопасности авто-конвертации.
 enum AutoSwitchPolicy {
     /// Активен ли защищённый ввод (поле пароля, Secure Keyboard Entry в терминале) —
