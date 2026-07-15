@@ -157,7 +157,7 @@ final class SettingsManager: @unchecked Sendable {
     /// Клавиша-триггер: "option" | "command" | "control" | "shift" | "capsLock".
     /// Дефолт — option (как было до 2.3, поведение не меняется).
     var triggerKey: String {
-        get { defaults.string(forKey: Keys.triggerKey) ?? "option" }
+        get { defaults.string(forKey: Keys.triggerKey) ?? ProductIdentity.defaultTriggerKey }
         set { defaults.set(newValue, forKey: Keys.triggerKey) }
     }
 
@@ -169,7 +169,12 @@ final class SettingsManager: @unchecked Sendable {
 
     /// Двойной тап вместо одиночного.
     var triggerDoubleTap: Bool {
-        get { defaults.bool(forKey: Keys.triggerDoubleTap) }
+        get {
+            if defaults.object(forKey: Keys.triggerDoubleTap) == nil {
+                return ProductIdentity.defaultTriggerDoubleTap
+            }
+            return defaults.bool(forKey: Keys.triggerDoubleTap)
+        }
         set { defaults.set(newValue, forKey: Keys.triggerDoubleTap) }
     }
 

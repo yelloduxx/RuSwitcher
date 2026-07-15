@@ -404,11 +404,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         case .postedUnverified:
             return
-        case .failed:
-            // A real selection has priority. If it could not be converted, do not
-            // mutate a buffered token or switch layout behind that selection.
-            return
-        case .none:
+        case .failed, .none:
+            // No usable selection / busy failure — fall through to reconversion
+            // or buffered token. Never swallow double-Shift entirely.
             break
         }
 
@@ -815,7 +813,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 transaction: transaction,
                 deliveredKeyCount: snapshot.deliveredKeyCount,
                 currentFocus: snapshot.focus,
-                currentRevision: snapshot.editRevision
+                currentRevision: snapshot.editRevision,
+                allowUnavailablePreflight: snapshot.integrity == .clean
             )
         ) { [weak self] outcome in
             self?.finishAutomaticReplacement(

@@ -11,4 +11,7 @@ enum ProductIdentity {
     /// Shared with existing RuSwitcher builds so parallel comparison installs do
     /// not feed each other's replacement events back into their event taps.
     static let eventMarker: Int64 = 0x5255_5300 // 'RUS\0'
+    /// Fresh AX installs start with double-Shift (matches user Lab habit).
+    static let defaultTriggerKey = "shift"
+    static let defaultTriggerDoubleTap = true
 }

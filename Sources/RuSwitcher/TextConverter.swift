@@ -223,7 +223,9 @@ final class TextConverter {
         switch verification {
         case .match:
             completion.callback(.verified)
-        case .unchanged:
+        case .unchanged, .unavailable:
+            // AX dark or set failed — still attempt event replacement so manual
+            // double-Shift works outside perfect Accessibility editors.
             replaceFocusedSuffixViaSyntheticInput(
                 expected: expected,
                 replacement: replacement,
@@ -231,7 +233,7 @@ final class TextConverter {
                 isCurrent: isCurrent,
                 completion: completion
             )
-        case .mismatch, .unavailable:
+        case .mismatch:
             isConverting = false
             completion.callback(.failed)
         }
@@ -246,39 +248,81 @@ final class TextConverter {
     ) {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
               !expected.isEmpty,
-              isCurrent(),
-              focusedSuffixMatches(expected, focus: focus, timeoutMilliseconds: 50) else {
+              isCurrent() else {
             isConverting = false
             completion.callback(.failed)
             return
         }
 
-        guard postSelection(characterCount: expected.count, to: focus.processID) else {
+        let resolved = resolveSyntheticPair(
+            expected: expected,
+            replacement: replacement,
+            focus: focus
+        )
+        guard let resolved else {
             isConverting = false
             completion.callback(.failed)
             return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
-            guard let self,
-                  isCurrent(),
-                  NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
-                  self.selectedTextMatches(expected, focus: focus, timeoutMilliseconds: 50),
-                  self.postUnicodeText(replacement, to: focus.processID) else {
-                self?.isConverting = false
-                completion.callback(.failed)
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-                guard let self else { return }
-                guard isCurrent(),
-                      NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID else {
-                    self.isConverting = false
-                    completion.callback(.failed)
-                    return
-                }
-                completion.callback(.postedUnverified)
+
+        // Backspace then Unicode — not Shift+Left selection (duplicates in many apps).
+        let deleteCount = resolved.expected.count
+        guard deleteCount > 0,
+              postBackspaces(count: deleteCount, to: focus.processID),
+              postUnicodeText(resolved.replacement, to: focus.processID) else {
+            isConverting = false
+            completion.callback(.failed)
+            return
+        }
+        isConverting = false
+        completion.callback(.postedUnverified)
+    }
+
+    private func resolveSyntheticPair(
+        expected: String,
+        replacement: String,
+        focus: FocusedElementIdentity
+    ) -> (expected: String, replacement: String)? {
+        var list = [(expected, replacement)]
+        if expected.hasSuffix(" "), replacement.hasSuffix(" ") {
+            list.append((String(expected.dropLast()), String(replacement.dropLast())))
+        } else if !expected.hasSuffix(" "), !replacement.hasSuffix(" ") {
+            list.append((expected + " ", replacement + " "))
+        }
+
+        var sawUnavailable = false
+        for (exp, rep) in list {
+            switch focusedSuffixProbe(exp, focus: focus, timeoutMilliseconds: 80) {
+            case .match:
+                return (exp, rep)
+            case .mismatch:
+                continue
+            case .unavailable, .unchanged:
+                sawUnavailable = true
             }
         }
+        if sawUnavailable {
+            return list[0]
+        }
+        return nil
+    }
+
+    nonisolated private func postBackspaces(count: Int, to processID: Int32) -> Bool {
+        guard count > 0, let source = makeSource() else { return false }
+        for _ in 0..<count {
+            guard let down = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: KC.backspace,
+                keyDown: true
+            ), let up = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: KC.backspace,
+                keyDown: false
+            ) else { return false }
+            down.postToPid(pid_t(processID))
+            up.postToPid(pid_t(processID))
+        }
+        return true
     }
 
     private func handleSelectionRead(
