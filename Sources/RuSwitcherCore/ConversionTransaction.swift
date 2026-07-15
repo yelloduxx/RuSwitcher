@@ -104,7 +104,11 @@ public struct EventReplacementPlan: Equatable, Sendable {
     public var insertedText: String { replacementText + replayText }
 
     public init(transaction: ConversionTransaction, deliveredKeyCount: Int) {
-        backspaceCount = max(0, deliveredKeyCount)
+        // Prefer the larger of physical keys and the preflight suffix length so a
+        // single dropped backspace or key/text length skew cannot leave the first
+        // wrong-layout character in the editor ("g" + "привет").
+        let suffixUnits = transaction.expectedOriginalSuffix.utf16.count
+        backspaceCount = max(0, max(deliveredKeyCount, suffixUnits))
         replacementText = transaction.replacement
         replayText = transaction.boundary.replayText
     }

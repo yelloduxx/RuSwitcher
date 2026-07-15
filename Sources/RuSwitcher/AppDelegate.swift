@@ -831,6 +831,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // trigger. This prevents stale physical keys from converting the
             // already-corrected word to the same text again while AX verifies it.
             textConverter.recordCommittedTransaction(transaction)
+            // Switch layout NOW — before the event callback returns. Waiting for
+            // async AX verification left the first letter of the next word on the
+            // previous layout whenever the user typed quickly after Space.
+            applyTargetLayout(transaction.targetLayoutID)
             return TokenHandlingResult(
                 consumeBoundary: snapshot.boundary.shouldConsumeOriginalEvent,
                 stageCompletion: true,
@@ -839,6 +843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 wasConverted: true
             )
         case .blocked(.duplicateTransaction):
+            applyTargetLayout(transaction.targetLayoutID)
             return TokenHandlingResult(
                 consumeBoundary: snapshot.boundary.shouldConsumeOriginalEvent,
                 stageCompletion: true,
@@ -881,12 +886,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 expectedSequence: stagedSequence
             ) else { return }
             verifiedAutomaticReplacementCount += 1
-            if let targetLayoutID = transaction.targetLayoutID {
-                LayoutSwitcher.switchTo(layoutID: targetLayoutID)
-            } else {
-                LayoutSwitcher.switchToOpposite()
-            }
-            updateStatusIcon()
+            // Layout was already switched on post; re-apply in case another app
+            // changed input source during verification.
+            applyTargetLayout(transaction.targetLayoutID)
             textConverter.recordCommittedTransaction(transaction)
             lastAutoConverted = AutoLearningEvent(
                 original: transaction.original,
@@ -895,17 +897,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 at: Date()
             )
         case .postedUnverified:
+            // Post already succeeded and layout already switched. AX only failed
+            // to read the result back — do not undo the staged conversion.
             guard keyboardMonitor.isStagedCompletionCurrent(
                 expectedSequence: stagedSequence
             ) else { return }
-            textConverter.discardTransactionIfCurrent(transaction)
-            keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
+            keyboardMonitor.finishUnverifiedPostedConversion(expectedSequence: stagedSequence)
+            applyTargetLayout(transaction.targetLayoutID)
         case .failed(.verificationMismatch):
             textConverter.discardTransactionIfCurrent(transaction)
             keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
         case .failed, .blocked, .switchedOnly:
             textConverter.discardTransactionIfCurrent(transaction)
         }
+    }
+
+    private func applyTargetLayout(_ targetLayoutID: String?) {
+        if let targetLayoutID {
+            LayoutSwitcher.switchTo(layoutID: targetLayoutID)
+        } else {
+            LayoutSwitcher.switchToOpposite()
+        }
+        updateStatusIcon()
     }
 
     private func oppositeLayoutID(for sourceLayoutID: String?) -> String? {

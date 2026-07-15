@@ -745,6 +745,12 @@ final class TextConverter {
 
     nonisolated private func replacementEvents(for plan: EventReplacementPlan) -> [CGEvent]? {
         guard let source = makeSource() else { return nil }
+        // Independent HID state for each key prevents some hosts from coalescing
+        // rapid identical Backspaces into a single deletion (first char left over).
+        source.setLocalEventsFilterDuringSuppressionState(
+            [.permitLocalMouseEvents, .permitLocalKeyboardEvents, .permitSystemDefinedEvents],
+            state: .eventSuppressionStateSuppressionInterval
+        )
         var events: [CGEvent] = []
         events.reserveCapacity(plan.backspaceCount * 2 + 2)
         for _ in 0..<plan.backspaceCount {

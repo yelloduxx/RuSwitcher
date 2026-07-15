@@ -68,6 +68,23 @@ final class ConversionTransactionTests: XCTestCase {
         XCTAssertEqual(plan.insertedText, "привет ")
     }
 
+    func testBackspaceCountUsesExpectedSuffixWhenLargerThanDeliveredKeys() {
+        let transaction = ConversionTransaction(
+            original: "ghbdtn",
+            replacement: "привет",
+            boundary: .space(count: 1),
+            focus: focus,
+            sourceLayoutID: "en",
+            targetLayoutID: "ru",
+            sequence: 11,
+            expectedOriginalSuffix: "ghbdtn",
+            automatic: true
+        )
+        // Undercounted delivered keys must not leave the leading character.
+        let plan = EventReplacementPlan(transaction: transaction, deliveredKeyCount: 5)
+        XCTAssertEqual(plan.backspaceCount, 6)
+    }
+
     func testExecutionGateRejectsOnlyCommittedDuplicate() {
         let transaction = ConversionTransaction(
             original: "ghbdtn",
