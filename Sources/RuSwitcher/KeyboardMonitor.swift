@@ -412,6 +412,16 @@ final class KeyboardMonitor: @unchecked Sendable {
         return inputSession.stageCompletion()
     }
 
+    func stageVerifiedCaretConversion(
+        expectedSequence: UInt64,
+        expectedRevision: UInt64
+    ) -> UInt64? {
+        inputSession.stageVerifiedExternalEdit(
+            expectedSequence: expectedSequence,
+            expectedRevision: expectedRevision
+        )
+    }
+
     func invalidateStagedCompletion(expectedSequence: UInt64) {
         guard isStagedCompletionCurrent(expectedSequence: expectedSequence) else { return }
         inputSession.invalidate(clearContext: true)

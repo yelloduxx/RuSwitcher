@@ -15,19 +15,19 @@ installed build changes.
 - Primary repository: `yelloduxx/RuSwitcher`; the production branch is `main`.
   `rashn/RuSwitcher` is the author's upstream repository, not a release source
   for this fork.
-- The stabilization release on `main` is `4.0.0` build `95` (Lab identity).
-- Branch `fix/ax-focused-editable-resolver` ships build `96` as a parallel
-  product **RuSwitcher AX** so it can coexist with Codex Lab work:
-  - Bundle: `RuSwitcherAX.app` → install to `/Applications/RuSwitcherAX.app`
-  - Bundle ID: `com.ruswitcher.ax` (not `com.ruswitcher.app` / `.lab`)
-  - Executable: `RuSwitcherAX`
-  - Dev tag: `ax`
-  - Logs: `~/Library/Logs/RuSwitcherAX/`
-  - Distinct synthetic event marker (`ProductIdentity.eventMarker`)
+- The current fork release is `4.0.0` build `105`, built from
+  `codex/release-105` and installed with the Lab identity:
+  - Bundle: `RuSwitcher Lab.app` at `/Applications/RuSwitcher Lab.app`
+  - Bundle ID: `com.ruswitcher.lab`
+  - Executable: `RuSwitcherLab`
+  - Signing identity: `RuSwitcher Local Code Signing`
+  - Executable SHA-256:
+    `503e07d18caeb3bbaf722c52e6b7a85e0bd9bf086e42cdb5759d692d7ea6ac33`
 - The author's original app remains `/Applications/RuSwitcher.app` (`2.7.0`
   build `35`). Codex/Lab installs remain `/Applications/RuSwitcher Lab.app`,
-  bundle ID `com.ruswitcher.lab`. Never overwrite those from this branch.
-- Signing identity stays `RuSwitcher Local Code Signing` (reusable).
+  bundle ID `com.ruswitcher.lab`. Grok's separate comparison build remains
+  `/Applications/RuSwitcherAX.app`, bundle ID `com.ruswitcher.ax`. Never
+  overwrite either comparison app from the Lab release path.
 - Verify the installed binary hash and PID after every local replacement; do
   not infer the running build from `version.json` alone.
 
@@ -201,8 +201,10 @@ The configured trigger is currently used as double Shift by the user. Priority:
 1. Convert a real non-empty selection.
 2. Convert the current buffered token.
 3. Convert the last completed buffered token after a boundary.
-4. Undo/reconvert the immediately preceding automatic correction.
-5. Switch layout only.
+4. Recover and convert the exact token before the caret through verified AX when
+   navigation or focus changes have invalidated the physical-key buffer.
+5. Undo/reconvert the immediately preceding automatic correction.
+6. Switch layout only.
 
 Selection direction is based on dominant script, not the active layout. AX
 selected-text replacement is preferred. Clipboard fallback is retained only
@@ -322,7 +324,7 @@ bash scripts/run_headless_native_parity_test.sh
 bash scripts/verify_v3_only_build.sh
 ```
 
-After removing V2, the root suite contains 145 tests. V4's 12 research tests run
+After removing V2, the root suite contains 171 tests. V4's 12 research tests run
 only from its separate package. The headless event-stream fixture must pass and
 its intentionally wrong expected output must fail.
 
@@ -351,13 +353,15 @@ complete preferences domain afterward, so it does not pollute the user's
 dictionary.
 
 Forced manual toggle cycles are tested by
-`scripts/run_manual_toggle_cycle_test.sh`. The native CGEvent probe covers the
-current Cyrillic token, a real selection and an immediately auto-converted
-previous word. It asserts the exact text after every double Shift and a zero
-pasteboard `changeCount` delta. The Cyrillic-token scenario forces targeted
-synthetic-input fallback so the non-AX editor path remains covered. The probe
-also records every observed layout and fails unless both and only the configured
-RU/EN layouts are used; isolated defaults can never auto-select a Chinese IME.
+`scripts/run_manual_toggle_cycle_test.sh`. The short native CGEvent probe covers
+the current Cyrillic token, a real selection, an immediately auto-converted
+previous word and a token recovered before the caret after navigation. It
+asserts the exact text after every double Shift, preserves two spaces in the
+caret scenario and requires a zero pasteboard `changeCount` delta. The
+Cyrillic-token scenario forces targeted synthetic-input fallback so the non-AX
+editor path remains covered. The probe also records every observed layout and
+fails unless both and only the configured RU/EN layouts are used; isolated
+defaults can never auto-select a Chinese IME.
 
 Real CGEvent tests, without Computer Use:
 
@@ -414,19 +418,20 @@ Install atomically:
 2. Verify the staged signature.
 3. Stop the running `RuSwitcher` process.
 4. Move the current app to a timestamped backup.
-5. Move staging to the intended destination. On the development Mac the fork is
-   `/Applications/RuSwitcher Lab.app`; do not overwrite the author's comparison
-   copy at `/Applications/RuSwitcher.app`.
+5. Move staging to `/Applications/RuSwitcher Lab.app`; do not overwrite the
+   author's `/Applications/RuSwitcher.app` or Grok's
+   `/Applications/RuSwitcherAX.app` comparison copies.
 6. Open the app and verify version, architectures, signature, SHA-256 and process.
 
-Current observed footprint for installed Lab build 95:
+Current observed footprint for installed Lab build 105:
 
-- App bundle: about 10.51 MiB on disk.
+- App bundle: about 10.84 MiB on disk.
 - V3 language model: 7,296,305 bytes.
-- Idle process: about 0.1% CPU and 80.8 MiB RSS on the development Mac.
+- Runtime CPU/RSS must be measured after the post-install process settles; do
+  not reuse build 95's measurements for build 105.
 - Decoder inference in the simulator: under roughly 4 ms p99 per completed token.
 
-The installed Lab binary SHA-256 after build 95 is
-`e8cdecf9a7dcfb0db31b29214863b9e78741c892b6697f36296732a963bbe71e`.
+The installed Lab binary SHA-256 after build 105 is
+`503e07d18caeb3bbaf722c52e6b7a85e0bd9bf086e42cdb5759d692d7ea6ac33`.
 Always compare installed and freshly built hashes rather than trusting the build
 number alone.

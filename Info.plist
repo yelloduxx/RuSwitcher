@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>RuSwitcherAX</string>
+    <string>RuSwitcherLab</string>
     <key>CFBundleIdentifier</key>
-    <string>com.ruswitcher.ax</string>
+    <string>com.ruswitcher.lab</string>
     <key>CFBundleName</key>
-    <string>RuSwitcher AX</string>
+    <string>RuSwitcher Lab</string>
     <key>CFBundleDisplayName</key>
-    <string>RuSwitcher AX</string>
+    <string>RuSwitcher Lab</string>
     <key>CFBundleVersion</key>
     <string>11</string>
     <key>CFBundleShortVersionString</key>

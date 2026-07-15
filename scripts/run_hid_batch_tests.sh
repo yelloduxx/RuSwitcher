@@ -2,7 +2,8 @@
 set -euo pipefail
 
 APP="${RUSWITCH_APP:-/Applications/RuSwitcher.app}"
-BIN="$APP/Contents/MacOS/RuSwitcher"
+APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+BIN="$APP/Contents/MacOS/$APP_EXECUTABLE"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEFAULT_FIXTURE="$ROOT/Tests/Fixtures/HID/mixed-layout-corpus-batch.json"
 

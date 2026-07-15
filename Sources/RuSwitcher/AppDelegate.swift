@@ -39,6 +39,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             rslog("engine_v3_unavailable")
         }
+        let siblings = NSWorkspace.shared.runningApplications.filter {
+            guard $0.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return false }
+            let bundleID = $0.bundleIdentifier ?? ""
+            return bundleID == "com.ruswitcher.app"
+                || bundleID == "com.ruswitcher.lab"
+                || bundleID == ProductIdentity.bundleIdentifier
+                || ($0.localizedName?.contains("RuSwitcher") == true)
+        }
+        if !siblings.isEmpty { rslog("sibling_ruswitcher_instance_detected") }
         setupStatusItem()
         setupSettingsCallbacks()
         syncLoginItem()
@@ -427,16 +436,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
             return
         }
-        guard let snapshot = keyboardMonitor.manualTokenSnapshot(),
-              let conversion = textConverter.prepareBufferedConversion(keys: snapshot.keys) else {
-            guard !AutoSwitchPolicy.isDeniedApp(frontID) else { return }
-            textConverter.clearState()
-            keyboardMonitor.markConverted()
-            LayoutSwitcher.switchToOpposite()
-            updateStatusIcon()
+        if let snapshot = keyboardMonitor.manualTokenSnapshot(),
+           let conversion = textConverter.prepareBufferedConversion(keys: snapshot.keys) {
+            submitManualBufferedConversion(
+                conversion,
+                snapshot: snapshot,
+                frontID: frontID
+            )
             return
         }
-        submitManualBufferedConversion(conversion, snapshot: snapshot, frontID: frontID)
+        convertWordBeforeCaretOrSwitchLayout(frontID: frontID)
+    }
+
+    private func convertWordBeforeCaretOrSwitchLayout(frontID: String?) {
+        guard !AutoSwitchPolicy.isDeniedApp(frontID),
+              let snapshot = keyboardMonitor.manualEditorSnapshot() else { return }
+        textConverter.prepareCaretWordConversion(focus: snapshot.focus) { [weak self] outcome in
+            guard let self,
+                  NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else { return }
+            switch outcome {
+            case .busy:
+                return
+            case .noCandidate:
+                self.finishManualSwitchOnly()
+            case let .conversion(conversion):
+                self.submitManualCaretWordConversion(
+                    conversion,
+                    snapshot: snapshot,
+                    frontID: frontID
+                )
+            }
+        }
+    }
+
+    private func finishManualSwitchOnly() {
+        textConverter.clearState()
+        keyboardMonitor.markConverted()
+        LayoutSwitcher.switchToOpposite()
+        updateStatusIcon()
     }
 
     private func submitManualBufferedConversion(
@@ -567,6 +604,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.finishManualReconversion(
                     reconversion,
                     transaction: transaction,
+                    allowLearning: false
+                )
+            case .failed:
+                self.textConverter.cancelPendingReconversion()
+                self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
+            }
+        }
+    }
+
+    private func submitManualCaretWordConversion(
+        _ conversion: CaretWordConversion,
+        snapshot: ManualTokenSnapshot,
+        frontID: String?
+    ) {
+        let trailing = String(conversion.expectedSuffix.dropFirst(conversion.original.count))
+        let boundary: InputBoundary = trailing.isEmpty
+            ? .punctuation("")
+            : .space(count: trailing.count)
+        let resolvedFocus = FocusedElementIdentity(
+            processID: snapshot.focus.processID,
+            bundleID: snapshot.focus.bundleID,
+            identifier: conversion.elementIdentifier
+        )
+        let transaction = ConversionTransaction(
+            original: conversion.original,
+            replacement: conversion.replacement,
+            boundary: boundary,
+            focus: resolvedFocus,
+            sourceLayoutID: conversion.sourceLayoutID,
+            targetLayoutID: conversion.targetLayoutID,
+            sequence: snapshot.sequence,
+            editRevision: snapshot.editRevision,
+            expectedOriginalSuffix: conversion.expectedSuffix,
+            automatic: false
+        )
+        guard let stagedSequence = keyboardMonitor.stageVerifiedCaretConversion(
+            expectedSequence: snapshot.sequence,
+            expectedRevision: snapshot.editRevision
+        ) else {
+            return
+        }
+        textConverter.replaceFocusedSuffix(
+            expected: transaction.expectedOriginalSuffix,
+            replacement: transaction.insertedText,
+            focus: resolvedFocus,
+            expectedCaretLocation: conversion.caretLocation,
+            isCurrent: { [weak self] in
+                self?.keyboardMonitor.isStagedCompletionCurrent(
+                    expectedSequence: stagedSequence
+                ) == true
+            }
+        ) { [weak self] outcome in
+            guard let self else { return }
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else {
+                self.textConverter.cancelPendingReconversion()
+                self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
+                return
+            }
+            guard self.keyboardMonitor.isStagedCompletionCurrent(
+                expectedSequence: stagedSequence
+            ) else {
+                self.textConverter.cancelPendingReconversion()
+                return
+            }
+            switch outcome {
+            case .verified:
+                self.textConverter.recordPostedCaretWord(conversion, transaction: transaction)
+                self.finishManualConversion(
+                    frontID: frontID,
+                    targetLayoutID: conversion.targetLayoutID
+                )
+            case .postedUnverified:
+                self.textConverter.recordPostedCaretWord(conversion, transaction: transaction)
+                self.keyboardMonitor.finishUnverifiedPostedConversion(
+                    expectedSequence: stagedSequence
+                )
+                self.finishManualConversion(
+                    frontID: frontID,
+                    targetLayoutID: conversion.targetLayoutID,
                     allowLearning: false
                 )
             case .failed:

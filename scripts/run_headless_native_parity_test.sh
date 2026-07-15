@@ -4,17 +4,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURE="${1:-$ROOT/Tests/Fixtures/HID/headless-native-parity-trap.json}"
 APP="${RUSWITCH_APP:-/Applications/RuSwitcher.app}"
+APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
 HEADLESS="$ROOT/.build/headless-native-parity-headless.json"
 NATIVE="$ROOT/.build/headless-native-parity-native.json"
 WAS_RUNNING=0
 
-if pgrep -x RuSwitcher >/dev/null; then WAS_RUNNING=1; fi
+if pgrep -x "$APP_EXECUTABLE" >/dev/null; then WAS_RUNNING=1; fi
 
 restore_application() {
     if [ "$WAS_RUNNING" -eq 1 ]; then
         open "$APP"
         for _ in {1..30}; do
-            pgrep -x RuSwitcher >/dev/null && return
+            pgrep -x "$APP_EXECUTABLE" >/dev/null && return
             sleep 0.1
         done
         echo "WARNING: normal RuSwitcher process did not restart" >&2

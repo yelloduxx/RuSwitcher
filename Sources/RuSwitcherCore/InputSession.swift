@@ -362,6 +362,22 @@ public struct InputSession: Equatable, Sendable {
         return sequence
     }
 
+    /// A read-only AX snapshot can re-establish a clean empty editor state after
+    /// navigation invalidated the physical-key buffer. Sequence and revision must
+    /// still match, so input arriving after the snapshot makes staging fail.
+    public mutating func stageVerifiedExternalEdit(
+        expectedSequence: UInt64,
+        expectedRevision: UInt64
+    ) -> UInt64? {
+        guard sequence == expectedSequence,
+              editRevision == expectedRevision,
+              currentKeys.isEmpty else { return nil }
+        if case .committing = state { return nil }
+        integrity = .clean
+        state = .idle(revision: editRevision)
+        return stageCompletion()
+    }
+
     /// Applies delayed context only while no newer user input or token completion
     /// has superseded the staged transaction.
     @discardableResult

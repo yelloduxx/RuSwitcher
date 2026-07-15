@@ -50,7 +50,8 @@ swift run -c release RuSwitcherSimulator --jobs 4 --limit 100 --output "$REPORT"
 jq -e '.engine == "v3" and .failed == 0' "$REPORT" >/dev/null
 
 if [ -d "$APP" ]; then
-    BINARY="$APP/Contents/MacOS/RuSwitcher"
+    APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+    BINARY="$APP/Contents/MacOS/$APP_EXECUTABLE"
     test -f "$APP/Contents/Resources/language-model-v1.bin"
     if find "$APP/Contents" \( -iname '*v4*' -o -iname '*LayoutReranker*' \) -print -quit | grep -q .; then
         echo "FAIL: V4 artifact found in application bundle"

@@ -1,14 +1,13 @@
 import Foundation
 
-/// Parallel-install identity for this experimental branch.
-/// Distinct from production (`com.ruswitcher.app`) and Lab (`com.ruswitcher.lab`)
-/// so Accessibility / Input Monitoring / defaults / login items do not collide.
+/// Identity of this fork's separately installed production build.
 enum ProductIdentity {
-    static let displayName = "RuSwitcher AX"
-    static let shortName = "RuSwitcherAX"
-    static let bundleIdentifier = "com.ruswitcher.ax"
-    static let logDirectoryName = "RuSwitcherAX"
-    /// Shared with existing RuSwitcher builds so parallel comparison installs do
-    /// not feed each other's replacement events back into their event taps.
+    static let displayName = "RuSwitcher Lab"
+    static let shortName = "RuSwitcherLab"
+    static let bundleIdentifier = "com.ruswitcher.lab"
+    static let logDirectoryName = "RuSwitcherLab"
+    /// Stable across builds so our synthetic events never feed back into the tap.
     static let eventMarker: Int64 = 0x5255_5300 // 'RUS\0'
+    static let defaultTriggerKey = "shift"
+    static let defaultTriggerDoubleTap = true
 }
