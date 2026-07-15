@@ -427,8 +427,8 @@ Current observed footprint for installed Lab build 105:
 
 - App bundle: about 10.84 MiB on disk.
 - V3 language model: 7,296,305 bytes.
-- Runtime CPU/RSS must be measured after the post-install process settles; do
-  not reuse build 95's measurements for build 105.
+- Idle process after 90 seconds: 0.0% CPU and about 77.5 MiB RSS on the
+  development Mac.
 - Decoder inference in the simulator: under roughly 4 ms p99 per completed token.
 
 The installed Lab binary SHA-256 after build 105 is
