@@ -46,8 +46,17 @@ installed build changes.
   falls through to Backspace+Unicode on every attempt, gated by a fresh
   `isCurrent()`/frontmost recheck immediately before posting instead of by
   bundle identity. No app-specific code is required for a new broken host.
-  Builds locally only (`RuSwitcherAX.app` inside this worktree); never
-  installed to `/Applications` and never overwrites Lab/AX/author/Grok/Codex.
+  Ships as its own parallel-comparison product, **RuSwitcher Claude**:
+  - Bundle: `RuSwitcherClaude.app` → `/Applications/RuSwitcherClaude.app`
+  - Bundle ID: `com.ruswitcher.claude` · Executable: `RuSwitcherClaude` ·
+    Dev tag: `claude` (shown as `4.0.0claude (108)` in menu/settings)
+  - Logs: `~/Library/Logs/RuSwitcherClaude/ruswitcher-claude.log`
+  - Signed with the reusable `RuSwitcher Local Code Signing` identity.
+  - Installed executable SHA-256:
+    `e514190342840ee8f4faa766de74c41b566e8499376628a44338ed398fa93c06`.
+  - Runs alongside Lab/AX/author/Codex without colliding (separate
+    Accessibility/Input Monitoring grant, separate defaults domain, separate
+    login item); never overwrites any of them.
 
 ## User Requirements
 
