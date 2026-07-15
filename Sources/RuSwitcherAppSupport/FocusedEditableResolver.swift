@@ -77,7 +77,6 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
     private struct CachedElement {
         let element: Backend.Element
         let identifier: String
-        let editableVerified: Bool
         let storedAtNanoseconds: UInt64
     }
 
@@ -121,86 +120,59 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
         let startedAt = nowNanoseconds()
         let deadline = startedAt &+ UInt64(timeout) * 1_000_000
         backend.prepare(processID: processID, timeoutMilliseconds: timeout)
+        guard hasTime(until: deadline) else { return .unavailable(.timedOut) }
 
-        if let cached = cachedElement(processID: processID, now: startedAt) {
-            guard expectedIdentifier == nil || expectedIdentifier == cached.identifier else {
-                return .unavailable(.identifierMismatch)
-            }
+        if let cached = cachedElement(processID: processID, now: nowNanoseconds()),
+           expectedIdentifier == nil || expectedIdentifier == cached.identifier {
             switch backend.isFocused(
                 cached.element,
                 timeoutMilliseconds: remainingMilliseconds(until: deadline)
             ) {
-            case .value(true) where !allowTreeSearch || cached.editableVerified:
+            case .value(true):
+                guard hasTime(until: deadline) else { return .unavailable(.timedOut) }
+                // Cached elements were proven editable before storage. The live
+                // focused check plus the caller's exact range/suffix read is the
+                // bounded hot-path validation.
                 return .resolved(FocusedEditableResolution(
                     element: cached.element,
                     identifier: cached.identifier,
                     source: .cached
                 ))
-            case .value(true):
-                switch backend.isEditable(
-                    cached.element,
-                    timeoutMilliseconds: remainingMilliseconds(until: deadline)
-                ) {
-                case .value(true):
-                    store(
-                        cached.element,
-                        identifier: cached.identifier,
-                        editableVerified: true,
-                        processID: processID
-                    )
-                    return .resolved(FocusedEditableResolution(
-                        element: cached.element,
-                        identifier: cached.identifier,
-                        source: .cached
-                    ))
-                case .value(false):
-                    removeCachedElement(processID: processID, identifier: cached.identifier)
-                case let .unavailable(failure):
-                    return .unavailable(failure)
-                }
             case .value(false):
+                guard hasTime(until: deadline) else { return .unavailable(.timedOut) }
                 removeCachedElement(processID: processID, identifier: cached.identifier)
             case let .unavailable(failure):
+                guard hasTime(until: deadline) else { return .unavailable(.timedOut) }
                 if !allowTreeSearch { return .unavailable(failure) }
                 removeCachedElement(processID: processID, identifier: cached.identifier)
             }
         }
 
+        guard hasTime(until: deadline) else { return .unavailable(.timedOut) }
         let canonical = backend.canonicalFocusedElement(
             processID: processID,
             timeoutMilliseconds: remainingMilliseconds(until: deadline)
         )
+        guard hasTime(until: deadline) else { return .unavailable(.timedOut) }
         switch canonical {
         case let .value(element):
-            let identifier = backend.identifier(
-                for: element,
-                timeoutMilliseconds: remainingMilliseconds(until: deadline)
-            )
-            guard expectedIdentifier == nil || expectedIdentifier == identifier else {
-                return .unavailable(.identifierMismatch)
-            }
-            if !allowTreeSearch {
-                store(
-                    element,
-                    identifier: identifier,
-                    editableVerified: false,
-                    processID: processID
-                )
-                return .resolved(FocusedEditableResolution(
-                    element: element,
-                    identifier: identifier,
-                    source: .canonical
-                ))
-            }
             switch backend.isEditable(
                 element,
                 timeoutMilliseconds: remainingMilliseconds(until: deadline)
             ) {
             case .value(true):
+                guard hasTime(until: deadline) else { return .unavailable(.timedOut) }
+                let identifier = backend.identifier(
+                    for: element,
+                    timeoutMilliseconds: remainingMilliseconds(until: deadline)
+                )
+                guard hasTime(until: deadline) else { return .unavailable(.timedOut) }
+                guard expectedIdentifier == nil || expectedIdentifier == identifier else {
+                    return .unavailable(.identifierMismatch)
+                }
                 store(
                     element,
                     identifier: identifier,
-                    editableVerified: true,
                     processID: processID
                 )
                 return .resolved(FocusedEditableResolution(
@@ -209,9 +181,12 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
                     source: .canonical
                 ))
             case .value(false):
-                break
+                if !allowTreeSearch { return .unavailable(.noEditableElement) }
             case let .unavailable(failure):
-                if failure == .timedOut { return .unavailable(failure) }
+                guard hasTime(until: deadline) else { return .unavailable(.timedOut) }
+                if failure == .timedOut || !allowTreeSearch {
+                    return .unavailable(failure)
+                }
             }
         case let .unavailable(failure):
             if !allowTreeSearch { return .unavailable(failure) }
@@ -259,6 +234,7 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
         }
 
         var queue = [PendingNode(element: root, depth: 0)]
+        var visited: Set<ObjectIdentifier> = []
         var index = 0
         var candidate: (element: Backend.Element, identifier: String)?
         var sawIdentifierMismatch = false
@@ -268,24 +244,35 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
             }
             let node = queue[index]
             index += 1
+            guard visited.insert(ObjectIdentifier(node.element)).inserted else { continue }
 
             let focused = backend.isFocused(
                 node.element,
                 timeoutMilliseconds: remainingMilliseconds(until: deadlineNanoseconds)
             )
+            guard hasTime(until: deadlineNanoseconds) else {
+                return .unavailable(.timedOut)
+            }
             if case .value(true) = focused {
                 let editable = backend.isEditable(
                     node.element,
                     timeoutMilliseconds: remainingMilliseconds(until: deadlineNanoseconds)
                 )
+                guard hasTime(until: deadlineNanoseconds) else {
+                    return .unavailable(.timedOut)
+                }
                 if case .value(true) = editable {
                     let identifier = backend.identifier(
                         for: node.element,
                         timeoutMilliseconds: remainingMilliseconds(until: deadlineNanoseconds)
                     )
+                    guard hasTime(until: deadlineNanoseconds) else {
+                        return .unavailable(.timedOut)
+                    }
                     if let expectedIdentifier, expectedIdentifier != identifier {
                         sawIdentifierMismatch = true
-                    } else if let existing = candidate, existing.identifier != identifier {
+                    } else if let existing = candidate,
+                              existing.element !== node.element {
                         return .unavailable(.ambiguousFocusedElements)
                     } else {
                         candidate = (node.element, identifier)
@@ -301,19 +288,27 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
                 timeoutMilliseconds: remainingMilliseconds(until: deadlineNanoseconds)
             ) {
             case let .value(children):
+                guard hasTime(until: deadlineNanoseconds) else {
+                    return .unavailable(.timedOut)
+                }
                 queue.append(contentsOf: children.map {
                     PendingNode(element: $0, depth: node.depth + 1)
                 })
             case let .unavailable(failure):
+                guard hasTime(until: deadlineNanoseconds) else {
+                    return .unavailable(.timedOut)
+                }
                 if failure == .timedOut { return .unavailable(.timedOut) }
             }
         }
         guard index == queue.count else { return .unavailable(.timedOut) }
         if let candidate {
+            guard hasTime(until: deadlineNanoseconds) else {
+                return .unavailable(.timedOut)
+            }
             store(
                 candidate.element,
                 identifier: candidate.identifier,
-                editableVerified: true,
                 processID: processID
             )
             return .resolved(FocusedEditableResolution(
@@ -332,6 +327,10 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
         return max(1, Int((deadline - now + 999_999) / 1_000_000))
     }
 
+    private func hasTime(until deadline: UInt64) -> Bool {
+        nowNanoseconds() < deadline
+    }
+
     private func cachedElement(processID: Int32, now: UInt64) -> CachedElement? {
         lock.lock(); defer { lock.unlock() }
         guard let cached = cache[processID] else { return nil }
@@ -346,14 +345,12 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
     private func store(
         _ element: Backend.Element,
         identifier: String,
-        editableVerified: Bool,
         processID: Int32
     ) {
         lock.lock(); defer { lock.unlock() }
         cache[processID] = CachedElement(
             element: element,
             identifier: identifier,
-            editableVerified: editableVerified,
             storedAtNanoseconds: nowNanoseconds()
         )
     }

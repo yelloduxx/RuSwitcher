@@ -50,7 +50,7 @@ final class ReplacementCoordinatorTests: XCTestCase {
         XCTAssertTrue(poster.plans.isEmpty)
     }
 
-    func testUnavailablePreflightBlocksUnlessExplicitlyAllowed() {
+    func testUnavailablePreflightAlwaysBlocksBeforePosting() {
         let reader = Reader(preflight: .unavailable)
         let poster = Poster(result: true)
         let coordinator = NativeReplacementCoordinator(reader: reader, poster: poster)
@@ -60,12 +60,6 @@ final class ReplacementCoordinatorTests: XCTestCase {
             .blocked(.contextUnavailable)
         )
         XCTAssertTrue(poster.plans.isEmpty)
-
-        XCTAssertEqual(
-            coordinator.submit(request(allowUnavailablePreflight: true)) { _ in },
-            .postedUnverified
-        )
-        XCTAssertEqual(poster.plans.count, 1)
     }
 
     func testDuplicateTransactionIsNeverPostedTwice() {
@@ -79,19 +73,7 @@ final class ReplacementCoordinatorTests: XCTestCase {
         XCTAssertEqual(poster.plans.count, 1)
     }
 
-    func testWarmFocusUsesExpandedPreflightDeadline() {
-        let reader = Reader(preflight: .match)
-        reader.warmFocusProcessIDs = [42]
-        let coordinator = NativeReplacementCoordinator(reader: reader, poster: Poster(result: true))
-
-        XCTAssertEqual(coordinator.submit(request()) { _ in }, .postedUnverified)
-        XCTAssertEqual(
-            reader.validationDeadlines,
-            [ReplacementTiming.warmPreflightDeadlineMilliseconds]
-        )
-    }
-
-    private func request(allowUnavailablePreflight: Bool = false) -> ReplacementRequest {
+    private func request() -> ReplacementRequest {
         let focus = FocusedElementIdentity(processID: 42, bundleID: "test.host", identifier: "field")
         return ReplacementRequest(
             transaction: ConversionTransaction(
@@ -108,26 +90,18 @@ final class ReplacementCoordinatorTests: XCTestCase {
             ),
             deliveredKeyCount: 6,
             currentFocus: focus,
-            currentRevision: 3,
-            allowUnavailablePreflight: allowUnavailablePreflight
+            currentRevision: 3
         )
     }
 }
 
 private final class Reader: FocusedTextContextReading {
     let preflight: TextContextValidation
-    var warmFocusProcessIDs: Set<Int32> = []
     private(set) var validationDeadlines: [Int] = []
     private(set) var verificationDeadlines: [Int] = []
     private var completion: ((TextContextValidation) -> Void)?
 
     init(preflight: TextContextValidation) { self.preflight = preflight }
-
-    func preflightDeadlineMilliseconds(for focus: FocusedElementIdentity) -> Int {
-        ReplacementTiming.preflightDeadlineMilliseconds(
-            isWarm: warmFocusProcessIDs.contains(focus.processID)
-        )
-    }
 
     func validate(expectedSuffix: String, focus: FocusedElementIdentity, deadlineMilliseconds: Int) -> TextContextValidation {
         validationDeadlines.append(deadlineMilliseconds)

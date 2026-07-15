@@ -77,14 +77,17 @@ final class NativeFocusedEditableResolver: @unchecked Sendable {
         timeoutMilliseconds: Int,
         allowTreeSearch: Bool = false
     ) -> FocusedEditableLookup<AXUIElement> {
-        let deadline = Date().addingTimeInterval(Double(max(1, timeoutMilliseconds)) / 1_000)
+        let timeout = max(1, timeoutMilliseconds)
+        let deadline = Date().addingTimeInterval(Double(timeout) / 1_000)
         let processLock = lock(for: processID)
         guard processLock.lock(before: deadline) else { return .unavailable(.timedOut) }
         defer { processLock.unlock() }
+        let remaining = remainingMilliseconds(until: deadline)
+        guard remaining > 0 else { return .unavailable(.timedOut) }
         return engine.resolve(
             processID: processID,
             expectedIdentifier: expectedIdentifier,
-            timeoutMilliseconds: remainingMilliseconds(until: deadline),
+            timeoutMilliseconds: remaining,
             allowTreeSearch: allowTreeSearch
         )
     }
@@ -103,11 +106,13 @@ final class NativeFocusedEditableResolver: @unchecked Sendable {
         let processLock = lock(for: processID)
         guard processLock.lock(before: deadlineDate) else { return .unavailable(.timedOut) }
         defer { processLock.unlock() }
+        let remaining = remainingMilliseconds(until: deadlineDate)
+        guard remaining > 0 else { return .unavailable(.timedOut) }
 
         let lookup = engine.resolve(
             processID: processID,
             expectedIdentifier: expectedIdentifier,
-            timeoutMilliseconds: remainingMilliseconds(until: deadlineDate),
+            timeoutMilliseconds: remaining,
             allowTreeSearch: allowTreeSearch
         )
         switch lookup {
@@ -164,24 +169,25 @@ final class NativeFocusedEditableResolver: @unchecked Sendable {
     }
 
     private func remainingMilliseconds(until deadline: Date) -> Int {
-        max(1, Int(deadline.timeIntervalSinceNow * 1_000))
+        let remaining = deadline.timeIntervalSinceNow * 1_000
+        guard remaining > 0 else { return 0 }
+        return max(1, Int(ceil(remaining)))
     }
 }
 
 private struct NativeAccessibilityTree: FocusedEditableTreeAccessing {
     typealias Element = AXUIElement
 
-    func prepare(processID: Int32, timeoutMilliseconds: Int) {
-        let app = AXUIElementCreateApplication(processID)
-        AXUIElementSetMessagingTimeout(app, Float(max(1, timeoutMilliseconds)) / 1_000)
-    }
+    func prepare(processID: Int32, timeoutMilliseconds: Int) {}
 
     func canonicalFocusedElement(
         processID: Int32,
         timeoutMilliseconds: Int
     ) -> AccessibilityTreeRead<AXUIElement> {
         let app = AXUIElementCreateApplication(processID)
-        AXUIElementSetMessagingTimeout(app, Float(max(1, timeoutMilliseconds)) / 1_000)
+        guard configureTimeout(app, timeoutMilliseconds: timeoutMilliseconds) else {
+            return .unavailable(.timedOut)
+        }
         return elementAttribute(app, kAXFocusedUIElementAttribute as CFString)
     }
 
@@ -190,7 +196,9 @@ private struct NativeAccessibilityTree: FocusedEditableTreeAccessing {
         timeoutMilliseconds: Int
     ) -> AccessibilityTreeRead<AXUIElement> {
         let app = AXUIElementCreateApplication(processID)
-        AXUIElementSetMessagingTimeout(app, Float(max(1, timeoutMilliseconds)) / 1_000)
+        guard configureTimeout(app, timeoutMilliseconds: timeoutMilliseconds) else {
+            return .unavailable(.timedOut)
+        }
         switch elementAttribute(app, kAXFocusedWindowAttribute as CFString) {
         case let .value(window):
             return .value(window)
@@ -203,7 +211,9 @@ private struct NativeAccessibilityTree: FocusedEditableTreeAccessing {
         of element: AXUIElement,
         timeoutMilliseconds: Int
     ) -> AccessibilityTreeRead<[AXUIElement]> {
-        configureTimeout(element, timeoutMilliseconds: timeoutMilliseconds)
+        guard configureTimeout(element, timeoutMilliseconds: timeoutMilliseconds) else {
+            return .unavailable(.timedOut)
+        }
         var raw: AnyObject?
         let error = AXUIElementCopyAttributeValue(
             element,
@@ -221,7 +231,9 @@ private struct NativeAccessibilityTree: FocusedEditableTreeAccessing {
         _ element: AXUIElement,
         timeoutMilliseconds: Int
     ) -> AccessibilityTreeRead<Bool> {
-        configureTimeout(element, timeoutMilliseconds: timeoutMilliseconds)
+        guard configureTimeout(element, timeoutMilliseconds: timeoutMilliseconds) else {
+            return .unavailable(.timedOut)
+        }
         var raw: AnyObject?
         let error = AXUIElementCopyAttributeValue(
             element,
@@ -239,7 +251,11 @@ private struct NativeAccessibilityTree: FocusedEditableTreeAccessing {
         _ element: AXUIElement,
         timeoutMilliseconds: Int
     ) -> AccessibilityTreeRead<Bool> {
-        configureTimeout(element, timeoutMilliseconds: timeoutMilliseconds)
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            &+ UInt64(max(1, timeoutMilliseconds)) * 1_000_000
+        guard configureTimeout(element, deadlineNanoseconds: deadline) else {
+            return .unavailable(.timedOut)
+        }
         var roleRaw: AnyObject?
         let roleError = AXUIElementCopyAttributeValue(
             element,
@@ -258,7 +274,9 @@ private struct NativeAccessibilityTree: FocusedEditableTreeAccessing {
         ]
         guard editableRoles.contains(role) else { return .value(false) }
 
-        configureTimeout(element, timeoutMilliseconds: timeoutMilliseconds)
+        guard configureTimeout(element, deadlineNanoseconds: deadline) else {
+            return .unavailable(.timedOut)
+        }
         var rangeRaw: AnyObject?
         let rangeError = AXUIElementCopyAttributeValue(
             element,
@@ -275,7 +293,9 @@ private struct NativeAccessibilityTree: FocusedEditableTreeAccessing {
                 : .unavailable(failure(for: rangeError))
         }
 
-        configureTimeout(element, timeoutMilliseconds: timeoutMilliseconds)
+        guard configureTimeout(element, deadlineNanoseconds: deadline) else {
+            return .unavailable(.timedOut)
+        }
         var namesRaw: CFArray?
         let namesError = AXUIElementCopyParameterizedAttributeNames(element, &namesRaw)
         if namesError == .noValue || namesError == .attributeUnsupported {
@@ -289,8 +309,10 @@ private struct NativeAccessibilityTree: FocusedEditableTreeAccessing {
     }
 
     func identifier(for element: AXUIElement, timeoutMilliseconds: Int) -> String {
-        configureTimeout(element, timeoutMilliseconds: timeoutMilliseconds)
         let elementHash = CFHash(element)
+        guard configureTimeout(element, timeoutMilliseconds: timeoutMilliseconds) else {
+            return "axhash:\(elementHash)"
+        }
         var raw: AnyObject?
         if AXUIElementCopyAttributeValue(
             element,
@@ -328,10 +350,24 @@ private struct NativeAccessibilityTree: FocusedEditableTreeAccessing {
         }
     }
 
-    private func configureTimeout(_ element: AXUIElement, timeoutMilliseconds: Int) {
+    @discardableResult
+    private func configureTimeout(
+        _ element: AXUIElement,
+        timeoutMilliseconds: Int
+    ) -> Bool {
         AXUIElementSetMessagingTimeout(
             element,
             Float(max(1, timeoutMilliseconds)) / 1_000
-        )
+        ) == .success
+    }
+
+    private func configureTimeout(
+        _ element: AXUIElement,
+        deadlineNanoseconds: UInt64
+    ) -> Bool {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now < deadlineNanoseconds else { return false }
+        let remaining = Float(deadlineNanoseconds - now) / 1_000_000_000
+        return AXUIElementSetMessagingTimeout(element, max(0.001, remaining)) == .success
     }
 }

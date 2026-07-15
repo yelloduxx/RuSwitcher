@@ -48,13 +48,6 @@ final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Send
     }
 
     @MainActor
-    func preflightDeadlineMilliseconds(for focus: FocusedElementIdentity) -> Int {
-        ReplacementTiming.preflightDeadlineMilliseconds(
-            isWarm: focusedElementResolver.cachedIdentifier(processID: focus.processID) != nil
-        )
-    }
-
-    @MainActor
     func validate(
         expectedSuffix: String,
         focus: FocusedElementIdentity,
@@ -83,12 +76,7 @@ final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Send
             disabledUntil.removeValue(forKey: key)
         }
 
-        let effectiveDeadline = max(
-            1,
-            isWarm
-                ? max(deadlineMilliseconds, ReplacementTiming.warmPreflightDeadlineMilliseconds)
-                : deadlineMilliseconds
-        )
+        let effectiveDeadline = max(1, deadlineMilliseconds)
         let box = ResultBox()
         let semaphore = DispatchSemaphore(value: 0)
         validationQueue.async { [self] in

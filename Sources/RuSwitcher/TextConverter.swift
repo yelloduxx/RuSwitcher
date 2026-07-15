@@ -223,9 +223,7 @@ final class TextConverter {
         switch verification {
         case .match:
             completion.callback(.verified)
-        case .unchanged, .unavailable:
-            // AX could not mutate (or even resolve) the field. Still try the
-            // event-based path so double-Shift works in non-AX editors.
+        case .unchanged:
             replaceFocusedSuffixViaSyntheticInput(
                 expected: expected,
                 replacement: replacement,
@@ -233,8 +231,7 @@ final class TextConverter {
                 isCurrent: isCurrent,
                 completion: completion
             )
-        case .mismatch:
-            // Different text is before the caret — do not delete it.
+        case .mismatch, .unavailable:
             isConverting = false
             completion.callback(.failed)
         }
@@ -249,92 +246,39 @@ final class TextConverter {
     ) {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
               !expected.isEmpty,
-              isCurrent() else {
+              isCurrent(),
+              focusedSuffixMatches(expected, focus: focus, timeoutMilliseconds: 50) else {
             isConverting = false
             completion.callback(.failed)
             return
         }
 
-        // Probe AX when possible. Prefer an expected form that actually sits
-        // before the caret (with or without a trailing space).
-        let resolved = resolveSyntheticPair(
-            expected: expected,
-            replacement: replacement,
-            focus: focus
-        )
-        guard let resolved else {
+        guard postSelection(characterCount: expected.count, to: focus.processID) else {
             isConverting = false
             completion.callback(.failed)
             return
         }
-
-        // Backspace the exact suffix, then insert Unicode. Avoid Shift+Left
-        // selection + insert: many hosts ignore selection and append (duplicate).
-        let deleteCount = resolved.expected.count
-        guard deleteCount > 0,
-              postBackspaces(count: deleteCount, to: focus.processID),
-              postUnicodeText(resolved.replacement, to: focus.processID) else {
-            isConverting = false
-            completion.callback(.failed)
-            return
-        }
-        isConverting = false
-        completion.callback(.postedUnverified)
-    }
-
-    /// Picks expected/replacement that either match AX or are safe when AX is dark.
-    private func resolveSyntheticPair(
-        expected: String,
-        replacement: String,
-        focus: FocusedElementIdentity
-    ) -> (expected: String, replacement: String)? {
-        let candidates: [(String, String)] = {
-            var list = [(expected, replacement)]
-            if expected.hasSuffix(" "), replacement.hasSuffix(" ") {
-                list.append((String(expected.dropLast()), String(replacement.dropLast())))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+            guard let self,
+                  isCurrent(),
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
+                  self.selectedTextMatches(expected, focus: focus, timeoutMilliseconds: 50),
+                  self.postUnicodeText(replacement, to: focus.processID) else {
+                self?.isConverting = false
+                completion.callback(.failed)
+                return
             }
-            if !expected.hasSuffix(" "), !replacement.hasSuffix(" ") {
-                list.append((expected + " ", replacement + " "))
-            }
-            return list
-        }()
-
-        var sawUnavailable = false
-        for (exp, rep) in candidates {
-            switch focusedSuffixProbe(exp, focus: focus, timeoutMilliseconds: 80) {
-            case .match:
-                return (exp, rep)
-            case .mismatch:
-                continue
-            case .unavailable, .unchanged:
-                // Probe only yields match/mismatch/unavailable; unchanged is unused.
-                sawUnavailable = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                guard let self else { return }
+                guard isCurrent(),
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID else {
+                    self.isConverting = false
+                    completion.callback(.failed)
+                    return
+                }
+                completion.callback(.postedUnverified)
             }
         }
-        // No AX (or only unavailable probes): use the first candidate. Safer than
-        // disabling double-Shift entirely in non-AX editors.
-        if sawUnavailable {
-            return candidates[0]
-        }
-        return nil
-    }
-
-    nonisolated private func postBackspaces(count: Int, to processID: Int32) -> Bool {
-        guard count > 0, let source = makeSource() else { return false }
-        for _ in 0..<count {
-            guard let down = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: KC.backspace,
-                keyDown: true
-            ), let up = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: KC.backspace,
-                keyDown: false
-            ) else { return false }
-            down.postToPid(pid_t(processID))
-            up.postToPid(pid_t(processID))
-        }
-        return true
     }
 
     private func handleSelectionRead(

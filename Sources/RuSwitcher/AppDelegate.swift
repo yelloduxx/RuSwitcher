@@ -350,6 +350,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.handleAutoConvert(snapshot, proxy: proxy) ?? .passThrough
         }
         keyboardMonitor.onTokenChanged = { [weak self] draft in
+            guard draft.keys.count == 1 else { return }
             self?.focusedElementResolver.prefetch(processID: draft.focus.processID)
         }
         keyboardMonitor.onCorrectionEdited = { [weak self] in
@@ -402,11 +403,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
             return
         case .postedUnverified:
-            // Async selection path still in flight.
             return
-        case .failed, .none:
-            // No usable selection (or a transient busy/fail). Fall through to
-            // reconversion / current-token / layout-only — never swallow double-Shift.
+        case .failed:
+            // A real selection has priority. If it could not be converted, do not
+            // mutate a buffered token or switch layout behind that selection.
+            return
+        case .none:
             break
         }
 
@@ -813,10 +815,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 transaction: transaction,
                 deliveredKeyCount: snapshot.deliveredKeyCount,
                 currentFocus: snapshot.focus,
-                currentRevision: snapshot.editRevision,
-                // Auto must work without AX. Build 95+ blocked on unavailable and
-                // silently disabled conversion in most real editors.
-                allowUnavailablePreflight: snapshot.integrity == .clean
+                currentRevision: snapshot.editRevision
             )
         ) { [weak self] outcome in
             self?.finishAutomaticReplacement(

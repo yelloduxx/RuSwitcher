@@ -31,16 +31,10 @@ public enum ReplacementOutcome: Equatable, Sendable {
 }
 
 public enum ReplacementTiming {
-    /// Cold boundary: no validated focused editable in the resolver cache yet.
+    /// The event callback must stay bounded even when the target application's
+    /// Accessibility implementation is slow. Tree traversal runs during warm-up.
     public static let preflightDeadlineMilliseconds = 4
-    /// Warm boundary: a focused editable was already resolved for this process.
-    /// Ghostty-class AX latency often needs ~5–15 ms just for range/string reads.
-    public static let warmPreflightDeadlineMilliseconds = 16
     public static let postedEventVerificationDeadlineMilliseconds = 120
-
-    public static func preflightDeadlineMilliseconds(isWarm: Bool) -> Int {
-        isWarm ? warmPreflightDeadlineMilliseconds : preflightDeadlineMilliseconds
-    }
 }
 
 public struct ReplacementRequest: Equatable, Sendable {
@@ -48,30 +42,21 @@ public struct ReplacementRequest: Equatable, Sendable {
     public let deliveredKeyCount: Int
     public let currentFocus: FocusedElementIdentity
     public let currentRevision: UInt64
-    /// When true, a missing AX context still posts the replacement (event path).
-    /// Used for automatic conversion: blocking on dark AX made auto dead in
-    /// Notes/Telegram/etc. Mismatch still blocks.
-    public let allowUnavailablePreflight: Bool
 
     public init(
         transaction: ConversionTransaction,
         deliveredKeyCount: Int,
         currentFocus: FocusedElementIdentity,
-        currentRevision: UInt64,
-        allowUnavailablePreflight: Bool = false
+        currentRevision: UInt64
     ) {
         self.transaction = transaction
         self.deliveredKeyCount = deliveredKeyCount
         self.currentFocus = currentFocus
         self.currentRevision = currentRevision
-        self.allowUnavailablePreflight = allowUnavailablePreflight
     }
 }
 
 public protocol FocusedTextContextReading: AnyObject {
-    @MainActor
-    func preflightDeadlineMilliseconds(for focus: FocusedElementIdentity) -> Int
-
     @MainActor
     func validate(
         expectedSuffix: String,
@@ -144,16 +129,15 @@ public final class NativeReplacementCoordinator: ReplacementCoordinating {
         lock.unlock()
         guard !duplicate else { return .blocked(.duplicateTransaction) }
 
-        let preflightDeadline = reader.preflightDeadlineMilliseconds(for: transaction.focus)
         let preflight = reader.validate(
             expectedSuffix: transaction.expectedOriginalSuffix,
             focus: transaction.focus,
-            deadlineMilliseconds: preflightDeadline
+            deadlineMilliseconds: ReplacementTiming.preflightDeadlineMilliseconds
         )
         guard preflight != .mismatch else {
             return .blocked(.expectedSuffixMismatch)
         }
-        guard preflight != .unavailable || request.allowUnavailablePreflight else {
+        guard preflight != .unavailable else {
             return .blocked(.contextUnavailable)
         }
 

@@ -8,6 +8,7 @@ enum ProductIdentity {
     static let shortName = "RuSwitcherAX"
     static let bundleIdentifier = "com.ruswitcher.ax"
     static let logDirectoryName = "RuSwitcherAX"
-    /// Distinct synthetic-event marker so another RuSwitcher instance can ignore us.
-    static let eventMarker: Int64 = 0x5255_5341 // 'RUSA'
+    /// Shared with existing RuSwitcher builds so parallel comparison installs do
+    /// not feed each other's replacement events back into their event taps.
+    static let eventMarker: Int64 = 0x5255_5300 // 'RUS\0'
 }
