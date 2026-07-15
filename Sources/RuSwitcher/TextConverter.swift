@@ -29,6 +29,15 @@ struct BufferedManualReconversion {
     let targetLayoutID: String?
 }
 
+/// Word immediately before the caret (after optional trailing whitespace),
+/// recovered from the editor when the in-memory token buffer is gone.
+struct CaretWordConversion {
+    let original: String
+    let replacement: String
+    let expectedSuffix: String
+    let targetLayoutID: String?
+}
+
 private enum ReplacementVerification: Sendable {
     case match
     case unchanged
@@ -624,6 +633,45 @@ final class TextConverter {
             == snapshot.text.precomposedStringWithCanonicalMapping
     }
 
+    nonisolated private func readTextBeforeCaret(
+        focus: FocusedElementIdentity,
+        maxUTF16Length: Int
+    ) -> String? {
+        switch focusedElementResolver.withElement(
+            processID: focus.processID,
+            expectedIdentifier: nil,
+            timeoutMilliseconds: 200,
+            allowTreeSearch: true,
+            operation: { lease -> String? in
+                let rangeRead = lease.copyAttribute(kAXSelectedTextRangeAttribute as CFString)
+                guard rangeRead.0 == .success, let rangeRaw = rangeRead.1,
+                      CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return nil }
+                let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
+                var caret = CFRange()
+                guard AXValueGetType(rangeValue) == .cfRange,
+                      AXValueGetValue(rangeValue, .cfRange, &caret),
+                      caret.length == 0,
+                      caret.location > 0 else { return nil }
+                let length = min(max(1, maxUTF16Length), caret.location)
+                var prefixRange = CFRange(location: caret.location - length, length: length)
+                guard let prefixValue = AXValueCreate(.cfRange, &prefixRange) else { return nil }
+                let textRead = lease.copyParameterizedAttribute(
+                    kAXStringForRangeParameterizedAttribute as CFString,
+                    parameter: prefixValue
+                )
+                guard textRead.0 == .success, let text = textRead.1 as? String, !text.isEmpty else {
+                    return nil
+                }
+                return text
+            }
+        ) {
+        case let .value(text):
+            return text
+        case .unavailable:
+            return nil
+        }
+    }
+
     nonisolated private func focusedSuffixProbe(
         _ expected: String,
         focus: FocusedElementIdentity,
@@ -838,6 +886,48 @@ final class TextConverter {
         lastOriginal = transaction.originalTextForUndo
         lastConverted = transaction.insertedText
         lastWasBuffer = true
+    }
+
+    /// Reads the token before the caret via Accessibility and builds a forced
+    /// layout toggle. Used after focus returns and the typing buffer is gone.
+    func prepareCaretWordConversion(
+        focus: FocusedElementIdentity
+    ) -> CaretWordConversion? {
+        guard !isConverting else { return nil }
+        guard let suffix = readTextBeforeCaret(focus: focus, maxUTF16Length: 96),
+              let parsed = CaretTokenParser.tokenBeforeCaret(from: suffix) else {
+            return nil
+        }
+        guard let conversion = DynamicKeyMapping.convertSelectedText(parsed.word) else { return nil }
+        let converted = conversion.converted
+        guard converted != parsed.word else { return nil }
+        let replacement = manualReplacement(
+            typed: parsed.word,
+            converted: converted,
+            targetLanguage: conversion.targetLanguage
+        )
+        guard replacement != parsed.word else { return nil }
+        return CaretWordConversion(
+            original: parsed.word,
+            replacement: replacement,
+            expectedSuffix: parsed.word + parsed.trailingWhitespace,
+            targetLayoutID: conversion.targetLayoutID
+        )
+    }
+
+    func recordPostedCaretWord(
+        _ conversion: CaretWordConversion,
+        transaction: ConversionTransaction
+    ) {
+        lastOriginal = conversion.original
+        lastConverted = conversion.replacement
+        // Keep trailing whitespace out of the remembered pair so toggle targets
+        // the word body; spaces are re-derived from caret position next time.
+        lastLearningPair = (conversion.original, conversion.replacement)
+        lastWasBuffer = true
+        lastTransaction = transaction
+        lastManualTargetLayoutID = conversion.targetLayoutID
+        isConverting = false
     }
 
     /// Builds the next forced toggle without mutating the remembered pair.

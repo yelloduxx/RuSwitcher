@@ -429,31 +429,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 trailingSpaces: boundaryCount
             ), let snapshot = keyboardMonitor.manualEditorSnapshot() else {
                 textConverter.cancelPendingReconversion()
+                continueManualTriggerWithoutBuffer(frontID: frontID)
                 return
             }
             submitManualReconversion(
                 reconversion,
                 snapshot: snapshot,
-                frontID: frontID
+                frontID: frontID,
+                onFailure: { [weak self] in
+                    self?.continueManualTriggerWithoutBuffer(frontID: frontID)
+                }
             )
             return
         }
-        guard let snapshot = keyboardMonitor.manualTokenSnapshot(),
-              let conversion = textConverter.prepareBufferedConversion(keys: snapshot.keys) else {
-            guard !AutoSwitchPolicy.isDeniedApp(frontID) else { return }
+        continueManualTriggerWithoutBuffer(frontID: frontID)
+    }
+
+    /// Buffered-token path, then caret-word (AX) path, then layout-only.
+    private func continueManualTriggerWithoutBuffer(frontID: String?) {
+        if let snapshot = keyboardMonitor.manualTokenSnapshot(),
+           let conversion = textConverter.prepareBufferedConversion(keys: snapshot.keys) {
+            submitManualBufferedConversion(
+                conversion,
+                snapshot: snapshot,
+                frontID: frontID,
+                onFailure: { [weak self] in
+                    self?.convertWordBeforeCaretOrSwitchLayout(frontID: frontID)
+                }
+            )
+            return
+        }
+        convertWordBeforeCaretOrSwitchLayout(frontID: frontID)
+    }
+
+    /// After focus returns, the typing buffer is empty — convert the word before
+    /// the caret via Accessibility (forced layout toggle).
+    private func convertWordBeforeCaretOrSwitchLayout(frontID: String?) {
+        guard !AutoSwitchPolicy.isDeniedApp(frontID) else { return }
+        guard let snapshot = keyboardMonitor.manualEditorSnapshot(),
+              let conversion = textConverter.prepareCaretWordConversion(focus: snapshot.focus)
+        else {
             textConverter.clearState()
             keyboardMonitor.markConverted()
             LayoutSwitcher.switchToOpposite()
             updateStatusIcon()
             return
         }
-        submitManualBufferedConversion(conversion, snapshot: snapshot, frontID: frontID)
+        submitManualCaretWordConversion(conversion, snapshot: snapshot, frontID: frontID)
     }
 
     private func submitManualBufferedConversion(
         _ conversion: BufferedManualConversion,
         snapshot: ManualTokenSnapshot,
-        frontID: String?
+        frontID: String?,
+        onFailure: (() -> Void)? = nil
     ) {
         let hadCurrentToken = !keyboardMonitor.currentWordKeys.isEmpty
         let targetLayoutID = oppositeLayoutID(for: conversion.sourceLayoutID)
@@ -473,7 +502,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             expectedSequence: snapshot.sequence,
             expectedRevision: snapshot.editRevision,
             hadCurrentToken: hadCurrentToken
-        ) else { return }
+        ) else {
+            onFailure?()
+            return
+        }
         textConverter.replaceFocusedSuffix(
             expected: transaction.expectedOriginalSuffix,
             replacement: transaction.insertedText,
@@ -513,6 +545,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .failed:
                 self.textConverter.cancelPendingReconversion()
                 self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
+                onFailure?()
             }
         }
     }
@@ -520,7 +553,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func submitManualReconversion(
         _ reconversion: BufferedManualReconversion,
         snapshot: ManualTokenSnapshot,
-        frontID: String?
+        frontID: String?,
+        onFailure: (() -> Void)? = nil
     ) {
         let transaction = ConversionTransaction(
             original: reconversion.current,
@@ -540,6 +574,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hadCurrentToken: false
         ) else {
             textConverter.cancelPendingReconversion()
+            onFailure?()
             return
         }
         textConverter.replaceFocusedSuffix(
@@ -583,8 +618,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .failed:
                 self.textConverter.cancelPendingReconversion()
                 self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
+                onFailure?()
             }
         }
+    }
+
+    private func submitManualCaretWordConversion(
+        _ conversion: CaretWordConversion,
+        snapshot: ManualTokenSnapshot,
+        frontID: String?
+    ) {
+        let transaction = ConversionTransaction(
+            original: conversion.original,
+            replacement: conversion.replacement,
+            boundary: .punctuation(""),
+            focus: snapshot.focus,
+            sourceLayoutID: LayoutSwitcher.currentLayoutID(),
+            targetLayoutID: conversion.targetLayoutID,
+            sequence: snapshot.sequence,
+            editRevision: snapshot.editRevision,
+            expectedOriginalSuffix: conversion.expectedSuffix,
+            automatic: false
+        )
+        guard let stagedSequence = keyboardMonitor.stageManualConversion(
+            expectedSequence: snapshot.sequence,
+            expectedRevision: snapshot.editRevision,
+            hadCurrentToken: false
+        ) else {
+            convertWordBeforeCaretOrSwitchLayoutFallbackLayoutOnly()
+            return
+        }
+        // Replacement is the converted word only; keep trailing whitespace after
+        // the caret-relative suffix by replacing the full expectedSuffix with
+        // replacement + trailing whitespace from expectedSuffix.
+        let trailing = String(conversion.expectedSuffix.dropFirst(conversion.original.count))
+        let inserted = conversion.replacement + trailing
+        textConverter.replaceFocusedSuffix(
+            expected: conversion.expectedSuffix,
+            replacement: inserted,
+            focus: snapshot.focus,
+            isCurrent: { [weak self] in
+                self?.keyboardMonitor.isStagedCompletionCurrent(
+                    expectedSequence: stagedSequence
+                ) == true
+            }
+        ) { [weak self] outcome in
+            guard let self else { return }
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else {
+                self.textConverter.cancelPendingReconversion()
+                self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
+                return
+            }
+            guard self.keyboardMonitor.isStagedCompletionCurrent(
+                expectedSequence: stagedSequence
+            ) else {
+                self.textConverter.cancelPendingReconversion()
+                return
+            }
+            switch outcome {
+            case .verified:
+                self.textConverter.recordPostedCaretWord(conversion, transaction: transaction)
+                self.finishManualConversion(
+                    frontID: frontID,
+                    targetLayoutID: conversion.targetLayoutID
+                )
+            case .postedUnverified:
+                self.textConverter.recordPostedCaretWord(conversion, transaction: transaction)
+                self.keyboardMonitor.finishUnverifiedPostedConversion(
+                    expectedSequence: stagedSequence
+                )
+                self.finishManualConversion(
+                    frontID: frontID,
+                    targetLayoutID: conversion.targetLayoutID,
+                    allowLearning: false
+                )
+            case .failed:
+                self.textConverter.cancelPendingReconversion()
+                self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
+                self.convertWordBeforeCaretOrSwitchLayoutFallbackLayoutOnly()
+            }
+        }
+    }
+
+    private func convertWordBeforeCaretOrSwitchLayoutFallbackLayoutOnly() {
+        textConverter.clearState()
+        keyboardMonitor.markConverted()
+        LayoutSwitcher.switchToOpposite()
+        updateStatusIcon()
     }
 
     private func finishManualReconversion(
