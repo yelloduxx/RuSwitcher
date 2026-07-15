@@ -548,7 +548,8 @@ final class SettingsWindowController {
     }
 
     @objc private func triggerChanged(_ sender: NSPopUpButton) {
-        SettingsManager.shared.triggerKey = (sender.selectedItem?.representedObject as? String) ?? "option"
+        SettingsManager.shared.triggerKey = (sender.selectedItem?.representedObject as? String)
+            ?? ProductIdentity.defaultTriggerKey
         onTriggerChanged?()
     }
 

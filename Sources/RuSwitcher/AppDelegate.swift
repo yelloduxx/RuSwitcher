@@ -39,6 +39,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             rslog("engine_v3_unavailable")
         }
+        // Parallel Lab/Codex AX builds fight over the same HID stream. Prefer a
+        // single instance; log so debug traces show why conversion "vanishes".
+        let siblings = NSWorkspace.shared.runningApplications.filter {
+            guard $0.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return false }
+            let id = $0.bundleIdentifier ?? ""
+            return id == "com.ruswitcher.app"
+                || id == "com.ruswitcher.lab"
+                || id == ProductIdentity.bundleIdentifier
+                || ($0.localizedName?.contains("RuSwitcher") == true)
+        }
+        if !siblings.isEmpty {
+            rslog("sibling_ruswitcher_instance_detected")
+        }
         setupStatusItem()
         setupSettingsCallbacks()
         syncLoginItem()
