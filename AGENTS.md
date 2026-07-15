@@ -12,15 +12,16 @@ installed build changes.
 - Supported platform: macOS 13+; the release bundle is universal (`arm64` and
   `x86_64`).
 - Automatic conversion is off by default until the user enables it.
-- Primary repository: `rashn/RuSwitcher`; local branch used for this work:
-  `codex/caramba-autoconvert`.
-- The stabilization release is `4.0.0` build `88`. Verify the installed binary
+- Primary repository: `rashn/RuSwitcher`; the production branch is `main`.
+- The stabilization release is `4.0.0` build `94`, based on build 88 with the
+  manual double-Shift toggle path fixed, including editors that do not expose
+  their focused text field through Accessibility. Verify the installed binary
   hash and PID after every local replacement; do not infer the running build
   from `version.json` alone.
 - The installed app is `/Applications/RuSwitcher.app`, signed with the reusable
   identity `RuSwitcher Local Code Signing`.
-- Installed build-88 executable SHA-256:
-  `844028ed198a64bd2a9bd43a16240ba17dbc001c0d888a397dd0f81a7492102c`.
+- Installed build-94 executable SHA-256:
+  `eeb98ee17804f4e2c3b3af50d89e37709a05c80cceba96906c85cac9153d68f7`.
 
 ## User Requirements
 
@@ -195,10 +196,20 @@ Selection direction is based on dominant script, not the active layout. AX
 selected-text replacement is preferred; clipboard fallback preserves pasteboard
 types. Failure must leave selection and layout unchanged.
 
-Current-token and previous-token conversion do not use `NSPasteboard`. When a
-real selection is unreadable through AX, the clipboard fallback marks both its
-copy and replacement values with `org.nspasteboard.TransientType`; clipboard
-managers may ignore these entries when their transient-content option is enabled.
+Accessibility is the primary path for current-token, previous-token and selected
+text conversion. When AX cannot expose the editor, the fallback marks its
+temporary pasteboard value with both `org.nspasteboard.TransientType` and
+`org.nspasteboard.ConcealedType`, selects the exact suffix with Shift+Left and
+pastes it. The original pasteboard is restored only while RuSwitcher still owns
+the temporary value; clipboard managers may ignore these entries.
+
+Manual current/previous-word conversion is a forced physical-layout toggle; it
+does not ask the decoder whether either spelling is correct. It replaces the
+exact suffix before the caret atomically through Accessibility when available.
+The non-AX fallback never posts Backspace, so a dropped paste cannot delete the
+word. A read-back verified edit may learn; a fallback edit is
+`postedUnverified` and never learns. Repeated double Shift toggles the remembered
+pair, also immediately after an automatic conversion.
 
 For an in-process `NSTextView` host, selected-text AX mutation must run on the
 main thread. Calling `AXUIElementSetAttributeValue` for a local AppKit element
@@ -327,6 +338,13 @@ global event taps cannot process the same trigger. The script restores the
 complete preferences domain afterward, so it does not pollute the user's
 dictionary.
 
+Forced manual toggle cycles are tested by
+`scripts/run_manual_toggle_cycle_test.sh`. The native CGEvent probe covers the
+current Cyrillic token, a real selection and an immediately auto-converted
+previous word. It asserts the exact text after every double Shift and a zero
+pasteboard `changeCount` delta. The Cyrillic-token scenario forces the transient
+paste fallback so the non-AX editor path remains covered.
+
 Real CGEvent tests, without Computer Use:
 
 ```bash
@@ -385,14 +403,14 @@ Install atomically:
 5. Move staging to `/Applications/RuSwitcher.app`.
 6. Open the app and verify version, architectures, signature, SHA-256 and process.
 
-Current observed footprint for build 88:
+Current observed footprint for build 94:
 
-- App bundle: about 10.49 MiB on disk.
+- App bundle: about 10.55 MiB on disk.
 - V3 language model: 7,296,305 bytes.
-- Idle process: 0.0% CPU and about 74.1 MiB RSS on the development Mac.
+- Idle process: 0.0% CPU and about 73.7 MiB RSS on the development Mac.
 - Decoder inference in the simulator: under roughly 4 ms p99 per completed token.
 
-The installed binary SHA-256 after build 88 is
-`844028ed198a64bd2a9bd43a16240ba17dbc001c0d888a397dd0f81a7492102c`.
+The installed binary SHA-256 after build 94 is
+`eeb98ee17804f4e2c3b3af50d89e37709a05c80cceba96906c85cac9153d68f7`.
 Always compare installed and freshly built hashes rather than trusting the build
 number alone.

@@ -11,10 +11,22 @@ enum SelectedTextConversionOutcome: Equatable {
     case failed
 }
 
+enum ManualSuffixReplacementOutcome: Equatable {
+    case verified
+    case postedUnverified
+    case failed
+}
+
 struct BufferedManualConversion {
     let original: String
     let replacement: String
     let sourceLayoutID: String?
+}
+
+struct BufferedManualReconversion {
+    let current: String
+    let replacement: String
+    let targetLayoutID: String?
 }
 
 private enum ReplacementVerification: Sendable {
@@ -37,13 +49,13 @@ final class TextConverter {
     private static let transientPasteboardType = NSPasteboard.PasteboardType(
         "org.nspasteboard.TransientType"
     )
+    private static let concealedPasteboardType = NSPasteboard.PasteboardType(
+        "org.nspasteboard.ConcealedType"
+    )
     private var savedClipboardItems: [NSPasteboardItem]?
     private var clipboardRestoreWork: DispatchWorkItem?
     private var clipboardTemporaryChangeCount: Int?
     private var isConverting = false
-    /// Очередь для инжекта нажатий буферного движка — чтобы usleep не блокировал
-    /// main-поток, на котором висит event tap (иначе тап голодает → лаги/потери нажатий).
-    nonisolated private let injectQueue = DispatchQueue(label: "com.ruswitcher.inject", qos: .userInteractive)
     nonisolated private let manualQueue = DispatchQueue(label: "com.ruswitcher.manual-ax", qos: .userInitiated)
 
     private final class SelectionSnapshot: @unchecked Sendable {
@@ -68,6 +80,14 @@ final class TextConverter {
         }
     }
 
+    private final class SuffixCompletionBox: @unchecked Sendable {
+        let callback: (ManualSuffixReplacementOutcome) -> Void
+
+        init(_ callback: @escaping (ManualSuffixReplacementOutcome) -> Void) {
+            self.callback = callback
+        }
+    }
+
     private enum SelectionReadResult: @unchecked Sendable {
         case none
         case selected(SelectionSnapshot)
@@ -81,6 +101,9 @@ final class TextConverter {
     private(set) var lastTransaction: ConversionTransaction?
     private(set) var lastLearningPair: (original: String, converted: String)?
     private(set) var lastManualTargetLayoutID: String?
+    var canReconvert: Bool {
+        !isConverting && lastWasBuffer && !lastConverted.isEmpty
+    }
 
     /// Создаёт CGEventSource с маркером, чтобы KeyboardMonitor игнорировал наши события
     nonisolated private func makeSource() -> CGEventSource? {
@@ -115,6 +138,138 @@ final class TextConverter {
                     allowClipboardFallback: allowClipboardFallback,
                     completion: completion
                 )
+            }
+        }
+    }
+
+    /// Replaces the exact text immediately before the caret through AX. Unlike
+    /// Backspace + Unicode event posting, this cannot leave a half-deleted word
+    /// when an application drops the insertion event.
+    func replaceFocusedSuffix(
+        expected: String,
+        replacement: String,
+        focus: FocusedElementIdentity,
+        completion: @escaping (ManualSuffixReplacementOutcome) -> Void
+    ) {
+        guard !expected.isEmpty, !replacement.isEmpty else {
+            completion(.failed)
+            return
+        }
+        isConverting = true
+        let completion = SuffixCompletionBox(completion)
+        if CommandLine.arguments.contains("--force-transient-paste-fallback") {
+            finishFocusedSuffixReplacement(
+                .unavailable,
+                expected: expected,
+                replacement: replacement,
+                focus: focus,
+                completion: completion
+            )
+            return
+        }
+        if focus.processID == ProcessInfo.processInfo.processIdentifier {
+            let verification = setAndVerifyFocusedSuffix(
+                expected: expected,
+                replacement: replacement,
+                focus: focus,
+                pollForDelayedCommit: false
+            )
+            finishFocusedSuffixReplacement(
+                verification,
+                expected: expected,
+                replacement: replacement,
+                focus: focus,
+                completion: completion
+            )
+            return
+        }
+        manualQueue.async { [weak self] in
+            guard let self else { return }
+            let verification = self.setAndVerifyFocusedSuffix(
+                expected: expected,
+                replacement: replacement,
+                focus: focus,
+                pollForDelayedCommit: true
+            )
+            Task { @MainActor [weak self] in
+                self?.finishFocusedSuffixReplacement(
+                    verification,
+                    expected: expected,
+                    replacement: replacement,
+                    focus: focus,
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    private func finishFocusedSuffixReplacement(
+        _ verification: ReplacementVerification,
+        expected: String,
+        replacement: String,
+        focus: FocusedElementIdentity,
+        completion: SuffixCompletionBox
+    ) {
+        switch verification {
+        case .match:
+            completion.callback(.verified)
+        case .unchanged, .unavailable:
+            replaceFocusedSuffixViaTransientPasteboard(
+                expected: expected,
+                replacement: replacement,
+                focus: focus,
+                completion: completion
+            )
+        case .mismatch:
+            isConverting = false
+            completion.callback(.failed)
+        }
+    }
+
+    private func replaceFocusedSuffixViaTransientPasteboard(
+        expected: String,
+        replacement: String,
+        focus: FocusedElementIdentity,
+        completion: SuffixCompletionBox
+    ) {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
+              !expected.isEmpty else {
+            isConverting = false
+            completion.callback(.failed)
+            return
+        }
+
+        let pasteboard = NSPasteboard.general
+        cancelClipboardRestore()
+        if savedClipboardItems == nil {
+            savedClipboardItems = snapshotPasteboard(pasteboard)
+        }
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects([transientPasteboardItem(text: replacement)]) else {
+            isConverting = false
+            restoreClipboardNow()
+            completion.callback(.failed)
+            return
+        }
+        clipboardTemporaryChangeCount = pasteboard.changeCount
+
+        guard postSelection(characterCount: expected.count, to: focus.processID) else {
+            isConverting = false
+            restoreClipboardNow()
+            completion.callback(.failed)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
+            guard let self, self.postPaste(to: focus.processID) else {
+                self?.isConverting = false
+                self?.restoreClipboardNow()
+                completion.callback(.failed)
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                guard let self else { return }
+                self.scheduleClipboardRestore(after: 0.25)
+                completion.callback(.postedUnverified)
             }
         }
     }
@@ -293,6 +448,99 @@ final class TextConverter {
         ))
     }
 
+    nonisolated private func setAndVerifyFocusedSuffix(
+        expected: String,
+        replacement: String,
+        focus: FocusedElementIdentity,
+        pollForDelayedCommit: Bool
+    ) -> ReplacementVerification {
+        let app = AXUIElementCreateApplication(focus.processID)
+        AXUIElementSetMessagingTimeout(app, 0.25)
+        var focusedRaw: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            app,
+            kAXFocusedUIElementAttribute as CFString,
+            &focusedRaw
+        ) == .success, let focusedRaw,
+          CFGetTypeID(focusedRaw) == AXUIElementGetTypeID() else { return .unavailable }
+        let element = unsafeDowncast(focusedRaw, to: AXUIElement.self)
+
+        if let expectedIdentifier = focus.identifier {
+            if expectedIdentifier.hasPrefix("axhash:") {
+                guard expectedIdentifier == "axhash:\(CFHash(element))" else { return .mismatch }
+            } else {
+                var identifierRaw: AnyObject?
+                guard AXUIElementCopyAttributeValue(
+                    element,
+                    kAXIdentifierAttribute as CFString,
+                    &identifierRaw
+                ) == .success,
+                identifierRaw as? String == expectedIdentifier else { return .mismatch }
+            }
+        }
+
+        var rangeRaw: AnyObject?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &rangeRaw
+        ) == .success, let rangeRaw,
+          CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return .unavailable }
+        let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
+        var caret = CFRange()
+        guard AXValueGetType(rangeValue) == .cfRange,
+              AXValueGetValue(rangeValue, .cfRange, &caret),
+              caret.length == 0 else { return .mismatch }
+
+        let expectedLength = expected.utf16.count
+        guard caret.location >= expectedLength else { return .mismatch }
+        var suffixRange = CFRange(
+            location: caret.location - expectedLength,
+            length: expectedLength
+        )
+        guard let suffixRangeValue = AXValueCreate(.cfRange, &suffixRange) else {
+            return .unavailable
+        }
+        var suffixRaw: AnyObject?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXStringForRangeParameterizedAttribute as CFString,
+            suffixRangeValue,
+            &suffixRaw
+        ) == .success, let actual = suffixRaw as? String else { return .unavailable }
+        guard actual.precomposedStringWithCanonicalMapping
+                == expected.precomposedStringWithCanonicalMapping else { return .mismatch }
+
+        guard AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            suffixRangeValue
+        ) == .success else { return .unchanged }
+        let snapshot = SelectionSnapshot(
+            processID: focus.processID,
+            element: element,
+            range: suffixRange,
+            text: expected
+        )
+        let verification = setAndVerifySelectedText(
+            snapshot: snapshot,
+            replacement: replacement,
+            pollForDelayedCommit: pollForDelayedCommit
+        )
+
+        var finalRange = verification == .match
+            ? CFRange(location: suffixRange.location + replacement.utf16.count, length: 0)
+            : caret
+        if let finalRangeValue = AXValueCreate(.cfRange, &finalRange) {
+            AXUIElementSetAttributeValue(
+                element,
+                kAXSelectedTextRangeAttribute as CFString,
+                finalRangeValue
+            )
+        }
+        return verification
+    }
+
     func prepareBufferedConversion(keys: [TypedKey]) -> BufferedManualConversion? {
         guard let pair = DynamicKeyMapping.convertKeys(keys) else { return nil }
         let replacement = manualReplacement(
@@ -307,7 +555,7 @@ final class TextConverter {
         )
     }
 
-    func recordVerifiedManualBuffer(
+    func recordPostedManualBuffer(
         _ conversion: BufferedManualConversion,
         transaction: ConversionTransaction
     ) {
@@ -316,6 +564,7 @@ final class TextConverter {
         lastLearningPair = (conversion.original, conversion.replacement)
         lastWasBuffer = true
         lastTransaction = transaction
+        isConverting = false
     }
 
     nonisolated private func postKey(keyCode: UInt16, to processID: Int32) -> Bool {
@@ -326,6 +575,73 @@ final class TextConverter {
         }
         down.postToPid(pid_t(processID))
         up.postToPid(pid_t(processID))
+        return true
+    }
+
+    nonisolated private func postSelection(characterCount: Int, to processID: Int32) -> Bool {
+        guard characterCount > 0, let source = makeSource() else { return false }
+        guard let shiftDown = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: KC.leftShift,
+            keyDown: true
+        ) else { return false }
+        shiftDown.flags = .maskShift
+        shiftDown.post(tap: .cghidEventTap)
+        for _ in 0..<characterCount {
+            guard let down = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: KC.left,
+                keyDown: true
+            ), let up = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: KC.left,
+                keyDown: false
+            ) else { return false }
+            down.flags = .maskShift
+            up.flags = .maskShift
+            down.post(tap: .cghidEventTap)
+            up.post(tap: .cghidEventTap)
+        }
+        guard let shiftUp = CGEvent(
+            keyboardEventSource: source,
+            virtualKey: KC.leftShift,
+            keyDown: false
+        ) else { return false }
+        shiftUp.flags = []
+        shiftUp.post(tap: .cghidEventTap)
+        return true
+    }
+
+    nonisolated private func postPaste(to processID: Int32) -> Bool {
+        guard let source = makeSource(),
+              let commandDown = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: KC.leftCommand,
+                keyDown: true
+              ),
+              let down = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: KC.letterV,
+                keyDown: true
+              ),
+              let up = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: KC.letterV,
+                keyDown: false
+              ),
+              let commandUp = CGEvent(
+                keyboardEventSource: source,
+                virtualKey: KC.leftCommand,
+                keyDown: false
+              ) else { return false }
+        commandDown.flags = .maskCommand
+        down.flags = .maskCommand
+        up.flags = .maskCommand
+        commandUp.flags = []
+        commandDown.post(tap: .cghidEventTap)
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+        commandUp.post(tap: .cghidEventTap)
         return true
     }
 
@@ -363,39 +679,49 @@ final class TextConverter {
         lastWasBuffer = true
     }
 
-    /// Повторная конвертация (второй триггер) — на тот движок, которым делали последнюю.
-    func reconvert(trailingSpaces: Int = 0) -> Bool {
-        guard !isConverting else { return false }
-        if lastWasBuffer {
-            guard !lastConverted.isEmpty else { return false }
-            isConverting = true
-            rslog("buffer reconvert")
-            let extraSpaces: Int
-            if let transaction = lastTransaction, case .punctuation = transaction.boundary {
-                extraSpaces = max(0, trailingSpaces)
-            } else {
-                extraSpaces = 0
-            }
-            let spaces = String(repeating: " ", count: extraSpaces)
-            let current = lastConverted + spaces
-            let insert = lastOriginal + spaces
-            let bsCount = current.count
-            lastOriginal = current
-            lastConverted = insert
-            lastTransaction = nil
-            injectQueue.async { [weak self] in
-                guard let self else { return }
-                self.backspace(bsCount)
-                usleep(20_000)
-                self.insertText(insert)
-                Task { @MainActor in self.isConverting = false }
-            }
-            return true
+    /// Builds the next forced toggle without mutating the remembered pair.
+    /// The caller commits it only after the targeted replacement was posted.
+    func prepareReconversion(trailingSpaces: Int = 0) -> BufferedManualReconversion? {
+        guard canReconvert else { return nil }
+        isConverting = true
+        let includedSpaces: Int
+        if let transaction = lastTransaction,
+           case let .space(count) = transaction.boundary {
+            includedSpaces = max(1, count)
+        } else {
+            includedSpaces = 0
         }
-        return false
+        let extraSpaces = max(0, trailingSpaces - includedSpaces)
+        let spaces = String(repeating: " ", count: extraSpaces)
+        return BufferedManualReconversion(
+            current: lastConverted + spaces,
+            replacement: lastOriginal + spaces,
+            targetLayoutID: lastTransaction?.sourceLayoutID
+        )
+    }
+
+    func recordPostedReconversion(
+        _ reconversion: BufferedManualReconversion,
+        transaction: ConversionTransaction
+    ) {
+        lastOriginal = reconversion.current
+        lastConverted = reconversion.replacement
+        lastTransaction = transaction
+        lastWasBuffer = true
+        isConverting = false
+    }
+
+    func cancelPendingReconversion() {
+        isConverting = false
+    }
+
+    func discardTransactionIfCurrent(_ transaction: ConversionTransaction) {
+        guard lastTransaction?.executionIdentity == transaction.executionIdentity else { return }
+        clearState()
     }
 
     func clearState() {
+        isConverting = false
         lastOriginal = ""
         lastConverted = ""
         lastWasBuffer = false
@@ -560,9 +886,7 @@ final class TextConverter {
             targetLanguage: conversion.targetLanguage
         )
         let pasteboard = NSPasteboard.general
-        let item = NSPasteboardItem()
-        item.setString(replacement, forType: .string)
-        item.setData(Data(), forType: Self.transientPasteboardType)
+        let item = transientPasteboardItem(text: replacement)
         pasteboard.clearContents()
         pasteboard.writeObjects([item])
         clipboardTemporaryChangeCount = pasteboard.changeCount
@@ -607,32 +931,21 @@ final class TextConverter {
     }
 
     private func markPasteboardTransient(_ pasteboard: NSPasteboard) {
-        pasteboard.addTypes([Self.transientPasteboardType], owner: nil)
+        pasteboard.addTypes([
+            Self.transientPasteboardType,
+            Self.concealedPasteboardType,
+        ], owner: nil)
         pasteboard.setData(Data(), forType: Self.transientPasteboardType)
+        pasteboard.setData(Data(), forType: Self.concealedPasteboardType)
         clipboardTemporaryChangeCount = pasteboard.changeCount
     }
 
-    /// Стирает n символов (Backspace × n) — для движка перепечатки.
-    nonisolated private func backspace(_ n: Int) {
-        for _ in 0..<n {
-            simKey(keyCode: KC.backspace, flags: [])
-            usleep(3_000)
-        }
-    }
-
-    /// Впечатывает строку напрямую (юникод-вставка), без буфера обмена.
-    nonisolated private func insertText(_ text: String) {
-        guard !text.isEmpty, let source = makeSource() else { return }
-        let utf16 = Array(text.utf16)
-        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-              let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return }
-        // Text input belongs to keyDown. Attaching the same Unicode payload to
-        // keyUp makes some WebKit/Electron controls insert it a second time.
-        utf16.withUnsafeBufferPointer { buf in
-            down.keyboardSetUnicodeString(stringLength: buf.count, unicodeString: buf.baseAddress)
-        }
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
+    private func transientPasteboardItem(text: String) -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setData(Data(), forType: Self.transientPasteboardType)
+        item.setData(Data(), forType: Self.concealedPasteboardType)
+        return item
     }
 
     /// Отменяет отложенное восстановление clipboard
@@ -667,7 +980,7 @@ final class TextConverter {
 
     /// Планирует восстановление clipboard через 2 секунды
     /// (если за это время придёт reconvert — отменится и перепланируется)
-    private func scheduleClipboardRestore() {
+    private func scheduleClipboardRestore(after delay: TimeInterval = 2.0) {
         cancelClipboardRestore()
         let saved = self.savedClipboardItems
         let work = DispatchWorkItem { [weak self] in
@@ -688,7 +1001,7 @@ final class TextConverter {
             rslog("clipboard_restored")
         }
         clipboardRestoreWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     /// Делает глубокую копию всех pasteboard items (со всеми типами данных).

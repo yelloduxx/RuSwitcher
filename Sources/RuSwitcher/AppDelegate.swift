@@ -394,20 +394,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         let boundaryCount = keyboardMonitor.boundaryCount
-        if keyboardMonitor.currentWordKeys.isEmpty,
-           keyboardMonitor.prevWordKeys.isEmpty,
-           keyboardMonitor.shouldReconvert {
-            if textConverter.reconvert(trailingSpaces: boundaryCount) {
-                keyboardMonitor.markConverted()
-                LayoutSwitcher.switchToOpposite()
-                updateStatusIcon()
-                learnFromUndo()
+        if keyboardMonitor.shouldReconvert, textConverter.canReconvert {
+            guard let reconversion = textConverter.prepareReconversion(
+                trailingSpaces: boundaryCount
+            ), let snapshot = keyboardMonitor.manualEditorSnapshot() else {
+                textConverter.cancelPendingReconversion()
+                return
             }
+            submitManualReconversion(
+                reconversion,
+                snapshot: snapshot,
+                frontID: frontID
+            )
             return
         }
         guard let snapshot = keyboardMonitor.manualTokenSnapshot(),
               let conversion = textConverter.prepareBufferedConversion(keys: snapshot.keys) else {
             guard !AutoSwitchPolicy.isDeniedApp(frontID) else { return }
+            textConverter.clearState()
             keyboardMonitor.markConverted()
             LayoutSwitcher.switchToOpposite()
             updateStatusIcon()
@@ -435,45 +439,139 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             expectedOriginalSuffix: conversion.original + snapshot.boundary.replayText,
             automatic: false
         )
-        var stagedSequence: UInt64?
-        let initial = replacementCoordinator.submit(
-            ReplacementRequest(
-                transaction: transaction,
-                deliveredKeyCount: snapshot.keys.count + snapshot.boundary.replayText.count,
-                currentFocus: snapshot.focus,
-                currentRevision: snapshot.editRevision,
-                allowUnavailablePreflight: snapshot.integrity == .clean
-            )
+        guard let stagedSequence = keyboardMonitor.stageManualConversion(
+            expectedSequence: snapshot.sequence,
+            expectedRevision: snapshot.editRevision,
+            hadCurrentToken: hadCurrentToken
+        ) else { return }
+        textConverter.replaceFocusedSuffix(
+            expected: transaction.expectedOriginalSuffix,
+            replacement: transaction.insertedText,
+            focus: snapshot.focus
         ) { [weak self] outcome in
-            guard let self, let stagedSequence else { return }
+            guard let self else { return }
             guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else {
+                self.textConverter.cancelPendingReconversion()
                 self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
+                return
+            }
+            guard self.keyboardMonitor.isStagedCompletionCurrent(
+                expectedSequence: stagedSequence
+            ) else {
+                self.textConverter.cancelPendingReconversion()
                 return
             }
             switch outcome {
             case .verified:
-                guard self.keyboardMonitor.isStagedCompletionCurrent(
-                    expectedSequence: stagedSequence
-                ) else { return }
-                self.textConverter.recordVerifiedManualBuffer(conversion, transaction: transaction)
+                self.textConverter.recordPostedManualBuffer(conversion, transaction: transaction)
                 self.finishManualConversion(frontID: frontID, targetLayoutID: targetLayoutID)
-            case .failed(.verificationMismatch):
-                self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
             case .postedUnverified:
-                self.keyboardMonitor.finishUnverifiedPostedConversion(expectedSequence: stagedSequence)
-            case .failed, .blocked, .switchedOnly:
-                break
+                self.textConverter.recordPostedManualBuffer(conversion, transaction: transaction)
+                self.keyboardMonitor.finishUnverifiedPostedConversion(
+                    expectedSequence: stagedSequence
+                )
+                self.finishManualConversion(
+                    frontID: frontID,
+                    targetLayoutID: targetLayoutID,
+                    allowLearning: false
+                )
+            case .failed:
+                self.textConverter.cancelPendingReconversion()
+                self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
             }
         }
-        guard initial == .postedUnverified else { return }
-        stagedSequence = keyboardMonitor.stageManualConversion(
-            expectedSequence: snapshot.sequence,
-            expectedRevision: snapshot.editRevision,
-            hadCurrentToken: hadCurrentToken
-        )
     }
 
-    private func finishManualConversion(frontID: String?, targetLayoutID: String?) {
+    private func submitManualReconversion(
+        _ reconversion: BufferedManualReconversion,
+        snapshot: ManualTokenSnapshot,
+        frontID: String?
+    ) {
+        let transaction = ConversionTransaction(
+            original: reconversion.current,
+            replacement: reconversion.replacement,
+            boundary: .punctuation(""),
+            focus: snapshot.focus,
+            sourceLayoutID: LayoutSwitcher.currentLayoutID(),
+            targetLayoutID: reconversion.targetLayoutID,
+            sequence: snapshot.sequence,
+            editRevision: snapshot.editRevision,
+            expectedOriginalSuffix: reconversion.current,
+            automatic: false
+        )
+        guard let stagedSequence = keyboardMonitor.stageManualConversion(
+            expectedSequence: snapshot.sequence,
+            expectedRevision: snapshot.editRevision,
+            hadCurrentToken: false
+        ) else {
+            textConverter.cancelPendingReconversion()
+            return
+        }
+        textConverter.replaceFocusedSuffix(
+            expected: reconversion.current,
+            replacement: reconversion.replacement,
+            focus: snapshot.focus
+        ) { [weak self] outcome in
+            guard let self else { return }
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else {
+                self.textConverter.cancelPendingReconversion()
+                self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
+                return
+            }
+            guard self.keyboardMonitor.isStagedCompletionCurrent(
+                expectedSequence: stagedSequence
+            ) else {
+                self.textConverter.cancelPendingReconversion()
+                return
+            }
+            switch outcome {
+            case .verified:
+                self.finishManualReconversion(
+                    reconversion,
+                    transaction: transaction,
+                    allowLearning: true
+                )
+            case .postedUnverified:
+                self.keyboardMonitor.finishUnverifiedPostedConversion(
+                    expectedSequence: stagedSequence
+                )
+                self.finishManualReconversion(
+                    reconversion,
+                    transaction: transaction,
+                    allowLearning: false
+                )
+            case .failed:
+                self.textConverter.cancelPendingReconversion()
+                self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
+            }
+        }
+    }
+
+    private func finishManualReconversion(
+        _ reconversion: BufferedManualReconversion,
+        transaction: ConversionTransaction,
+        allowLearning: Bool
+    ) {
+        textConverter.recordPostedReconversion(reconversion, transaction: transaction)
+        keyboardMonitor.markConverted()
+        if let targetLayoutID = reconversion.targetLayoutID {
+            LayoutSwitcher.switchTo(layoutID: targetLayoutID)
+        } else {
+            LayoutSwitcher.switchToOpposite()
+        }
+        updateStatusIcon()
+        if allowLearning {
+            learnFromUndo()
+        } else {
+            lastAutoConverted = nil
+        }
+    }
+
+    private func finishManualConversion(
+        frontID: String?,
+        targetLayoutID: String?,
+        allowLearning: Bool = true
+    ) {
         keyboardMonitor.markConverted()
         if let targetLayoutID {
             LayoutSwitcher.switchTo(layoutID: targetLayoutID)
@@ -481,6 +579,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             LayoutSwitcher.switchToOpposite()
         }
         updateStatusIcon()
+        guard allowLearning else {
+            lastAutoConverted = nil
+            return
+        }
         guard let pair = textConverter.lastLearningPair else {
             lastAutoConverted = nil
             return
@@ -700,6 +802,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         switch execution {
         case .postedUnverified:
             postedAutomaticReplacementCount += 1
+            // The posted pair is immediately available to the explicit manual
+            // trigger. This prevents stale physical keys from converting the
+            // already-corrected word to the same text again while AX verifies it.
+            textConverter.recordCommittedTransaction(transaction)
             return TokenHandlingResult(
                 consumeBoundary: snapshot.boundary.shouldConsumeOriginalEvent,
                 stageCompletion: true,
@@ -737,6 +843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let front = NSWorkspace.shared.frontmostApplication,
               front.processIdentifier == transaction.focus.processID,
               front.bundleIdentifier == transaction.focus.bundleID else {
+            textConverter.discardTransactionIfCurrent(transaction)
             keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
             return
         }
@@ -774,9 +881,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             updateStatusIcon()
         case .failed(.verificationMismatch):
+            textConverter.discardTransactionIfCurrent(transaction)
             keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
         case .failed, .blocked, .switchedOnly:
-            break
+            textConverter.discardTransactionIfCurrent(transaction)
         }
     }
 

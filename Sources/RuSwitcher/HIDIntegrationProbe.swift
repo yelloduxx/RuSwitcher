@@ -10,6 +10,9 @@ private struct HIDProbeResult: Codable {
     let layoutID: String
     let postEventAccess: Bool
     let manualText: String?
+    let manualTrace: [String]
+    let manualSelectionLengthTrace: [Int]
+    let syntheticKeyTrace: [String]
     let learningConfirmed: Bool?
     let pasteboardChangeCountDelta: Int
     let postedAutomaticReplacementCount: Int
@@ -43,7 +46,8 @@ private struct HIDProbeScenario {
     let name: String
     let phases: [Phase]
     let manualLearningSource: String?
-    let triggerAfterTyping: Bool
+    let trailingTriggerCount: Int
+    let selectedToggleSource: String?
     let autoConvertEnabled: Bool
 
     init(
@@ -51,12 +55,15 @@ private struct HIDProbeScenario {
         phases: [Phase],
         manualLearningSource: String? = nil,
         triggerAfterTyping: Bool = false,
+        trailingTriggerCount: Int? = nil,
+        selectedToggleSource: String? = nil,
         autoConvertEnabled: Bool = true
     ) {
         self.name = name
         self.phases = phases
         self.manualLearningSource = manualLearningSource
-        self.triggerAfterTyping = triggerAfterTyping
+        self.trailingTriggerCount = trailingTriggerCount ?? (triggerAfterTyping ? 1 : 0)
+        self.selectedToggleSource = selectedToggleSource
         self.autoConvertEnabled = autoConvertEnabled
     }
 
@@ -86,6 +93,41 @@ private struct HIDProbeScenario {
                     Phase(sourceLanguage: "en", typedText: "ghbdtn "),
                 ],
                 triggerAfterTyping: true,
+                autoConvertEnabled: false
+            )
+        case "manual-last-word-toggle-cycle":
+            return HIDProbeScenario(
+                name: name,
+                phases: [Phase(sourceLanguage: "en", typedText: "here ")],
+                trailingTriggerCount: 4,
+                autoConvertEnabled: false
+            )
+        case "manual-current-word-toggle-cycle":
+            return HIDProbeScenario(
+                name: name,
+                phases: [Phase(sourceLanguage: "en", typedText: "here")],
+                trailingTriggerCount: 4,
+                autoConvertEnabled: false
+            )
+        case "manual-russian-word-toggle-cycle":
+            return HIDProbeScenario(
+                name: name,
+                phases: [Phase(sourceLanguage: "ru", typedText: "жопа")],
+                trailingTriggerCount: 2,
+                autoConvertEnabled: false
+            )
+        case "manual-auto-word-toggle-cycle":
+            return HIDProbeScenario(
+                name: name,
+                phases: [Phase(sourceLanguage: "en", typedText: "ckj;yj ")],
+                trailingTriggerCount: 2
+            )
+        case "manual-selection-toggle-cycle":
+            return HIDProbeScenario(
+                name: name,
+                phases: [],
+                trailingTriggerCount: 4,
+                selectedToggleSource: "here",
                 autoConvertEnabled: false
             )
         default:
@@ -194,6 +236,9 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     private var eventSource: CGEventSource?
     private var plannedPhases: [HIDProbePlannedPhase] = []
     private var manualObservedText: String?
+    private var manualTrace: [String] = []
+    private var manualSelectionLengthTrace: [Int] = []
+    private var syntheticKeyTrace: [String] = []
     private var layoutMismatchStrokes: [String] = []
     private var boundaryDeliveryTimeouts: [Int] = []
     private var didStartProductionMonitoring = false
@@ -217,6 +262,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         initialPasteboardChangeCount = NSPasteboard.general.changeCount
         NSApp.setActivationPolicy(.regular)
+        installEditMenu()
         let window = NSWindow(
             contentRect: NSRect(x: 120, y: 120, width: 640, height: 180),
             styleMask: [.titled],
@@ -233,6 +279,11 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         textView.isContinuousSpellCheckingEnabled = false
         localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             let marker = event.cgEvent?.getIntegerValueField(.eventSourceUserData) ?? 0
+            if marker == kRuSwitcherEventMarker {
+                self?.syntheticKeyTrace.append(
+                    "\(event.keyCode):\(event.modifierFlags.rawValue)"
+                )
+            }
             if marker != 0x52535445, marker != kRuSwitcherEventMarker {
                 self?.unexpectedInputEventCount += 1
             }
@@ -251,6 +302,10 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             startManualLearningProbe(source: source)
             return
         }
+        if let source = scenario.selectedToggleSource {
+            startSelectionToggleProbe(source: source)
+            return
+        }
         guard let firstPhase = scenario.phases.first,
               selectLayout(language: firstPhase.sourceLanguage) else {
             finish(text: "<layout-unavailable>")
@@ -264,6 +319,22 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func installEditMenu() {
+        let mainMenu = NSMenu()
+        let editItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        let pasteItem = NSMenuItem(
+            title: "Paste",
+            action: #selector(NSText.paste(_:)),
+            keyEquivalent: "v"
+        )
+        pasteItem.keyEquivalentModifierMask = .command
+        editMenu.addItem(pasteItem)
+        editItem.submenu = editMenu
+        mainMenu.addItem(editItem)
+        NSApp.mainMenu = mainMenu
+    }
+
     private func startManualLearningProbe(source: String) {
         guard selectLayout(language: "en") else {
             finish(text: "<layout-unavailable>")
@@ -271,6 +342,30 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
             self?.prepareManualLearningInput(source: source)
+        }
+    }
+
+    private func startSelectionToggleProbe(source: String) {
+        guard selectLayout(language: "en") else {
+            finish(text: "<layout-unavailable>")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.prepareSelectionToggleInput(source: source)
+        }
+    }
+
+    private func prepareSelectionToggleInput(source: String, attempt: Int = 0) {
+        guard focusProbeWindow(attempt: attempt) else { return }
+        textView.string = source
+        textView.setSelectedRange(NSRange(location: 0, length: (source as NSString).length))
+        releaseModifiers()
+        startProductionMonitoringIfNeeded()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.runManualToggleCycle(
+                remaining: self?.scenario.trailingTriggerCount ?? 0,
+                reselectText: true
+            )
         }
     }
 
@@ -324,6 +419,8 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
                     source: self.scenario.manualLearningSource ?? "",
                     attempt: attempt + 1
                 )
+            } else if let source = self.scenario.selectedToggleSource {
+                self.prepareSelectionToggleInput(source: source, attempt: attempt + 1)
             } else {
                 self.prepareAutomatedInput(attempt: attempt + 1)
             }
@@ -346,7 +443,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         productionDelegate.startHIDProbeMonitoring()
     }
 
-    private func postDoubleShift() {
+    private func postDoubleShift(completion: @escaping () -> Void = {}) {
         guard let source = CGEventSource(stateID: .hidSystemState) else {
             finish(text: "<event-source-unavailable>")
             return
@@ -354,7 +451,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         source.userData = 0x52535445
         postShiftTap(source: source) { [weak self] in
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) {
-                self?.postShiftTap(source: source, completion: {})
+                self?.postShiftTap(source: source, completion: completion)
             }
         }
     }
@@ -419,15 +516,14 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
 
     private func postPhase(at phaseIndex: Int) {
         guard plannedPhases.indices.contains(phaseIndex) else {
-            if scenario.triggerAfterTyping, !didPostTrailingTrigger {
+            if scenario.trailingTriggerCount > 0, !didPostTrailingTrigger {
                 didPostTrailingTrigger = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                    self?.postDoubleShift()
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
                     guard let self else { return }
-                    self.manualObservedText = self.textView.string
-                    self.finish(text: self.textView.string)
+                    self.runManualToggleCycle(
+                        remaining: self.scenario.trailingTriggerCount,
+                        reselectText: false
+                    )
                 }
                 return
             }
@@ -444,6 +540,31 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.045) { [weak self] in
             self?.postStroke(phaseIndex: phaseIndex, strokeIndex: 0)
+        }
+    }
+
+    private func runManualToggleCycle(remaining: Int, reselectText: Bool) {
+        guard remaining > 0 else {
+            manualObservedText = textView.string
+            finish(text: textView.string)
+            return
+        }
+        if reselectText {
+            textView.setSelectedRange(NSRange(
+                location: 0,
+                length: (textView.string as NSString).length
+            ))
+        }
+        postDoubleShift { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                guard let self else { return }
+                self.manualTrace.append(self.textView.string)
+                self.manualSelectionLengthTrace.append(self.textView.selectedRange().length)
+                self.runManualToggleCycle(
+                    remaining: remaining - 1,
+                    reselectText: reselectText
+                )
+            }
         }
     }
 
@@ -512,6 +633,9 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             layoutID: resultingLayoutID,
             postEventAccess: CGPreflightPostEventAccess(),
             manualText: manualObservedText,
+            manualTrace: manualTrace,
+            manualSelectionLengthTrace: manualSelectionLengthTrace,
+            syntheticKeyTrace: syntheticKeyTrace,
             learningConfirmed: scenario.manualLearningSource.map { source in
                 SettingsManager.shared.isAdaptiveConfirmed(
                     original: source,

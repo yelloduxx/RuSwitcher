@@ -369,6 +369,25 @@ final class KeyboardMonitor: @unchecked Sendable {
         )
     }
 
+    /// Snapshot for toggling a replacement that is already visible before the
+    /// caret. It deliberately has no physical keys: the remembered text pair is
+    /// validated by ReplacementCoordinator before any edit is posted.
+    func manualEditorSnapshot() -> ManualTokenSnapshot? {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+        return ManualTokenSnapshot(
+            keys: [],
+            boundary: .punctuation(""),
+            focus: FocusedElementIdentity(
+                processID: app.processIdentifier,
+                bundleID: app.bundleIdentifier,
+                identifier: focusedElementIdentifier(processID: app.processIdentifier)
+            ),
+            sequence: inputSession.sequence,
+            editRevision: inputSession.editRevision,
+            integrity: inputSession.integrity
+        )
+    }
+
     func stageManualConversion(
         expectedSequence: UInt64,
         expectedRevision: UInt64,
