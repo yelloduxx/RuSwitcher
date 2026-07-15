@@ -402,10 +402,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             )
             return
         case .postedUnverified:
+            // Async selection path still in flight.
             return
-        case .failed:
-            return
-        case .none:
+        case .failed, .none:
+            // No usable selection (or a transient busy/fail). Fall through to
+            // reconversion / current-token / layout-only — never swallow double-Shift.
             break
         }
 

@@ -223,7 +223,9 @@ final class TextConverter {
         switch verification {
         case .match:
             completion.callback(.verified)
-        case .unchanged:
+        case .unchanged, .unavailable:
+            // AX could not mutate (or even resolve) the field. Still try the
+            // event-based path so double-Shift works in non-AX editors.
             replaceFocusedSuffixViaSyntheticInput(
                 expected: expected,
                 replacement: replacement,
@@ -231,7 +233,8 @@ final class TextConverter {
                 isCurrent: isCurrent,
                 completion: completion
             )
-        case .mismatch, .unavailable:
+        case .mismatch:
+            // Different text is before the caret — do not delete it.
             isConverting = false
             completion.callback(.failed)
         }
@@ -246,27 +249,74 @@ final class TextConverter {
     ) {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
               !expected.isEmpty,
-              isCurrent(),
-              focusedSuffixMatches(expected, focus: focus, timeoutMilliseconds: 50) else {
+              isCurrent() else {
             isConverting = false
             completion.callback(.failed)
             return
         }
 
-        // Backspace the exact suffix, then insert Unicode. Do NOT use Shift+Left
-        // selection + insert: many editors ignore the selection for synthetic
-        // Unicode events and append, which duplicates the word on double-Shift
-        // toggle ( reconversion ).
-        let deleteCount = expected.count
+        // Probe AX when possible. Prefer an expected form that actually sits
+        // before the caret (with or without a trailing space).
+        let resolved = resolveSyntheticPair(
+            expected: expected,
+            replacement: replacement,
+            focus: focus
+        )
+        guard let resolved else {
+            isConverting = false
+            completion.callback(.failed)
+            return
+        }
+
+        // Backspace the exact suffix, then insert Unicode. Avoid Shift+Left
+        // selection + insert: many hosts ignore selection and append (duplicate).
+        let deleteCount = resolved.expected.count
         guard deleteCount > 0,
               postBackspaces(count: deleteCount, to: focus.processID),
-              postUnicodeText(replacement, to: focus.processID) else {
+              postUnicodeText(resolved.replacement, to: focus.processID) else {
             isConverting = false
             completion.callback(.failed)
             return
         }
         isConverting = false
         completion.callback(.postedUnverified)
+    }
+
+    /// Picks expected/replacement that either match AX or are safe when AX is dark.
+    private func resolveSyntheticPair(
+        expected: String,
+        replacement: String,
+        focus: FocusedElementIdentity
+    ) -> (expected: String, replacement: String)? {
+        let candidates: [(String, String)] = {
+            var list = [(expected, replacement)]
+            if expected.hasSuffix(" "), replacement.hasSuffix(" ") {
+                list.append((String(expected.dropLast()), String(replacement.dropLast())))
+            }
+            if !expected.hasSuffix(" "), !replacement.hasSuffix(" ") {
+                list.append((expected + " ", replacement + " "))
+            }
+            return list
+        }()
+
+        var sawUnavailable = false
+        for (exp, rep) in candidates {
+            switch focusedSuffixProbe(exp, focus: focus, timeoutMilliseconds: 80) {
+            case .match:
+                return (exp, rep)
+            case .mismatch:
+                continue
+            case .unavailable, .unchanged:
+                // Probe only yields match/mismatch/unavailable; unchanged is unused.
+                sawUnavailable = true
+            }
+        }
+        // No AX (or only unavailable probes): use the first candidate. Safer than
+        // disabling double-Shift entirely in non-AX editors.
+        if sawUnavailable {
+            return candidates[0]
+        }
+        return nil
     }
 
     nonisolated private func postBackspaces(count: Int, to processID: Int32) -> Bool {
@@ -586,50 +636,60 @@ final class TextConverter {
             == snapshot.text.precomposedStringWithCanonicalMapping
     }
 
-    nonisolated private func focusedSuffixMatches(
+    nonisolated private func focusedSuffixProbe(
         _ expected: String,
         focus: FocusedElementIdentity,
         timeoutMilliseconds: Int
-    ) -> Bool {
+    ) -> ReplacementVerification {
         switch focusedElementResolver.withElement(
             processID: focus.processID,
             expectedIdentifier: focus.identifier,
             timeoutMilliseconds: timeoutMilliseconds,
             allowTreeSearch: true,
-            operation: { lease in
+            operation: { lease -> ReplacementVerification in
                 let rangeRead = lease.copyAttribute(kAXSelectedTextRangeAttribute as CFString)
                 guard rangeRead.0 == .success, let rangeRaw = rangeRead.1,
-                      CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return false }
+                      CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return .unavailable }
                 let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
                 var caret = CFRange()
                 guard AXValueGetType(rangeValue) == .cfRange,
                       AXValueGetValue(rangeValue, .cfRange, &caret),
-                      caret.length == 0 else { return false }
+                      caret.length == 0 else { return .mismatch }
                 let expectedLength = expected.utf16.count
-                guard caret.location >= expectedLength else { return false }
+                guard caret.location >= expectedLength else { return .mismatch }
                 var suffixRange = CFRange(
                     location: caret.location - expectedLength,
                     length: expectedLength
                 )
                 guard let suffixRangeValue = AXValueCreate(.cfRange, &suffixRange) else {
-                    return false
+                    return .unavailable
                 }
                 let suffixRead = lease.copyParameterizedAttribute(
                     kAXStringForRangeParameterizedAttribute as CFString,
                     parameter: suffixRangeValue
                 )
                 guard suffixRead.0 == .success, let actual = suffixRead.1 as? String else {
-                    return false
+                    return .unavailable
                 }
                 return actual.precomposedStringWithCanonicalMapping
                     == expected.precomposedStringWithCanonicalMapping
+                    ? .match
+                    : .mismatch
             }
         ) {
-        case let .value(matched):
-            return matched
+        case let .value(result):
+            return result
         case .unavailable:
-            return false
+            return .unavailable
         }
+    }
+
+    nonisolated private func focusedSuffixMatches(
+        _ expected: String,
+        focus: FocusedElementIdentity,
+        timeoutMilliseconds: Int
+    ) -> Bool {
+        focusedSuffixProbe(expected, focus: focus, timeoutMilliseconds: timeoutMilliseconds) == .match
     }
 
     nonisolated private func selectedTextMatches(
@@ -796,19 +856,29 @@ final class TextConverter {
     /// The caller commits it only after the targeted replacement was posted.
     func prepareReconversion(trailingSpaces: Int = 0) -> BufferedManualReconversion? {
         guard canReconvert else { return nil }
-        isConverting = true
-        let includedSpaces: Int
-        if let transaction = lastTransaction,
-           case let .space(count) = transaction.boundary {
-            includedSpaces = max(1, count)
+        // Do not set isConverting here — only once replaceFocusedSuffix actually
+        // starts, otherwise a failed stage leaves canReconvert permanently false.
+        let currentBody = lastConverted.trimmingCharacters(in: .whitespaces)
+        let replacementBody = lastOriginal.trimmingCharacters(in: .whitespaces)
+        guard !currentBody.isEmpty, !replacementBody.isEmpty else { return nil }
+
+        // Match the word body first. Trailing spaces after auto-convert are
+        // unreliable across editors (consumed vs replayed Space), and requiring
+        // them caused reconversion to always mismatch and no-op.
+        let spaceCount: Int
+        if trailingSpaces > 0 {
+            spaceCount = trailingSpaces
+        } else if lastConverted.hasSuffix(" ") || lastOriginal.hasSuffix(" ") {
+            spaceCount = 1
+        } else if let transaction = lastTransaction, case .space = transaction.boundary {
+            spaceCount = 1
         } else {
-            includedSpaces = 0
+            spaceCount = 0
         }
-        let extraSpaces = max(0, trailingSpaces - includedSpaces)
-        let spaces = String(repeating: " ", count: extraSpaces)
+        let spaces = String(repeating: " ", count: spaceCount)
         return BufferedManualReconversion(
-            current: lastConverted + spaces,
-            replacement: lastOriginal + spaces,
+            current: currentBody + spaces,
+            replacement: replacementBody + spaces,
             targetLayoutID: lastTransaction?.sourceLayoutID
         )
     }
