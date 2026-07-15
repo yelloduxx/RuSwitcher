@@ -31,9 +31,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var caretIndicator: CaretIndicator?   // issue #10: флаг у каретки (бета, по умолчанию OFF)
     private var lastFlagShown: String?            // идентичность раскладки для детекта смены (не title!)
     private var badgeCache: [String: NSImage] = [:]  // монохромные плашки, чтобы не перерисовывать 2с-опросом
-    /// Another RuSwitcher (Lab / author / second AX) is competing for the HID stream.
-    private var siblingInstanceDetected = false
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         SettingsManager.shared.migrateAdaptiveRulesIfNeeded()
         if languageModel != nil {
@@ -41,16 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             rslog("engine_v3_unavailable")
         }
-        let siblings = NSWorkspace.shared.runningApplications.filter {
-            guard $0.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return false }
-            let bundleID = $0.bundleIdentifier ?? ""
-            return bundleID == "com.ruswitcher.app"
-                || bundleID == "com.ruswitcher.lab"
-                || bundleID == ProductIdentity.bundleIdentifier
-                || ($0.localizedName?.contains("RuSwitcher") == true)
-        }
-        if !siblings.isEmpty {
-            siblingInstanceDetected = true
+        if hasSiblingRuSwitcherInstance() {
             rslog("sibling_ruswitcher_instance_detected")
         }
         setupStatusItem()
@@ -453,14 +441,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         convertWordBeforeCaretOrSwitchLayout(frontID: frontID)
     }
 
-    /// Beyond Lab 105: one deferred retry when caret prep is busy (short AX
-    /// verify / previous replace still settling) instead of a silent no-op.
+    /// One deferred retry when caret prep is busy (short AX verify / previous
+    /// replace still settling). Retry only continues if focus identity, sequence
+    /// and edit revision still match the attempt that saw `.busy` — a click into
+    /// another field of the same app must cancel, not convert the wrong suffix.
     private func convertWordBeforeCaretOrSwitchLayout(
         frontID: String?,
+        requiredEditor: ManualTokenSnapshot? = nil,
         allowBusyRetry: Bool = true
     ) {
         guard !AutoSwitchPolicy.isDeniedApp(frontID),
               let snapshot = keyboardMonitor.manualEditorSnapshot() else { return }
+        if let required = requiredEditor {
+            guard snapshot.focus == required.focus,
+                  snapshot.sequence == required.sequence,
+                  snapshot.editRevision == required.editRevision else {
+                rslog("manual_caret_word_retry_stale")
+                return
+            }
+        }
         textConverter.prepareCaretWordConversion(focus: snapshot.focus) { [weak self] outcome in
             guard let self,
                   NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else { return }
@@ -470,18 +469,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     rslog("manual_caret_word_busy")
                     return
                 }
+                let frozen = snapshot
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
                     self?.convertWordBeforeCaretOrSwitchLayout(
                         frontID: frontID,
+                        requiredEditor: frozen,
                         allowBusyRetry: false
                     )
                 }
             case .noCandidate:
                 self.finishManualSwitchOnly()
             case let .conversion(conversion):
+                // Prep is async; cancel if the editor changed while AX read ran.
+                guard let current = self.keyboardMonitor.manualEditorSnapshot(),
+                      current.focus == snapshot.focus,
+                      current.sequence == snapshot.sequence,
+                      current.editRevision == snapshot.editRevision else {
+                    rslog("manual_caret_word_stale_after_prep")
+                    return
+                }
                 self.submitManualCaretWordConversion(
                     conversion,
-                    snapshot: snapshot,
+                    snapshot: current,
                     frontID: frontID
                 )
             }
@@ -1298,8 +1307,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if changed { caretIndicator?.layoutChanged() }
     }
 
+    private func hasSiblingRuSwitcherInstance() -> Bool {
+        NSWorkspace.shared.runningApplications.contains { app in
+            guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return false }
+            let bundleID = app.bundleIdentifier ?? ""
+            return bundleID == "com.ruswitcher.app"
+                || bundleID == "com.ruswitcher.lab"
+                || bundleID == ProductIdentity.bundleIdentifier
+                || (app.localizedName?.contains("RuSwitcher") == true)
+        }
+    }
+
     private func autoConversionHealthText() -> String {
-        if siblingInstanceDetected {
+        // Live check: clearing the warning when Lab/author quits, without restart.
+        if hasSiblingRuSwitcherInstance() {
             return L10n.statusSiblingInstance
         }
         guard SettingsManager.shared.autoSwitchEnabled, SettingsManager.shared.autoConvert else {

@@ -20,13 +20,15 @@ installed build changes.
   `503e07d18caeb3bbaf722c52e6b7a85e0bd9bf086e42cdb5759d802d7ea6ac33`).
   Do not overwrite Lab from this worktree.
 - This Grok branch (`grok/ruswitcher-ax`) adopts Lab **105 conversion logic**
-  and ships competitive **RuSwitcher AX** build **106**:
+  and ships competitive **RuSwitcher AX** build **107**:
   - Bundle: `RuSwitcherAX.app` → `/Applications/RuSwitcherAX.app`
   - Bundle ID: `com.ruswitcher.ax` · Executable: `RuSwitcherAX` · Dev tag: `ax`
   - Logs: `~/Library/Logs/RuSwitcherAX/ruswitcher-ax.log` via
     `ProductIdentity.logFilePath` (Settings and rslog must match)
   - Beyond Lab: fixed Settings log path, ProductIdentity branding, caret-word
-    busy retry, sibling-instance health warning, AX-default test scripts
+    busy retry gated on focus/sequence/revision, live sibling health check,
+    no `allowUnavailablePreflight` (unavailable AX always blocks auto post),
+    AX-default test scripts
 - The author's original app remains `/Applications/RuSwitcher.app` (`2.7.0`
   build `35`). Never overwrite Lab or author from this branch.
 - Verify the installed binary hash and PID after every local replacement; do

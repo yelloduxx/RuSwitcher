@@ -42,22 +42,17 @@ public struct ReplacementRequest: Equatable, Sendable {
     public let deliveredKeyCount: Int
     public let currentFocus: FocusedElementIdentity
     public let currentRevision: UInt64
-    /// Automatic conversion must still post when AX cannot read the focused
-    /// field. Mismatch remains a hard block.
-    public let allowUnavailablePreflight: Bool
 
     public init(
         transaction: ConversionTransaction,
         deliveredKeyCount: Int,
         currentFocus: FocusedElementIdentity,
-        currentRevision: UInt64,
-        allowUnavailablePreflight: Bool = false
+        currentRevision: UInt64
     ) {
         self.transaction = transaction
         self.deliveredKeyCount = deliveredKeyCount
         self.currentFocus = currentFocus
         self.currentRevision = currentRevision
-        self.allowUnavailablePreflight = allowUnavailablePreflight
     }
 }
 
@@ -142,7 +137,9 @@ public final class NativeReplacementCoordinator: ReplacementCoordinating {
         guard preflight != .mismatch else {
             return .blocked(.expectedSuffixMismatch)
         }
-        guard preflight != .unavailable || request.allowUnavailablePreflight else {
+        // Unavailable AX is always a hard block. Never post a destructive
+        // replacement without a successful preflight match.
+        guard preflight != .unavailable else {
             return .blocked(.contextUnavailable)
         }
 
