@@ -48,17 +48,23 @@ public struct ReplacementRequest: Equatable, Sendable {
     public let deliveredKeyCount: Int
     public let currentFocus: FocusedElementIdentity
     public let currentRevision: UInt64
+    /// When true, a missing AX context still posts the replacement (event path).
+    /// Used for automatic conversion: blocking on dark AX made auto dead in
+    /// Notes/Telegram/etc. Mismatch still blocks.
+    public let allowUnavailablePreflight: Bool
 
     public init(
         transaction: ConversionTransaction,
         deliveredKeyCount: Int,
         currentFocus: FocusedElementIdentity,
-        currentRevision: UInt64
+        currentRevision: UInt64,
+        allowUnavailablePreflight: Bool = false
     ) {
         self.transaction = transaction
         self.deliveredKeyCount = deliveredKeyCount
         self.currentFocus = currentFocus
         self.currentRevision = currentRevision
+        self.allowUnavailablePreflight = allowUnavailablePreflight
     }
 }
 
@@ -147,7 +153,7 @@ public final class NativeReplacementCoordinator: ReplacementCoordinating {
         guard preflight != .mismatch else {
             return .blocked(.expectedSuffixMismatch)
         }
-        guard preflight != .unavailable else {
+        guard preflight != .unavailable || request.allowUnavailablePreflight else {
             return .blocked(.contextUnavailable)
         }
 

@@ -50,7 +50,7 @@ final class ReplacementCoordinatorTests: XCTestCase {
         XCTAssertTrue(poster.plans.isEmpty)
     }
 
-    func testUnavailablePreflightAlwaysBlocksBeforePosting() {
+    func testUnavailablePreflightBlocksUnlessExplicitlyAllowed() {
         let reader = Reader(preflight: .unavailable)
         let poster = Poster(result: true)
         let coordinator = NativeReplacementCoordinator(reader: reader, poster: poster)
@@ -60,6 +60,12 @@ final class ReplacementCoordinatorTests: XCTestCase {
             .blocked(.contextUnavailable)
         )
         XCTAssertTrue(poster.plans.isEmpty)
+
+        XCTAssertEqual(
+            coordinator.submit(request(allowUnavailablePreflight: true)) { _ in },
+            .postedUnverified
+        )
+        XCTAssertEqual(poster.plans.count, 1)
     }
 
     func testDuplicateTransactionIsNeverPostedTwice() {
@@ -85,7 +91,7 @@ final class ReplacementCoordinatorTests: XCTestCase {
         )
     }
 
-    private func request() -> ReplacementRequest {
+    private func request(allowUnavailablePreflight: Bool = false) -> ReplacementRequest {
         let focus = FocusedElementIdentity(processID: 42, bundleID: "test.host", identifier: "field")
         return ReplacementRequest(
             transaction: ConversionTransaction(
@@ -102,7 +108,8 @@ final class ReplacementCoordinatorTests: XCTestCase {
             ),
             deliveredKeyCount: 6,
             currentFocus: focus,
-            currentRevision: 3
+            currentRevision: 3,
+            allowUnavailablePreflight: allowUnavailablePreflight
         )
     }
 }

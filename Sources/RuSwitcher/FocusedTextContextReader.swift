@@ -164,7 +164,7 @@ final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Send
         focus: FocusedElementIdentity,
         timeoutMilliseconds: Int
     ) -> TextContextValidation {
-        switch focusedElementResolver.withElement(
+        let first = focusedElementResolver.withElement(
             processID: focus.processID,
             expectedIdentifier: focus.identifier,
             timeoutMilliseconds: timeoutMilliseconds,
@@ -172,12 +172,34 @@ final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Send
             operation: { lease in
                 compareSuffix(expectedSuffix, lease: lease)
             }
-        ) {
+        )
+        switch first {
         case let .value(result):
             return result
         case let .unavailable(failure):
+            // Stale cached focus identity must not hard-block auto conversion.
+            // Retry once without the expected identifier, then treat remaining
+            // identity issues as unavailable (post may still be allowed).
+            if failure == .identifierMismatch, focus.identifier != nil {
+                rslog("ax_identifier_mismatch")
+                switch focusedElementResolver.withElement(
+                    processID: focus.processID,
+                    expectedIdentifier: nil,
+                    timeoutMilliseconds: timeoutMilliseconds,
+                    allowTreeSearch: false,
+                    operation: { lease in
+                        compareSuffix(expectedSuffix, lease: lease)
+                    }
+                ) {
+                case let .value(result):
+                    return result
+                case let .unavailable(retryFailure):
+                    logLookupFailure(retryFailure)
+                    return .unavailable
+                }
+            }
             logLookupFailure(failure)
-            return failure == .identifierMismatch ? .mismatch : .unavailable
+            return .unavailable
         }
     }
 

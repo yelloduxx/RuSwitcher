@@ -813,7 +813,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 transaction: transaction,
                 deliveredKeyCount: snapshot.deliveredKeyCount,
                 currentFocus: snapshot.focus,
-                currentRevision: snapshot.editRevision
+                currentRevision: snapshot.editRevision,
+                // Auto must work without AX. Build 95+ blocked on unavailable and
+                // silently disabled conversion in most real editors.
+                allowUnavailablePreflight: snapshot.integrity == .clean
             )
         ) { [weak self] outcome in
             self?.finishAutomaticReplacement(
