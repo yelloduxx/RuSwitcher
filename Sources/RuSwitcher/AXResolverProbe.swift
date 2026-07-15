@@ -19,11 +19,15 @@ enum AXResolverProbe {
             FileHandle.standardError.write(Data("invalid process id\n".utf8))
             exit(64)
         }
+        let warmTimeout = ProcessInfo.processInfo.environment["RS_AX_PROBE_TIMEOUT_MS"]
+            .flatMap(Int.init)
+            .map { max(1, $0) }
+            ?? 120
         let resolver = NativeFocusedEditableResolver()
         let warmStarted = DispatchTime.now().uptimeNanoseconds
         let warm = resolver.resolve(
             processID: processID,
-            timeoutMilliseconds: 120,
+            timeoutMilliseconds: warmTimeout,
             allowTreeSearch: true
         )
         let warmLatency = milliseconds(since: warmStarted)

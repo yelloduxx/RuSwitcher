@@ -238,9 +238,11 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
         var index = 0
         var candidate: (element: Backend.Element, identifier: String)?
         var sawIdentifierMismatch = false
-        while index < queue.count, index < maximumTraversalNodes {
+        var sawTimedOutBranch = false
+        traversal: while index < queue.count, index < maximumTraversalNodes {
             guard remainingMilliseconds(until: deadlineNanoseconds) > 0 else {
-                return .unavailable(.timedOut)
+                sawTimedOutBranch = true
+                break traversal
             }
             let node = queue[index]
             index += 1
@@ -251,7 +253,8 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
                 timeoutMilliseconds: remainingMilliseconds(until: deadlineNanoseconds)
             )
             guard hasTime(until: deadlineNanoseconds) else {
-                return .unavailable(.timedOut)
+                sawTimedOutBranch = true
+                break traversal
             }
             if case .value(true) = focused {
                 let editable = backend.isEditable(
@@ -259,7 +262,8 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
                     timeoutMilliseconds: remainingMilliseconds(until: deadlineNanoseconds)
                 )
                 guard hasTime(until: deadlineNanoseconds) else {
-                    return .unavailable(.timedOut)
+                    sawTimedOutBranch = true
+                    break traversal
                 }
                 if case .value(true) = editable {
                     let identifier = backend.identifier(
@@ -267,7 +271,8 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
                         timeoutMilliseconds: remainingMilliseconds(until: deadlineNanoseconds)
                     )
                     guard hasTime(until: deadlineNanoseconds) else {
-                        return .unavailable(.timedOut)
+                        sawTimedOutBranch = true
+                        break traversal
                     }
                     if let expectedIdentifier, expectedIdentifier != identifier {
                         sawIdentifierMismatch = true
@@ -279,7 +284,7 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
                     }
                 }
             } else if case let .unavailable(failure) = focused, failure == .timedOut {
-                return .unavailable(.timedOut)
+                sawTimedOutBranch = true
             }
 
             guard node.depth < maximumTraversalDepth else { continue }
@@ -289,23 +294,21 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
             ) {
             case let .value(children):
                 guard hasTime(until: deadlineNanoseconds) else {
-                    return .unavailable(.timedOut)
+                    sawTimedOutBranch = true
+                    break traversal
                 }
                 queue.append(contentsOf: children.map {
                     PendingNode(element: $0, depth: node.depth + 1)
                 })
             case let .unavailable(failure):
                 guard hasTime(until: deadlineNanoseconds) else {
-                    return .unavailable(.timedOut)
+                    sawTimedOutBranch = true
+                    break traversal
                 }
-                if failure == .timedOut { return .unavailable(.timedOut) }
+                if failure == .timedOut { sawTimedOutBranch = true }
             }
         }
-        guard index == queue.count else { return .unavailable(.timedOut) }
         if let candidate {
-            guard hasTime(until: deadlineNanoseconds) else {
-                return .unavailable(.timedOut)
-            }
             store(
                 candidate.element,
                 identifier: candidate.identifier,
@@ -316,6 +319,9 @@ public final class FocusedEditableResolver<Backend: FocusedEditableTreeAccessing
                 identifier: candidate.identifier,
                 source: .nested
             ))
+        }
+        if index < queue.count || sawTimedOutBranch {
+            return .unavailable(.timedOut)
         }
         if sawIdentifierMismatch { return .unavailable(.identifierMismatch) }
         return .unavailable(.noEditableElement)

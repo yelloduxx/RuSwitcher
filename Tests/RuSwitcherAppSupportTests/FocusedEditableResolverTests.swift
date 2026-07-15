@@ -276,6 +276,23 @@ final class FocusedEditableResolverTests: XCTestCase {
         XCTAssertNil(resolver.cachedIdentifier(processID: 42))
     }
 
+    func testTimedOutSiblingDoesNotDiscardResolvedFocusedEditor() {
+        let editor = Node("editor", focused: true, editable: true)
+        let slowSibling = Node("slow-sibling")
+        let root = Node("window", children: [editor, slowSibling])
+        let backend = TreeBackend(canonical: .unavailable(.noFocusedElement), root: root)
+        backend.focusFailures[slowSibling.identifier] = .timedOut
+        let resolver = FocusedEditableResolver(backend: backend)
+
+        let result = resolver.resolve(
+            processID: 42,
+            timeoutMilliseconds: 20,
+            allowTreeSearch: true
+        )
+
+        assertResolved(result, identifier: "editor", source: .nested)
+    }
+
     private func assertResolved(
         _ result: FocusedEditableLookup<Node>,
         identifier: String,
