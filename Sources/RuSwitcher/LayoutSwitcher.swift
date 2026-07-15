@@ -109,26 +109,39 @@ enum LayoutSwitcher {
 
     /// Авто-определение «английской» раскладки (используется и из DynamicKeyMapping).
     static func autoDetectID1(from sources: [TISInputSource]) -> String {
-        // Ищем английскую
+        // Prefer an actual English keyboard layout. Matching only by an ID
+        // fragment can miss layouts whose localized name differs.
         for source in sources {
             let id = sourceID(source)
-            if id.contains("ABC") || id.contains("US") || id.contains("British") {
+            if normalizedLanguageCode(source) == "en",
+               (id.contains("ABC") || id.contains("US") || id.contains("British")) {
                 return id
             }
+        }
+        if let english = sources.first(where: { normalizedLanguageCode($0) == "en" }) {
+            return sourceID(english)
         }
         return sources.first.map { sourceID($0) } ?? ""
     }
 
-    /// Авто-определение второй (не-английской) раскладки.
+    /// Auto-detect the Russian side of RuSwitcher's production EN/RU pair.
+    /// Falling back to the first non-English input source used to select Chinese
+    /// IMEs on Macs where they precede Russian in the system source list.
     static func autoDetectID2(from sources: [TISInputSource]) -> String {
         let id1 = autoDetectID1(from: sources)
-        // Ищем вторую (не английскую)
+        if let russian = sources.first(where: { normalizedLanguageCode($0) == "ru" }) {
+            return sourceID(russian)
+        }
         for source in sources {
             let id = sourceID(source)
-            if id != id1 {
+            if id != id1, normalizedLanguageCode(source) != "en" {
                 return id
             }
         }
         return ""
+    }
+
+    private static func normalizedLanguageCode(_ source: TISInputSource) -> String? {
+        languageCode(source).map { String($0.lowercased().prefix(2)) }
     }
 }

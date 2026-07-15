@@ -12,16 +12,20 @@ installed build changes.
 - Supported platform: macOS 13+; the release bundle is universal (`arm64` and
   `x86_64`).
 - Automatic conversion is off by default until the user enables it.
-- Primary repository: `rashn/RuSwitcher`; the production branch is `main`.
-- The stabilization release is `4.0.0` build `94`, based on build 88 with the
-  manual double-Shift toggle path fixed, including editors that do not expose
-  their focused text field through Accessibility. Verify the installed binary
-  hash and PID after every local replacement; do not infer the running build
-  from `version.json` alone.
-- The installed app is `/Applications/RuSwitcher.app`, signed with the reusable
-  identity `RuSwitcher Local Code Signing`.
-- Installed build-94 executable SHA-256:
-  `eeb98ee17804f4e2c3b3af50d89e37709a05c80cceba96906c85cac9153d68f7`.
+- Primary repository: `yelloduxx/RuSwitcher`; the production branch is `main`.
+  `rashn/RuSwitcher` is the author's upstream repository, not a release source
+  for this fork.
+- The stabilization release is `4.0.0` build `95`. It keeps build 94's V3
+  behavior while tightening AX preflight, unverified transaction handling,
+  manual non-AX replacement and layout-pair selection. Verify the installed
+  binary hash and PID after every local replacement; do not infer the running
+  build from `version.json` alone.
+- The author's original app remains `/Applications/RuSwitcher.app` (`2.7.0`
+  build `35`). The fork is installed separately as
+  `/Applications/RuSwitcher Lab.app`, bundle ID `com.ruswitcher.lab`, and is
+  signed with the reusable identity `RuSwitcher Local Code Signing`.
+- Installed build-95 Lab executable SHA-256:
+  `e8cdecf9a7dcfb0db31b29214863b9e78741c892b6697f36296732a963bbe71e`.
 
 ## User Requirements
 
@@ -164,10 +168,14 @@ and synthetic events before mutating the token state.
   back into the state machine.
 - Active taps use `.headInsertEventTap`; listen-only taps may use tail placement.
 - Automatic replacement validates PID, bundle, focus identity, revision and the
-  expected suffix before editing.
+  expected suffix before editing. An unavailable AX preflight blocks the post;
+  a timed-out field is retried after a one-second cooldown rather than being
+  ignored for 30 seconds.
 - A posted conversion immediately publishes provisional phrase context for the
   next token. AX read-back confirms learning and Undo state without duplicating
-  that context; stale verification never overrides newer input.
+  that context; stale verification never overrides newer input. An unavailable
+  or mismatching read-back invalidates the provisional state and does not switch
+  the layout.
 
 The reliable build-68 transaction path is intentional:
 
@@ -176,7 +184,7 @@ The reliable build-68 transaction path is intentional:
 3. Post the transaction directly to the validated target PID with
    `CGEvent.postToPid`, not into the shared global event stream.
 4. Replay Space as one marked targeted key event.
-5. Switch layout and update context/learning only after the transaction is accepted.
+5. Switch layout and create learning/Undo state only after verified AX read-back.
 
 Do not revert this to a burst through `tapPostEvent` or a Unicode payload ending
 in a space. Continuous CGEvent tests demonstrated lost Backspaces, missing spaces,
@@ -193,21 +201,21 @@ The configured trigger is currently used as double Shift by the user. Priority:
 5. Switch layout only.
 
 Selection direction is based on dominant script, not the active layout. AX
-selected-text replacement is preferred; clipboard fallback preserves pasteboard
-types. Failure must leave selection and layout unchanged.
+selected-text replacement is preferred. Clipboard fallback is retained only
+when the selected text itself cannot be read; it preserves pasteboard types.
+Failure must leave selection and layout unchanged.
 
 Accessibility is the primary path for current-token, previous-token and selected
-text conversion. When AX cannot expose the editor, the fallback marks its
-temporary pasteboard value with both `org.nspasteboard.TransientType` and
-`org.nspasteboard.ConcealedType`, selects the exact suffix with Shift+Left and
-pastes it. The original pasteboard is restored only while RuSwitcher still owns
-the temporary value; clipboard managers may ignore these entries.
+text conversion. When AX cannot expose a known current/previous suffix, the
+fallback selects its grapheme count with targeted Shift+Left events and posts
+the replacement as targeted Unicode. This path does not touch the pasteboard,
+does not post Backspace and cannot delete the word if insertion is dropped.
 
 Manual current/previous-word conversion is a forced physical-layout toggle; it
 does not ask the decoder whether either spelling is correct. It replaces the
 exact suffix before the caret atomically through Accessibility when available.
-The non-AX fallback never posts Backspace, so a dropped paste cannot delete the
-word. A read-back verified edit may learn; a fallback edit is
+The non-AX fallback never posts Backspace. A read-back verified edit may learn;
+a fallback edit is
 `postedUnverified` and never learns. Repeated double Shift toggles the remembered
 pair, also immediately after an automatic conversion.
 
@@ -342,8 +350,10 @@ Forced manual toggle cycles are tested by
 `scripts/run_manual_toggle_cycle_test.sh`. The native CGEvent probe covers the
 current Cyrillic token, a real selection and an immediately auto-converted
 previous word. It asserts the exact text after every double Shift and a zero
-pasteboard `changeCount` delta. The Cyrillic-token scenario forces the transient
-paste fallback so the non-AX editor path remains covered.
+pasteboard `changeCount` delta. The Cyrillic-token scenario forces targeted
+synthetic-input fallback so the non-AX editor path remains covered. The probe
+also records every observed layout and fails unless both and only the configured
+RU/EN layouts are used; isolated defaults can never auto-select a Chinese IME.
 
 Real CGEvent tests, without Computer Use:
 
@@ -400,17 +410,19 @@ Install atomically:
 2. Verify the staged signature.
 3. Stop the running `RuSwitcher` process.
 4. Move the current app to a timestamped backup.
-5. Move staging to `/Applications/RuSwitcher.app`.
+5. Move staging to the intended destination. On the development Mac the fork is
+   `/Applications/RuSwitcher Lab.app`; do not overwrite the author's comparison
+   copy at `/Applications/RuSwitcher.app`.
 6. Open the app and verify version, architectures, signature, SHA-256 and process.
 
-Current observed footprint for build 94:
+Current observed footprint for installed Lab build 95:
 
-- App bundle: about 10.55 MiB on disk.
+- App bundle: about 10.51 MiB on disk.
 - V3 language model: 7,296,305 bytes.
-- Idle process: 0.0% CPU and about 73.7 MiB RSS on the development Mac.
+- Idle process: about 0.1% CPU and 80.8 MiB RSS on the development Mac.
 - Decoder inference in the simulator: under roughly 4 ms p99 per completed token.
 
-The installed binary SHA-256 after build 94 is
-`eeb98ee17804f4e2c3b3af50d89e37709a05c80cceba96906c85cac9153d68f7`.
+The installed Lab binary SHA-256 after build 95 is
+`e8cdecf9a7dcfb0db31b29214863b9e78741c892b6697f36296732a963bbe71e`.
 Always compare installed and freshly built hashes rather than trusting the build
 number alone.

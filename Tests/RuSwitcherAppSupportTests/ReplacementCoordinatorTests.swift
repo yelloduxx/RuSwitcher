@@ -47,21 +47,13 @@ final class ReplacementCoordinatorTests: XCTestCase {
         XCTAssertTrue(poster.plans.isEmpty)
     }
 
-    func testUnavailablePreflightBlocksInvalidatedEditor() {
+    func testUnavailablePreflightAlwaysBlocksBeforePosting() {
         let reader = Reader(preflight: .unavailable)
         let poster = Poster(result: true)
         let coordinator = NativeReplacementCoordinator(reader: reader, poster: poster)
-        var request = request()
-        request = ReplacementRequest(
-            transaction: request.transaction,
-            deliveredKeyCount: request.deliveredKeyCount,
-            currentFocus: request.currentFocus,
-            currentRevision: request.currentRevision,
-            allowUnavailablePreflight: false
-        )
 
         XCTAssertEqual(
-            coordinator.submit(request) { _ in XCTFail("must not verify") },
+            coordinator.submit(request()) { _ in XCTFail("must not verify") },
             .blocked(.contextUnavailable)
         )
         XCTAssertTrue(poster.plans.isEmpty)

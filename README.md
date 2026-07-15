@@ -10,8 +10,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/rashn/RuSwitcher/releases/latest"><img src="https://img.shields.io/github/v/release/rashn/RuSwitcher?style=flat-square" alt="Release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/rashn/RuSwitcher?style=flat-square" alt="License"></a>
+  <a href="https://github.com/yelloduxx/RuSwitcher/tags"><img src="https://img.shields.io/github/v/tag/yelloduxx/RuSwitcher?style=flat-square&label=beta" alt="Beta tag"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/yelloduxx/RuSwitcher?style=flat-square" alt="License"></a>
   <img src="https://img.shields.io/badge/macOS-13%2B-blue?style=flat-square" alt="macOS 13+">
   <img src="https://img.shields.io/badge/Swift-6-orange?style=flat-square" alt="Swift 6">
 </p>
@@ -87,23 +87,11 @@ After you switch layout, RuSwitcher can briefly show the layout flag **right nex
 
 ### Installation
 
-**Homebrew (recommended)**
+The fork currently publishes beta tags but no DMG or Homebrew release. Build it
+from source:
 
 ```bash
-brew tap rashn/ruswitcher
-brew install --cask ruswitcher
-```
-
-To upgrade later: `brew upgrade --cask ruswitcher`.
-
-**Download DMG**
-
-Grab the latest `.dmg` from [**Releases**](https://github.com/rashn/RuSwitcher/releases/latest), open it and drag RuSwitcher to Applications.
-
-**Build from source**
-
-```bash
-git clone https://github.com/rashn/RuSwitcher.git
+git clone https://github.com/yelloduxx/RuSwitcher.git
 cd RuSwitcher
 bash build_app.sh
 cp -R RuSwitcher.app /Applications/
@@ -239,23 +227,11 @@ RuSwitcher работает через **Apple Screen Sharing**. Печатае�
 
 ### Установка
 
-**Homebrew (рекомендуется)**
+Форк пока публикует beta-теги без DMG и Homebrew-релиза. Соберите приложение из
+исходников:
 
 ```bash
-brew tap rashn/ruswitcher
-brew install --cask ruswitcher
-```
-
-Для обновления: `brew upgrade --cask ruswitcher`.
-
-**Скачать DMG**
-
-Скачайте последний `.dmg` со страницы [**Releases**](https://github.com/rashn/RuSwitcher/releases/latest), откройте и перетащите RuSwitcher в «Программы».
-
-**Сборка из исходников**
-
-```bash
-git clone https://github.com/rashn/RuSwitcher.git
+git clone https://github.com/yelloduxx/RuSwitcher.git
 cd RuSwitcher
 bash build_app.sh
 cp -R RuSwitcher.app /Applications/

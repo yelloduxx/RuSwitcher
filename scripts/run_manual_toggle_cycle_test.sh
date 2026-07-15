@@ -2,18 +2,18 @@
 set -euo pipefail
 
 APP="${RUSWITCH_APP:-/Applications/RuSwitcher.app}"
-APP_EXEC="$APP/Contents/MacOS/RuSwitcher"
-ORIGINAL_APP="/Applications/RuSwitcher.app"
+APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
+APP_EXEC="$APP/Contents/MacOS/$APP_EXECUTABLE"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ruswitch-toggle-cycle.XXXXXX")"
 WAS_RUNNING=0
 
 test -x "$APP_EXEC"
-if pgrep -x RuSwitcher >/dev/null; then WAS_RUNNING=1; fi
+if pgrep -x "$APP_EXECUTABLE" >/dev/null; then WAS_RUNNING=1; fi
 
 cleanup() {
-    pkill -x RuSwitcher 2>/dev/null || true
+    pkill -x "$APP_EXECUTABLE" 2>/dev/null || true
     rm -rf "$WORK_DIR"
-    if [ "$WAS_RUNNING" -eq 1 ]; then open "$ORIGINAL_APP"; fi
+    if [ "$WAS_RUNNING" -eq 1 ]; then open "$APP"; fi
 }
 trap cleanup EXIT
 
@@ -21,14 +21,14 @@ run_scenario() {
     local name="$1"
     local force_fallback="${2:-0}"
     local result="$WORK_DIR/$name.json"
-    pkill -x RuSwitcher 2>/dev/null || true
+    pkill -x "$APP_EXECUTABLE" 2>/dev/null || true
     for _ in {1..30}; do
-        pgrep -x RuSwitcher >/dev/null || break
+        pgrep -x "$APP_EXECUTABLE" >/dev/null || break
         sleep 0.1
     done
     if [ "$force_fallback" -eq 1 ]; then
         open -n "$APP" --args --hid-probe "$name" --result "$result" \
-            --force-transient-paste-fallback
+            --force-synthetic-input-fallback
     else
         open -n "$APP" --args --hid-probe "$name" --result "$result"
     fi
@@ -73,6 +73,9 @@ for name, trace in expected.items():
         and not result.get("layoutMismatchStrokes")
         and not result.get("boundaryDeliveryTimeouts")
     )
+    configured_layouts = set(result.get("configuredLayoutIDs", []))
+    observed_layouts = set(result.get("observedLayoutIDs", []))
+    passed = passed and len(configured_layouts) == 2 and observed_layouts == configured_layouts
     if name == "manual-auto-word-toggle-cycle":
         passed = passed and result.get("postedAutomaticReplacementCount") == 1
     print(f"{'PASS' if passed else 'FAIL'} {name}: {result.get('manualTrace')!r}")

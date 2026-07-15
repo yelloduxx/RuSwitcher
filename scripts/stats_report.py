@@ -5,7 +5,7 @@
 приложении — только агрегатные публичные числа GitHub. Зависимостей нет (urllib)."""
 import json, os, urllib.request, urllib.parse, datetime
 
-REPO = "rashn/RuSwitcher"
+REPO = "yelloduxx/RuSwitcher"
 GH_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 TG_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TG_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")

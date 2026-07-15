@@ -447,7 +447,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         textConverter.replaceFocusedSuffix(
             expected: transaction.expectedOriginalSuffix,
             replacement: transaction.insertedText,
-            focus: snapshot.focus
+            focus: snapshot.focus,
+            isCurrent: { [weak self] in
+                self?.keyboardMonitor.isStagedCompletionCurrent(
+                    expectedSequence: stagedSequence
+                ) == true
+            }
         ) { [weak self] outcome in
             guard let self else { return }
             guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else {
@@ -510,7 +515,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         textConverter.replaceFocusedSuffix(
             expected: reconversion.current,
             replacement: reconversion.replacement,
-            focus: snapshot.focus
+            focus: snapshot.focus,
+            isCurrent: { [weak self] in
+                self?.keyboardMonitor.isStagedCompletionCurrent(
+                    expectedSequence: stagedSequence
+                ) == true
+            }
         ) { [weak self] outcome in
             guard let self else { return }
             guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else {
@@ -786,8 +796,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 transaction: transaction,
                 deliveredKeyCount: snapshot.deliveredKeyCount,
                 currentFocus: snapshot.focus,
-                currentRevision: snapshot.editRevision,
-                allowUnavailablePreflight: snapshot.integrity == .clean
+                currentRevision: snapshot.editRevision
             )
         ) { [weak self] outcome in
             self?.finishAutomaticReplacement(
@@ -873,13 +882,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard keyboardMonitor.isStagedCompletionCurrent(
                 expectedSequence: stagedSequence
             ) else { return }
-            keyboardMonitor.finishUnverifiedPostedConversion(expectedSequence: stagedSequence)
-            if let targetLayoutID = transaction.targetLayoutID {
-                LayoutSwitcher.switchTo(layoutID: targetLayoutID)
-            } else {
-                LayoutSwitcher.switchToOpposite()
-            }
-            updateStatusIcon()
+            textConverter.discardTransactionIfCurrent(transaction)
+            keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
         case .failed(.verificationMismatch):
             textConverter.discardTransactionIfCurrent(transaction)
             keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
@@ -1129,6 +1133,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if AutoSwitchPolicy.secureInputActive { return L10n.statusSecureInput }
         let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         if AutoSwitchPolicy.isDeniedApp(bundleID) { return L10n.statusDeniedApp }
+        guard languageModel != nil else { return L10n.statusModelUnavailable }
+        guard let languages = LayoutSwitcher.currentAndOppositeLanguage() else {
+            return L10n.statusUnsupportedPair
+        }
+        let pair = Set([
+            String(languages.current.lowercased().prefix(2)),
+            String(languages.opposite.lowercased().prefix(2)),
+        ])
+        guard pair == Set(["en", "ru"]) else { return L10n.statusUnsupportedPair }
         return L10n.statusActive
     }
 

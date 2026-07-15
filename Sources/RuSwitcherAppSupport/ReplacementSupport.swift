@@ -40,20 +40,17 @@ public struct ReplacementRequest: Equatable, Sendable {
     public let deliveredKeyCount: Int
     public let currentFocus: FocusedElementIdentity
     public let currentRevision: UInt64
-    public let allowUnavailablePreflight: Bool
 
     public init(
         transaction: ConversionTransaction,
         deliveredKeyCount: Int,
         currentFocus: FocusedElementIdentity,
-        currentRevision: UInt64,
-        allowUnavailablePreflight: Bool = true
+        currentRevision: UInt64
     ) {
         self.transaction = transaction
         self.deliveredKeyCount = deliveredKeyCount
         self.currentFocus = currentFocus
         self.currentRevision = currentRevision
-        self.allowUnavailablePreflight = allowUnavailablePreflight
     }
 }
 
@@ -138,7 +135,7 @@ public final class NativeReplacementCoordinator: ReplacementCoordinating {
         guard preflight != .mismatch else {
             return .blocked(.expectedSuffixMismatch)
         }
-        guard preflight != .unavailable || request.allowUnavailablePreflight else {
+        guard preflight != .unavailable else {
             return .blocked(.contextUnavailable)
         }
 

@@ -5,8 +5,9 @@ import RuSwitcherAppSupport
 /// Проверяет наличие обновлений через GitHub
 @MainActor
 enum UpdateChecker {
-    // URL к JSON с информацией о версии (заменить на реальный)
-    private static let versionURL = "https://raw.githubusercontent.com/rashn/RuSwitcher/main/version.json"
+    private static var versionURL: String {
+        "https://raw.githubusercontent.com/\(SettingsManager.githubOwner)/\(SettingsManager.githubRepo)/main/version.json"
+    }
 
     /// Структура JSON версии
     private struct VersionInfo: Decodable {
@@ -134,6 +135,11 @@ enum UpdateChecker {
         //     в браузере, где работает Gatekeeper/нотаризация.
         guard let expectedSHA = info.sha256, !expectedSHA.isEmpty else {
             rslog("Update: no sha256 in version.json — falling back to browser download")
+            if let url = URL(string: info.url) { NSWorkspace.shared.open(url) }
+            return
+        }
+        guard SettingsManager.developerTeamID != nil else {
+            rslog("update_developer_id_unavailable")
             if let url = URL(string: info.url) { NSWorkspace.shared.open(url) }
             return
         }
@@ -284,7 +290,10 @@ enum UpdateChecker {
     /// Проверяет, что бандл подписан Developer ID нашей команды и проходит строгую
     /// проверку целостности (codesign --verify с пиннингом Team ID).
     private static func verifyNotarizedSignature(at path: String) -> Bool {
-        let requirement = "anchor apple generic and certificate leaf[subject.OU] = \"\(SettingsManager.developerTeamID)\""
+        guard let teamID = SettingsManager.developerTeamID, !teamID.isEmpty else {
+            return false
+        }
+        let requirement = "anchor apple generic and certificate leaf[subject.OU] = \"\(teamID)\""
         let process = Process()
         process.launchPath = "/usr/bin/codesign"
         process.arguments = ["--verify", "--deep", "--strict", "-R=\(requirement)", path]

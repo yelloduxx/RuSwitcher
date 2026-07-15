@@ -149,20 +149,22 @@ final class TextConverter {
         expected: String,
         replacement: String,
         focus: FocusedElementIdentity,
+        isCurrent: @escaping @MainActor @Sendable () -> Bool,
         completion: @escaping (ManualSuffixReplacementOutcome) -> Void
     ) {
-        guard !expected.isEmpty, !replacement.isEmpty else {
+        guard !expected.isEmpty, !replacement.isEmpty, isCurrent() else {
             completion(.failed)
             return
         }
         isConverting = true
         let completion = SuffixCompletionBox(completion)
-        if CommandLine.arguments.contains("--force-transient-paste-fallback") {
+        if CommandLine.arguments.contains("--force-synthetic-input-fallback") {
             finishFocusedSuffixReplacement(
                 .unavailable,
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
+                isCurrent: isCurrent,
                 completion: completion
             )
             return
@@ -179,6 +181,7 @@ final class TextConverter {
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
+                isCurrent: isCurrent,
                 completion: completion
             )
             return
@@ -197,6 +200,7 @@ final class TextConverter {
                     expected: expected,
                     replacement: replacement,
                     focus: focus,
+                    isCurrent: isCurrent,
                     completion: completion
                 )
             }
@@ -208,16 +212,18 @@ final class TextConverter {
         expected: String,
         replacement: String,
         focus: FocusedElementIdentity,
+        isCurrent: @escaping @MainActor @Sendable () -> Bool,
         completion: SuffixCompletionBox
     ) {
         switch verification {
         case .match:
             completion.callback(.verified)
         case .unchanged, .unavailable:
-            replaceFocusedSuffixViaTransientPasteboard(
+            replaceFocusedSuffixViaSyntheticInput(
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
+                isCurrent: isCurrent,
                 completion: completion
             )
         case .mismatch:
@@ -226,49 +232,43 @@ final class TextConverter {
         }
     }
 
-    private func replaceFocusedSuffixViaTransientPasteboard(
+    private func replaceFocusedSuffixViaSyntheticInput(
         expected: String,
         replacement: String,
         focus: FocusedElementIdentity,
+        isCurrent: @escaping @MainActor @Sendable () -> Bool,
         completion: SuffixCompletionBox
     ) {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
-              !expected.isEmpty else {
+              !expected.isEmpty,
+              isCurrent() else {
             isConverting = false
             completion.callback(.failed)
             return
         }
-
-        let pasteboard = NSPasteboard.general
-        cancelClipboardRestore()
-        if savedClipboardItems == nil {
-            savedClipboardItems = snapshotPasteboard(pasteboard)
-        }
-        pasteboard.clearContents()
-        guard pasteboard.writeObjects([transientPasteboardItem(text: replacement)]) else {
-            isConverting = false
-            restoreClipboardNow()
-            completion.callback(.failed)
-            return
-        }
-        clipboardTemporaryChangeCount = pasteboard.changeCount
 
         guard postSelection(characterCount: expected.count, to: focus.processID) else {
             isConverting = false
-            restoreClipboardNow()
             completion.callback(.failed)
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { [weak self] in
-            guard let self, self.postPaste(to: focus.processID) else {
+            guard let self,
+                  isCurrent(),
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
+                  self.postUnicodeText(replacement, to: focus.processID) else {
                 self?.isConverting = false
-                self?.restoreClipboardNow()
                 completion.callback(.failed)
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
                 guard let self else { return }
-                self.scheduleClipboardRestore(after: 0.25)
+                guard isCurrent(),
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID else {
+                    self.isConverting = false
+                    completion.callback(.failed)
+                    return
+                }
                 completion.callback(.postedUnverified)
             }
         }
@@ -586,7 +586,7 @@ final class TextConverter {
             keyDown: true
         ) else { return false }
         shiftDown.flags = .maskShift
-        shiftDown.post(tap: .cghidEventTap)
+        shiftDown.postToPid(pid_t(processID))
         for _ in 0..<characterCount {
             guard let down = CGEvent(
                 keyboardEventSource: source,
@@ -599,8 +599,8 @@ final class TextConverter {
             ) else { return false }
             down.flags = .maskShift
             up.flags = .maskShift
-            down.post(tap: .cghidEventTap)
-            up.post(tap: .cghidEventTap)
+            down.postToPid(pid_t(processID))
+            up.postToPid(pid_t(processID))
         }
         guard let shiftUp = CGEvent(
             keyboardEventSource: source,
@@ -608,40 +608,32 @@ final class TextConverter {
             keyDown: false
         ) else { return false }
         shiftUp.flags = []
-        shiftUp.post(tap: .cghidEventTap)
+        shiftUp.postToPid(pid_t(processID))
         return true
     }
 
-    nonisolated private func postPaste(to processID: Int32) -> Bool {
+    nonisolated private func postUnicodeText(_ text: String, to processID: Int32) -> Bool {
         guard let source = makeSource(),
-              let commandDown = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: KC.leftCommand,
-                keyDown: true
-              ),
               let down = CGEvent(
                 keyboardEventSource: source,
-                virtualKey: KC.letterV,
+                virtualKey: 0,
                 keyDown: true
               ),
               let up = CGEvent(
                 keyboardEventSource: source,
-                virtualKey: KC.letterV,
-                keyDown: false
-              ),
-              let commandUp = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: KC.leftCommand,
+                virtualKey: 0,
                 keyDown: false
               ) else { return false }
-        commandDown.flags = .maskCommand
-        down.flags = .maskCommand
-        up.flags = .maskCommand
-        commandUp.flags = []
-        commandDown.post(tap: .cghidEventTap)
-        down.post(tap: .cghidEventTap)
-        up.post(tap: .cghidEventTap)
-        commandUp.post(tap: .cghidEventTap)
+        let utf16 = Array(text.utf16)
+        guard !utf16.isEmpty else { return false }
+        utf16.withUnsafeBufferPointer { buffer in
+            down.keyboardSetUnicodeString(
+                stringLength: buffer.count,
+                unicodeString: buffer.baseAddress
+            )
+        }
+        down.postToPid(pid_t(processID))
+        up.postToPid(pid_t(processID))
         return true
     }
 

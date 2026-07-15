@@ -77,6 +77,8 @@ enum L10n {
     static var statusSecureInput: String { s("status.secureInput") }
     static var statusDeniedApp: String { s("status.deniedApp") }
     static var statusPermissions: String { s("status.permissions") }
+    static var statusModelUnavailable: String { s("status.modelUnavailable") }
+    static var statusUnsupportedPair: String { s("status.unsupportedPair") }
     static var commonAdd: String { s("common.add") }
     static var commonCancel: String { s("common.cancel") }
     static func learnQuestion(_ word: String) -> String { String(format: s("learn.question"), word) }
@@ -216,6 +218,8 @@ enum L10n {
             "status.secureInput": "Paused: secure input is active",
             "status.deniedApp": "Paused in this application",
             "status.permissions": "Paused: permissions are missing",
+            "status.modelUnavailable": "Paused: the language model is unavailable",
+            "status.unsupportedPair": "Paused: automatic conversion supports EN/RU only",
             "common.add": "Add",
             "common.cancel": "Cancel",
             "learn.question": "Always leave “%@” unchanged?",
@@ -318,6 +322,8 @@ enum L10n {
             "status.secureInput": "Приостановлено: защищённый ввод",
             "status.deniedApp": "Приостановлено в этом приложении",
             "status.permissions": "Приостановлено: не выданы разрешения",
+            "status.modelUnavailable": "Приостановлено: языковая модель недоступна",
+            "status.unsupportedPair": "Приостановлено: автоконверсия поддерживает только EN/RU",
             "common.add": "Добавить",
             "common.cancel": "Отмена",
             "learn.question": "Всегда оставлять «%@» без замены?",

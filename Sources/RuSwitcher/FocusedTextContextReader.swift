@@ -7,6 +7,8 @@ import RuSwitcherCore
 /// Read-only AX safety probe. It never changes the selected range or value.
 /// A strict deadline prevents a slow application from starving the event tap.
 final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Sendable {
+    private static let timeoutCooldown: TimeInterval = 1
+
     private struct CachedPrefix {
         let text: String
         let capturedAt: Date
@@ -84,7 +86,10 @@ final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Send
             )
         }
         let key = Self.focusKey(focus)
-        if let until = disabledUntil[key], until > Date() { return .unavailable }
+        if let until = disabledUntil[key] {
+            if until > Date() { return .unavailable }
+            disabledUntil.removeValue(forKey: key)
+        }
 
         let box = ResultBox()
         let semaphore = DispatchSemaphore(value: 0)
@@ -111,7 +116,7 @@ final class FocusedTextContextReader: FocusedTextContextReading, @unchecked Send
         }
         let timeout = DispatchTime.now() + .milliseconds(max(1, deadlineMilliseconds))
         guard semaphore.wait(timeout: timeout) == .success, let result = box.get() else {
-            disabledUntil[key] = Date().addingTimeInterval(30)
+            disabledUntil[key] = Date().addingTimeInterval(Self.timeoutCooldown)
             rslog("ax_probe_timeout")
             return .unavailable
         }

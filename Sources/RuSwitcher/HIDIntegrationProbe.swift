@@ -12,6 +12,8 @@ private struct HIDProbeResult: Codable {
     let manualText: String?
     let manualTrace: [String]
     let manualSelectionLengthTrace: [Int]
+    let configuredLayoutIDs: [String]
+    let observedLayoutIDs: [String]
     let syntheticKeyTrace: [String]
     let learningConfirmed: Bool?
     let pasteboardChangeCountDelta: Int
@@ -238,6 +240,8 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     private var manualObservedText: String?
     private var manualTrace: [String] = []
     private var manualSelectionLengthTrace: [Int] = []
+    private var configuredLayoutIDs: [String] = []
+    private var observedLayoutIDs: [String] = []
     private var syntheticKeyTrace: [String] = []
     private var layoutMismatchStrokes: [String] = []
     private var boundaryDeliveryTimeouts: [Int] = []
@@ -298,6 +302,10 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
 
         originalLayoutID = LayoutSwitcher.currentLayoutID()
         releaseModifiers()
+        guard configureLayoutPair() else {
+            finish(text: "<layout-unavailable>")
+            return
+        }
         if let source = scenario.manualLearningSource {
             startManualLearningProbe(source: source)
             return
@@ -544,6 +552,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func runManualToggleCycle(remaining: Int, reselectText: Bool) {
+        observeCurrentLayout()
         guard remaining > 0 else {
             manualObservedText = textView.string
             finish(text: textView.string)
@@ -560,6 +569,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
                 guard let self else { return }
                 self.manualTrace.append(self.textView.string)
                 self.manualSelectionLengthTrace.append(self.textView.selectedRange().length)
+                self.observeCurrentLayout()
                 self.runManualToggleCycle(
                     remaining: remaining - 1,
                     reselectText: reselectText
@@ -626,6 +636,7 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             self.localEventMonitor = nil
         }
         let resultingLayoutID = LayoutSwitcher.currentLayoutID()
+        observeCurrentLayout()
         if !originalLayoutID.isEmpty { LayoutSwitcher.switchTo(layoutID: originalLayoutID) }
         let result = HIDProbeResult(
             scenario: scenario.name,
@@ -635,6 +646,8 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
             manualText: manualObservedText,
             manualTrace: manualTrace,
             manualSelectionLengthTrace: manualSelectionLengthTrace,
+            configuredLayoutIDs: configuredLayoutIDs,
+            observedLayoutIDs: observedLayoutIDs,
             syntheticKeyTrace: syntheticKeyTrace,
             learningConfirmed: scenario.manualLearningSource.map { source in
                 SettingsManager.shared.isAdaptiveConfirmed(
@@ -667,10 +680,34 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         guard TISSelectInputSource(source) == noErr else { return false }
         let expectedID = LayoutSwitcher.sourceID(source)
         for _ in 0..<50 {
-            if LayoutSwitcher.currentLayoutID() == expectedID { return true }
+            if LayoutSwitcher.currentLayoutID() == expectedID {
+                observeCurrentLayout()
+                return true
+            }
             usleep(10_000)
         }
         return false
+    }
+
+    private func configureLayoutPair() -> Bool {
+        guard let russian = inputSource(for: "ru"),
+              let english = inputSource(for: "en") else { return false }
+        let russianID = LayoutSwitcher.sourceID(russian)
+        let englishID = LayoutSwitcher.sourceID(english)
+        guard !russianID.isEmpty, !englishID.isEmpty, russianID != englishID else {
+            return false
+        }
+        SettingsManager.shared.layout1ID = russianID
+        SettingsManager.shared.layout2ID = englishID
+        configuredLayoutIDs = [russianID, englishID]
+        return true
+    }
+
+    private func observeCurrentLayout() {
+        let layoutID = LayoutSwitcher.currentLayoutID()
+        if !layoutID.isEmpty {
+            observedLayoutIDs.append(layoutID)
+        }
     }
 
     private func releaseModifiers() {
@@ -708,6 +745,18 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
 
     private func inputSource(for targetLanguage: String) -> TISInputSource? {
         let layouts = LayoutSwitcher.installedLayouts()
+        let configuredIDs = [
+            SettingsManager.shared.layout1ID,
+            SettingsManager.shared.layout2ID,
+        ].filter { !$0.isEmpty }
+        if let configured = layouts.first(where: { source in
+            configuredIDs.contains(LayoutSwitcher.sourceID(source))
+                && LayoutSwitcher.languageCode(source).map {
+                    String($0.lowercased().prefix(2))
+                } == targetLanguage
+        }) {
+            return configured
+        }
         if targetLanguage == "en" {
             return layouts.first {
                 let id = LayoutSwitcher.sourceID($0)
