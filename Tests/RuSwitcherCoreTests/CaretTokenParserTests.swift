@@ -14,7 +14,7 @@ final class CaretTokenParserTests: XCTestCase {
         XCTAssertEqual(parsed?.trailingWhitespace, "")
     }
 
-    func testTrailingPunctuationStaysInToken() {
+    func testPunctuationRemainsPartOfToken() {
         let parsed = CaretTokenParser.tokenBeforeCaret(from: "ok ghbdtn,")
         XCTAssertEqual(parsed?.word, "ghbdtn,")
         XCTAssertEqual(parsed?.trailingWhitespace, "")
@@ -23,5 +23,27 @@ final class CaretTokenParserTests: XCTestCase {
     func testWhitespaceOnlyIsNil() {
         XCTAssertNil(CaretTokenParser.tokenBeforeCaret(from: "   "))
         XCTAssertNil(CaretTokenParser.tokenBeforeCaret(from: ""))
+    }
+
+    func testTruncatedTokenAtReadWindowStartIsRejected() {
+        XCTAssertNil(CaretTokenParser.tokenBeforeCaret(
+            from: String(repeating: "a", count: 96),
+            tokenAtInputStartIsComplete: false
+        ))
+        XCTAssertEqual(CaretTokenParser.tokenBeforeCaret(
+            from: "partial hello",
+            tokenAtInputStartIsComplete: false
+        )?.word, "hello")
+    }
+
+    func testNewlineAndTabAfterTokenAreNotCrossed() {
+        XCTAssertNil(CaretTokenParser.tokenBeforeCaret(from: "hello\n"))
+        XCTAssertNil(CaretTokenParser.tokenBeforeCaret(from: "hello\t"))
+    }
+
+    func testComposedUnicodeAndHorizontalSpaces() {
+        let parsed = CaretTokenParser.tokenBeforeCaret(from: "тёплый  ")
+        XCTAssertEqual(parsed?.word, "тёплый")
+        XCTAssertEqual(parsed?.trailingWhitespace, "  ")
     }
 }

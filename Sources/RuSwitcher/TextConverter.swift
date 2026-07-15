@@ -29,13 +29,20 @@ struct BufferedManualReconversion {
     let targetLayoutID: String?
 }
 
-/// Word immediately before the caret (after optional trailing whitespace),
-/// recovered from the editor when the in-memory token buffer is gone.
 struct CaretWordConversion {
     let original: String
     let replacement: String
     let expectedSuffix: String
+    let elementIdentifier: String
+    let caretLocation: Int
+    let sourceLayoutID: String?
     let targetLayoutID: String?
+}
+
+enum CaretWordPreparationOutcome {
+    case conversion(CaretWordConversion)
+    case noCandidate
+    case busy
 }
 
 private enum ReplacementVerification: Sendable {
@@ -49,8 +56,16 @@ private typealias SelectedTextConversion = (
     converted: String,
     sourceLanguage: String,
     targetLanguage: String,
+    sourceLayoutID: String?,
     targetLayoutID: String?
 )
+
+private struct CaretPrefix: Sendable {
+    let text: String
+    let beginsAtDocumentStart: Bool
+    let elementIdentifier: String
+    let caretLocation: Int
+}
 
 /// Конвертация текста между раскладками
 @MainActor
@@ -94,6 +109,14 @@ final class TextConverter {
         let callback: (ManualSuffixReplacementOutcome) -> Void
 
         init(_ callback: @escaping (ManualSuffixReplacementOutcome) -> Void) {
+            self.callback = callback
+        }
+    }
+
+    private final class CaretCompletionBox: @unchecked Sendable {
+        let callback: (CaretWordPreparationOutcome) -> Void
+
+        init(_ callback: @escaping (CaretWordPreparationOutcome) -> Void) {
             self.callback = callback
         }
     }
@@ -163,6 +186,7 @@ final class TextConverter {
         expected: String,
         replacement: String,
         focus: FocusedElementIdentity,
+        expectedCaretLocation: Int? = nil,
         isCurrent: @escaping @MainActor @Sendable () -> Bool,
         completion: @escaping (ManualSuffixReplacementOutcome) -> Void
     ) {
@@ -178,6 +202,7 @@ final class TextConverter {
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
+                expectedCaretLocation: expectedCaretLocation,
                 isCurrent: isCurrent,
                 completion: completion
             )
@@ -188,6 +213,7 @@ final class TextConverter {
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
+                expectedCaretLocation: expectedCaretLocation,
                 pollForDelayedCommit: false
             )
             finishFocusedSuffixReplacement(
@@ -195,6 +221,7 @@ final class TextConverter {
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
+                expectedCaretLocation: expectedCaretLocation,
                 isCurrent: isCurrent,
                 completion: completion
             )
@@ -206,6 +233,7 @@ final class TextConverter {
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
+                expectedCaretLocation: expectedCaretLocation,
                 pollForDelayedCommit: true
             )
             Task { @MainActor [weak self] in
@@ -214,6 +242,7 @@ final class TextConverter {
                     expected: expected,
                     replacement: replacement,
                     focus: focus,
+                    expectedCaretLocation: expectedCaretLocation,
                     isCurrent: isCurrent,
                     completion: completion
                 )
@@ -226,23 +255,23 @@ final class TextConverter {
         expected: String,
         replacement: String,
         focus: FocusedElementIdentity,
+        expectedCaretLocation: Int?,
         isCurrent: @escaping @MainActor @Sendable () -> Bool,
         completion: SuffixCompletionBox
     ) {
         switch verification {
         case .match:
             completion.callback(.verified)
-        case .unchanged, .unavailable:
-            // AX dark or set failed — still attempt event replacement so manual
-            // double-Shift works outside perfect Accessibility editors.
+        case .unchanged:
             replaceFocusedSuffixViaSyntheticInput(
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
+                expectedCaretLocation: expectedCaretLocation,
                 isCurrent: isCurrent,
                 completion: completion
             )
-        case .mismatch:
+        case .mismatch, .unavailable:
             isConverting = false
             completion.callback(.failed)
         }
@@ -252,86 +281,90 @@ final class TextConverter {
         expected: String,
         replacement: String,
         focus: FocusedElementIdentity,
+        expectedCaretLocation: Int?,
         isCurrent: @escaping @MainActor @Sendable () -> Bool,
         completion: SuffixCompletionBox
     ) {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
               !expected.isEmpty,
-              isCurrent() else {
+              isCurrent(),
+              focusedSuffixMatches(
+                expected,
+                focus: focus,
+                expectedCaretLocation: expectedCaretLocation,
+                timeoutMilliseconds: 50
+              ) else {
             isConverting = false
             completion.callback(.failed)
             return
         }
 
-        let resolved = resolveSyntheticPair(
+        guard postSelection(characterCount: expected.count, to: focus.processID) else {
+            isConverting = false
+            completion.callback(.failed)
+            return
+        }
+        let selectionDeadline = DispatchTime.now().uptimeNanoseconds + 90_000_000
+        waitForSyntheticSelection(
             expected: expected,
             replacement: replacement,
-            focus: focus
+            focus: focus,
+            isCurrent: isCurrent,
+            deadlineNanoseconds: selectionDeadline,
+            completion: completion
         )
-        guard let resolved else {
-            isConverting = false
-            completion.callback(.failed)
-            return
-        }
-
-        // Backspace then Unicode — not Shift+Left selection (duplicates in many apps).
-        let deleteCount = resolved.expected.count
-        guard deleteCount > 0,
-              postBackspaces(count: deleteCount, to: focus.processID),
-              postUnicodeText(resolved.replacement, to: focus.processID) else {
-            isConverting = false
-            completion.callback(.failed)
-            return
-        }
-        isConverting = false
-        completion.callback(.postedUnverified)
     }
 
-    private func resolveSyntheticPair(
+    /// Targeted selection events are delivered asynchronously. Polling a few
+    /// times avoids a fixed-delay race while preserving the exact-text safety
+    /// check: Unicode is never posted unless the intended suffix is selected.
+    private func waitForSyntheticSelection(
         expected: String,
         replacement: String,
-        focus: FocusedElementIdentity
-    ) -> (expected: String, replacement: String)? {
-        var list = [(expected, replacement)]
-        if expected.hasSuffix(" "), replacement.hasSuffix(" ") {
-            list.append((String(expected.dropLast()), String(replacement.dropLast())))
-        } else if !expected.hasSuffix(" "), !replacement.hasSuffix(" ") {
-            list.append((expected + " ", replacement + " "))
+        focus: FocusedElementIdentity,
+        isCurrent: @escaping @MainActor @Sendable () -> Bool,
+        deadlineNanoseconds: UInt64,
+        completion: SuffixCompletionBox
+    ) {
+        guard isCurrent(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID else {
+            isConverting = false
+            completion.callback(.failed)
+            return
         }
-
-        var sawUnavailable = false
-        for (exp, rep) in list {
-            switch focusedSuffixProbe(exp, focus: focus, timeoutMilliseconds: 80) {
-            case .match:
-                return (exp, rep)
-            case .mismatch:
-                continue
-            case .unavailable, .unchanged:
-                sawUnavailable = true
+        if selectedTextMatches(expected, focus: focus, timeoutMilliseconds: 12) {
+            guard postUnicodeText(replacement, to: focus.processID) else {
+                isConverting = false
+                completion.callback(.failed)
+                return
             }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+                guard let self else { return }
+                guard isCurrent(),
+                      NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID else {
+                    self.isConverting = false
+                    completion.callback(.failed)
+                    return
+                }
+                completion.callback(.postedUnverified)
+            }
+            return
         }
-        if sawUnavailable {
-            return list[0]
+        guard DispatchTime.now().uptimeNanoseconds < deadlineNanoseconds else {
+            isConverting = false
+            completion.callback(.failed)
+            return
         }
-        return nil
-    }
-
-    nonisolated private func postBackspaces(count: Int, to processID: Int32) -> Bool {
-        guard count > 0, let source = makeSource() else { return false }
-        for _ in 0..<count {
-            guard let down = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: KC.backspace,
-                keyDown: true
-            ), let up = CGEvent(
-                keyboardEventSource: source,
-                virtualKey: KC.backspace,
-                keyDown: false
-            ) else { return false }
-            down.postToPid(pid_t(processID))
-            up.postToPid(pid_t(processID))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.005) { [weak self] in
+            self?.waitForSyntheticSelection(
+                expected: expected,
+                replacement: replacement,
+                focus: focus,
+                isCurrent: isCurrent,
+                deadlineNanoseconds: deadlineNanoseconds,
+                completion: completion
+            )
         }
-        return true
     }
 
     private func handleSelectionRead(
@@ -537,6 +570,7 @@ final class TextConverter {
         expected: String,
         replacement: String,
         focus: FocusedElementIdentity,
+        expectedCaretLocation: Int?,
         pollForDelayedCommit: Bool
     ) -> ReplacementVerification {
         switch focusedElementResolver.withElement(
@@ -553,6 +587,8 @@ final class TextConverter {
                 guard AXValueGetType(rangeValue) == .cfRange,
                       AXValueGetValue(rangeValue, .cfRange, &caret),
                       caret.length == 0 else { return .mismatch }
+                if let expectedCaretLocation,
+                   caret.location != expectedCaretLocation { return .mismatch }
 
                 let expectedLength = expected.utf16.count
                 guard caret.location >= expectedLength else { return .mismatch }
@@ -636,13 +672,13 @@ final class TextConverter {
     nonisolated private func readTextBeforeCaret(
         focus: FocusedElementIdentity,
         maxUTF16Length: Int
-    ) -> String? {
+    ) -> CaretPrefix? {
         switch focusedElementResolver.withElement(
             processID: focus.processID,
-            expectedIdentifier: nil,
-            timeoutMilliseconds: 200,
+            expectedIdentifier: focus.identifier,
+            timeoutMilliseconds: 250,
             allowTreeSearch: true,
-            operation: { lease -> String? in
+            operation: { lease -> CaretPrefix? in
                 let rangeRead = lease.copyAttribute(kAXSelectedTextRangeAttribute as CFString)
                 guard rangeRead.0 == .success, let rangeRaw = rangeRead.1,
                       CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return nil }
@@ -659,10 +695,14 @@ final class TextConverter {
                     kAXStringForRangeParameterizedAttribute as CFString,
                     parameter: prefixValue
                 )
-                guard textRead.0 == .success, let text = textRead.1 as? String, !text.isEmpty else {
-                    return nil
-                }
-                return text
+                guard textRead.0 == .success, let text = textRead.1 as? String else { return nil }
+                guard !text.isEmpty else { return nil }
+                return CaretPrefix(
+                    text: text,
+                    beginsAtDocumentStart: prefixRange.location == 0,
+                    elementIdentifier: lease.identifier,
+                    caretLocation: caret.location
+                )
             }
         ) {
         case let .value(text):
@@ -675,6 +715,7 @@ final class TextConverter {
     nonisolated private func focusedSuffixProbe(
         _ expected: String,
         focus: FocusedElementIdentity,
+        expectedCaretLocation: Int? = nil,
         timeoutMilliseconds: Int
     ) -> ReplacementVerification {
         switch focusedElementResolver.withElement(
@@ -691,6 +732,8 @@ final class TextConverter {
                 guard AXValueGetType(rangeValue) == .cfRange,
                       AXValueGetValue(rangeValue, .cfRange, &caret),
                       caret.length == 0 else { return .mismatch }
+                if let expectedCaretLocation,
+                   caret.location != expectedCaretLocation { return .mismatch }
                 let expectedLength = expected.utf16.count
                 guard caret.location >= expectedLength else { return .mismatch }
                 var suffixRange = CFRange(
@@ -723,9 +766,15 @@ final class TextConverter {
     nonisolated private func focusedSuffixMatches(
         _ expected: String,
         focus: FocusedElementIdentity,
+        expectedCaretLocation: Int? = nil,
         timeoutMilliseconds: Int
     ) -> Bool {
-        focusedSuffixProbe(expected, focus: focus, timeoutMilliseconds: timeoutMilliseconds) == .match
+        focusedSuffixProbe(
+            expected,
+            focus: focus,
+            expectedCaretLocation: expectedCaretLocation,
+            timeoutMilliseconds: timeoutMilliseconds
+        ) == .match
     }
 
     nonisolated private func selectedTextMatches(
@@ -888,41 +937,63 @@ final class TextConverter {
         lastWasBuffer = true
     }
 
-    /// Reads the token before the caret via Accessibility and builds a forced
-    /// layout toggle. Used after focus returns and the typing buffer is gone.
+    /// Recovers the last token after focus/navigation cleared the physical-key
+    /// buffer. AX work stays off the main/event-tap thread; replacement still
+    /// performs a fresh identity and exact-suffix check.
     func prepareCaretWordConversion(
-        focus: FocusedElementIdentity
-    ) -> CaretWordConversion? {
-        guard !isConverting else { return nil }
-        guard let suffix = readTextBeforeCaret(focus: focus, maxUTF16Length: 96),
-              let parsed = CaretTokenParser.tokenBeforeCaret(from: suffix) else {
-            return nil
+        focus: FocusedElementIdentity,
+        completion: @escaping (CaretWordPreparationOutcome) -> Void
+    ) {
+        guard !isConverting else {
+            completion(.busy)
+            return
         }
-        guard let conversion = DynamicKeyMapping.convertSelectedText(parsed.word) else { return nil }
-        let converted = conversion.converted
-        guard converted != parsed.word else { return nil }
-        let replacement = manualReplacement(
-            typed: parsed.word,
-            converted: converted,
-            targetLanguage: conversion.targetLanguage
-        )
-        guard replacement != parsed.word else { return nil }
-        return CaretWordConversion(
-            original: parsed.word,
-            replacement: replacement,
-            expectedSuffix: parsed.word + parsed.trailingWhitespace,
-            targetLayoutID: conversion.targetLayoutID
-        )
+        isConverting = true
+        let completion = CaretCompletionBox(completion)
+        manualQueue.async { [weak self] in
+            guard let self else { return }
+            let prefix = self.readTextBeforeCaret(focus: focus, maxUTF16Length: 96)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isConverting = false
+                guard let prefix,
+                      let parsed = CaretTokenParser.tokenBeforeCaret(
+                        from: prefix.text,
+                        tokenAtInputStartIsComplete: prefix.beginsAtDocumentStart
+                      ),
+                      let conversion = DynamicKeyMapping.convertSelectedText(parsed.word)
+                else {
+                    completion.callback(.noCandidate)
+                    return
+                }
+                let replacement = self.manualReplacement(
+                    typed: parsed.word,
+                    converted: conversion.converted,
+                    targetLanguage: conversion.targetLanguage
+                )
+                guard replacement != parsed.word else {
+                    completion.callback(.noCandidate)
+                    return
+                }
+                completion.callback(.conversion(CaretWordConversion(
+                    original: parsed.word,
+                    replacement: replacement,
+                    expectedSuffix: parsed.word + parsed.trailingWhitespace,
+                    elementIdentifier: prefix.elementIdentifier,
+                    caretLocation: prefix.caretLocation,
+                    sourceLayoutID: conversion.sourceLayoutID,
+                    targetLayoutID: conversion.targetLayoutID
+                )))
+            }
+        }
     }
 
     func recordPostedCaretWord(
         _ conversion: CaretWordConversion,
         transaction: ConversionTransaction
     ) {
-        lastOriginal = conversion.original
-        lastConverted = conversion.replacement
-        // Keep trailing whitespace out of the remembered pair so toggle targets
-        // the word body; spaces are re-derived from caret position next time.
+        lastOriginal = transaction.originalTextForUndo
+        lastConverted = transaction.insertedText
         lastLearningPair = (conversion.original, conversion.replacement)
         lastWasBuffer = true
         lastTransaction = transaction
@@ -946,9 +1017,10 @@ final class TextConverter {
         let spaceCount: Int
         if trailingSpaces > 0 {
             spaceCount = trailingSpaces
+        } else if let transaction = lastTransaction,
+                  case let .space(count) = transaction.boundary {
+            spaceCount = max(1, count)
         } else if lastConverted.hasSuffix(" ") || lastOriginal.hasSuffix(" ") {
-            spaceCount = 1
-        } else if let transaction = lastTransaction, case .space = transaction.boundary {
             spaceCount = 1
         } else {
             spaceCount = 0

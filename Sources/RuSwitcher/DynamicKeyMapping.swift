@@ -134,6 +134,7 @@ enum DynamicKeyMapping {
         converted: String,
         sourceLanguage: String,
         targetLanguage: String,
+        sourceLayoutID: String?,
         targetLayoutID: String?
     )? {
         guard text.contains(where: \.isLetter) else { return nil }
@@ -155,7 +156,7 @@ enum DynamicKeyMapping {
               let targetEntry = pair.first(where: { LayoutSwitcher.sourceID($0.1) != LayoutSwitcher.sourceID(sourceEntry.1) }) else {
             let sourceLanguage = dominant ?? (SmartTokenizer.languageHint(for: text) ?? "en")
             let targetLanguage = sourceLanguage == "ru" ? "en" : "ru"
-            return (KeyMapping.convert(text), sourceLanguage, targetLanguage, nil)
+            return (KeyMapping.convert(text), sourceLanguage, targetLanguage, nil, nil)
         }
         let map = buildMap(from: sourceEntry.1, to: targetEntry.1)
         guard !map.isEmpty else { return nil }
@@ -163,6 +164,7 @@ enum DynamicKeyMapping {
             String(text.map { map[$0] ?? $0 }).precomposedStringWithCanonicalMapping,
             sourceEntry.0,
             targetEntry.0,
+            LayoutSwitcher.sourceID(sourceEntry.1),
             LayoutSwitcher.sourceID(targetEntry.1)
         )
     }

@@ -51,6 +51,7 @@ private struct HIDProbeScenario {
     let trailingTriggerCount: Int
     let selectedToggleSource: String?
     let autoConvertEnabled: Bool
+    let navigationRoundTripBeforeTrigger: Bool
 
     init(
         name: String,
@@ -59,7 +60,8 @@ private struct HIDProbeScenario {
         triggerAfterTyping: Bool = false,
         trailingTriggerCount: Int? = nil,
         selectedToggleSource: String? = nil,
-        autoConvertEnabled: Bool = true
+        autoConvertEnabled: Bool = true,
+        navigationRoundTripBeforeTrigger: Bool = false
     ) {
         self.name = name
         self.phases = phases
@@ -67,6 +69,7 @@ private struct HIDProbeScenario {
         self.trailingTriggerCount = trailingTriggerCount ?? (triggerAfterTyping ? 1 : 0)
         self.selectedToggleSource = selectedToggleSource
         self.autoConvertEnabled = autoConvertEnabled
+        self.navigationRoundTripBeforeTrigger = navigationRoundTripBeforeTrigger
     }
 
     static func named(_ name: String) -> HIDProbeScenario? {
@@ -117,6 +120,14 @@ private struct HIDProbeScenario {
                 phases: [Phase(sourceLanguage: "ru", typedText: "жопа")],
                 trailingTriggerCount: 2,
                 autoConvertEnabled: false
+            )
+        case "manual-caret-word-toggle-cycle":
+            return HIDProbeScenario(
+                name: name,
+                phases: [Phase(sourceLanguage: "en", typedText: "here  ")],
+                trailingTriggerCount: 2,
+                autoConvertEnabled: false,
+                navigationRoundTripBeforeTrigger: true
             )
         case "manual-auto-word-toggle-cycle":
             return HIDProbeScenario(
@@ -526,12 +537,16 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
         guard plannedPhases.indices.contains(phaseIndex) else {
             if scenario.trailingTriggerCount > 0, !didPostTrailingTrigger {
                 didPostTrailingTrigger = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                    guard let self else { return }
-                    self.runManualToggleCycle(
-                        remaining: self.scenario.trailingTriggerCount,
-                        reselectText: false
-                    )
+                if scenario.navigationRoundTripBeforeTrigger {
+                    postNavigationRoundTrip { [weak self] in
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                            self?.beginTrailingToggleCycle()
+                        }
+                    }
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                        self?.beginTrailingToggleCycle()
+                    }
                 }
                 return
             }
@@ -575,6 +590,41 @@ private final class HIDProbeDelegate: NSObject, NSApplicationDelegate {
                     reselectText: reselectText
                 )
             }
+        }
+    }
+
+    private func beginTrailingToggleCycle() {
+        runManualToggleCycle(
+            remaining: scenario.trailingTriggerCount,
+            reselectText: false
+        )
+    }
+
+    private func postNavigationRoundTrip(completion: @escaping () -> Void) {
+        guard let source = CGEventSource(stateID: .hidSystemState) else {
+            finish(text: "<event-source-unavailable>")
+            return
+        }
+        source.userData = 0x52535445
+        postNavigationKey(123, source: source) { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) {
+                self.postNavigationKey(124, source: source, completion: completion)
+            }
+        }
+    }
+
+    private func postNavigationKey(
+        _ keyCode: CGKeyCode,
+        source: CGEventSource,
+        completion: @escaping () -> Void
+    ) {
+        let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false)
+        down?.post(tap: .cghidEventTap)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) {
+            up?.post(tap: .cghidEventTap)
+            completion()
         }
     }
 

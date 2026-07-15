@@ -2,10 +2,10 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# Parallel experimental product. Keeps SPM target name "RuSwitcher" but ships a
-# distinct bundle/executable so it can coexist with Codex Lab and upstream.
+# Grok AX line: Lab 105 conversion base, distinct install next to Codex Lab.
 SPM_PRODUCT_NAME="RuSwitcher"
 APP_NAME="RuSwitcherAX"
+APP_EXECUTABLE="RuSwitcherAX"
 APP_DISPLAY_NAME="RuSwitcher AX"
 BUNDLE_ID="com.ruswitcher.ax"
 APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
@@ -43,10 +43,10 @@ if [ ! -f "$BUILD_DIR/$SPM_PRODUCT_NAME" ]; then
     echo "ERROR: built product not found: $BUILD_DIR/$SPM_PRODUCT_NAME"
     exit 1
 fi
-cp "$BUILD_DIR/$SPM_PRODUCT_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+cp "$BUILD_DIR/$SPM_PRODUCT_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_EXECUTABLE"
 
 # 3a. Самопроверка: бинарь обязан быть universal (arm64 + x86_64), иначе Intel-маки не запустят
-ARCHS=$(lipo -archs "$APP_BUNDLE/Contents/MacOS/$APP_NAME")
+ARCHS=$(lipo -archs "$APP_BUNDLE/Contents/MacOS/$APP_EXECUTABLE")
 if [[ "$ARCHS" != *"arm64"* || "$ARCHS" != *"x86_64"* ]]; then
     echo "ERROR: бинарь не universal (получено: $ARCHS)"; exit 1
 fi
@@ -54,7 +54,7 @@ echo "→ Universal OK: $ARCHS"
 
 # 4. Копируем Info.plist и штампуем версию / identity из version.json
 cp "$PROJECT_DIR/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_NAME" "$APP_BUNDLE/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $APP_EXECUTABLE" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_DISPLAY_NAME" "$APP_BUNDLE/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_DISPLAY_NAME" "$APP_BUNDLE/Contents/Info.plist"

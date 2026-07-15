@@ -28,8 +28,8 @@ func rslog(_ msg: StaticString) {
 
     let line = "\(Date()): \(String(describing: msg))\n"
     rsLogQueue.async {
-        let logDir = NSHomeDirectory() + "/Library/Logs/\(ProductIdentity.logDirectoryName)"
-        let path = logDir + "/ruswitcher-ax.log"
+        let path = ProductIdentity.logFilePath
+        let logDir = (path as NSString).deletingLastPathComponent
 
         // Создаём директорию если нет
         if !FileManager.default.fileExists(atPath: logDir) {
@@ -410,6 +410,16 @@ final class KeyboardMonitor: @unchecked Sendable {
         if hadCurrentToken,
            !inputSession.beginCommit(expectedRevision: expectedRevision) { return nil }
         return inputSession.stageCompletion()
+    }
+
+    func stageVerifiedCaretConversion(
+        expectedSequence: UInt64,
+        expectedRevision: UInt64
+    ) -> UInt64? {
+        inputSession.stageVerifiedExternalEdit(
+            expectedSequence: expectedSequence,
+            expectedRevision: expectedRevision
+        )
     }
 
     func invalidateStagedCompletion(expectedSequence: UInt64) {

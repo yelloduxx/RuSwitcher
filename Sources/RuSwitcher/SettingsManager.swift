@@ -155,7 +155,7 @@ final class SettingsManager: @unchecked Sendable {
     // MARK: - Триггер конвертации
 
     /// Клавиша-триггер: "option" | "command" | "control" | "shift" | "capsLock".
-    /// Дефолт — option (как было до 2.3, поведение не меняется).
+    /// New installations default to the user's double-Shift workflow.
     var triggerKey: String {
         get { defaults.string(forKey: Keys.triggerKey) ?? ProductIdentity.defaultTriggerKey }
         set { defaults.set(newValue, forKey: Keys.triggerKey) }

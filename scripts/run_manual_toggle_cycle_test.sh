@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-APP="${RUSWITCH_APP:-/Applications/RuSwitcher.app}"
+APP="${RUSWITCH_APP:-/Applications/RuSwitcherAX.app}"
 APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
 APP_EXEC="$APP/Contents/MacOS/$APP_EXECUTABLE"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ruswitch-toggle-cycle.XXXXXX")"
@@ -47,6 +47,7 @@ PY
 }
 
 run_scenario manual-russian-word-toggle-cycle 1
+run_scenario manual-caret-word-toggle-cycle
 run_scenario manual-selection-toggle-cycle
 run_scenario manual-auto-word-toggle-cycle
 
@@ -58,6 +59,7 @@ import sys
 root = pathlib.Path(sys.argv[1])
 expected = {
     "manual-russian-word-toggle-cycle": [";jgf", "жопа"],
+    "manual-caret-word-toggle-cycle": ["руку  ", "here  "],
     "manual-selection-toggle-cycle": ["руку", "here", "руку", "here"],
     "manual-auto-word-toggle-cycle": ["ckj;yj ", "сложно "],
 }

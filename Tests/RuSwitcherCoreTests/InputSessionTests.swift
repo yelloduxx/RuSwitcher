@@ -65,6 +65,41 @@ final class InputSessionTests: XCTestCase {
 
         XCTAssertTrue(session.context.isEmpty)
     }
+
+    func testVerifiedExternalEditCanStageAfterNavigationInvalidation() throws {
+        var session = InputSession()
+        session.append(TypedKey(keyCode: 5, shift: false, caps: false, char: "g"))
+        session.handle(.navigation)
+        let sequence = session.sequence
+        let revision = session.editRevision
+
+        let staged = try XCTUnwrap(session.stageVerifiedExternalEdit(
+            expectedSequence: sequence,
+            expectedRevision: revision
+        ))
+
+        XCTAssertEqual(session.sequence, staged)
+        XCTAssertEqual(session.integrity, .clean)
+        XCTAssertTrue(session.currentKeys.isEmpty)
+    }
+
+    func testVerifiedExternalEditRejectsStaleOrNonemptyState() {
+        var session = InputSession()
+        session.handle(.navigation)
+        let sequence = session.sequence
+        let revision = session.editRevision
+        session.handle(.external)
+        XCTAssertNil(session.stageVerifiedExternalEdit(
+            expectedSequence: sequence,
+            expectedRevision: revision
+        ))
+
+        session.append(TypedKey(keyCode: 5, shift: false, caps: false, char: "g"))
+        XCTAssertNil(session.stageVerifiedExternalEdit(
+            expectedSequence: session.sequence,
+            expectedRevision: session.editRevision
+        ))
+    }
     private let focus = FocusedElementIdentity(processID: 42, bundleID: "test.app")
 
     func testSnapshotDoesNotChangeAfterNextTokenStarts() throws {

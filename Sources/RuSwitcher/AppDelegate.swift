@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var caretIndicator: CaretIndicator?   // issue #10: флаг у каретки (бета, по умолчанию OFF)
     private var lastFlagShown: String?            // идентичность раскладки для детекта смены (не title!)
     private var badgeCache: [String: NSImage] = [:]  // монохромные плашки, чтобы не перерисовывать 2с-опросом
+    /// Another RuSwitcher (Lab / author / second AX) is competing for the HID stream.
+    private var siblingInstanceDetected = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         SettingsManager.shared.migrateAdaptiveRulesIfNeeded()
@@ -39,17 +41,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             rslog("engine_v3_unavailable")
         }
-        // Parallel Lab/Codex AX builds fight over the same HID stream. Prefer a
-        // single instance; log so debug traces show why conversion "vanishes".
         let siblings = NSWorkspace.shared.runningApplications.filter {
             guard $0.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return false }
-            let id = $0.bundleIdentifier ?? ""
-            return id == "com.ruswitcher.app"
-                || id == "com.ruswitcher.lab"
-                || id == ProductIdentity.bundleIdentifier
+            let bundleID = $0.bundleIdentifier ?? ""
+            return bundleID == "com.ruswitcher.app"
+                || bundleID == "com.ruswitcher.lab"
+                || bundleID == ProductIdentity.bundleIdentifier
                 || ($0.localizedName?.contains("RuSwitcher") == true)
         }
         if !siblings.isEmpty {
+            siblingInstanceDetected = true
             rslog("sibling_ruswitcher_instance_detected")
         }
         setupStatusItem()
@@ -417,9 +418,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         case .postedUnverified:
             return
-        case .failed, .none:
-            // No usable selection / busy failure — fall through to reconversion
-            // or buffered token. Never swallow double-Shift entirely.
+        case .failed:
+            // A real selection has priority. If it could not be converted, do not
+            // mutate a buffered token or switch layout behind that selection.
+            return
+        case .none:
             break
         }
 
@@ -429,60 +432,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 trailingSpaces: boundaryCount
             ), let snapshot = keyboardMonitor.manualEditorSnapshot() else {
                 textConverter.cancelPendingReconversion()
-                continueManualTriggerWithoutBuffer(frontID: frontID)
                 return
             }
             submitManualReconversion(
                 reconversion,
                 snapshot: snapshot,
-                frontID: frontID,
-                onFailure: { [weak self] in
-                    self?.continueManualTriggerWithoutBuffer(frontID: frontID)
-                }
+                frontID: frontID
             )
             return
         }
-        continueManualTriggerWithoutBuffer(frontID: frontID)
-    }
-
-    /// Buffered-token path, then caret-word (AX) path, then layout-only.
-    private func continueManualTriggerWithoutBuffer(frontID: String?) {
         if let snapshot = keyboardMonitor.manualTokenSnapshot(),
            let conversion = textConverter.prepareBufferedConversion(keys: snapshot.keys) {
             submitManualBufferedConversion(
                 conversion,
                 snapshot: snapshot,
-                frontID: frontID,
-                onFailure: { [weak self] in
-                    self?.convertWordBeforeCaretOrSwitchLayout(frontID: frontID)
-                }
+                frontID: frontID
             )
             return
         }
         convertWordBeforeCaretOrSwitchLayout(frontID: frontID)
     }
 
-    /// After focus returns, the typing buffer is empty — convert the word before
-    /// the caret via Accessibility (forced layout toggle).
-    private func convertWordBeforeCaretOrSwitchLayout(frontID: String?) {
-        guard !AutoSwitchPolicy.isDeniedApp(frontID) else { return }
-        guard let snapshot = keyboardMonitor.manualEditorSnapshot(),
-              let conversion = textConverter.prepareCaretWordConversion(focus: snapshot.focus)
-        else {
-            textConverter.clearState()
-            keyboardMonitor.markConverted()
-            LayoutSwitcher.switchToOpposite()
-            updateStatusIcon()
-            return
+    /// Beyond Lab 105: one deferred retry when caret prep is busy (short AX
+    /// verify / previous replace still settling) instead of a silent no-op.
+    private func convertWordBeforeCaretOrSwitchLayout(
+        frontID: String?,
+        allowBusyRetry: Bool = true
+    ) {
+        guard !AutoSwitchPolicy.isDeniedApp(frontID),
+              let snapshot = keyboardMonitor.manualEditorSnapshot() else { return }
+        textConverter.prepareCaretWordConversion(focus: snapshot.focus) { [weak self] outcome in
+            guard let self,
+                  NSWorkspace.shared.frontmostApplication?.bundleIdentifier == frontID else { return }
+            switch outcome {
+            case .busy:
+                guard allowBusyRetry else {
+                    rslog("manual_caret_word_busy")
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+                    self?.convertWordBeforeCaretOrSwitchLayout(
+                        frontID: frontID,
+                        allowBusyRetry: false
+                    )
+                }
+            case .noCandidate:
+                self.finishManualSwitchOnly()
+            case let .conversion(conversion):
+                self.submitManualCaretWordConversion(
+                    conversion,
+                    snapshot: snapshot,
+                    frontID: frontID
+                )
+            }
         }
-        submitManualCaretWordConversion(conversion, snapshot: snapshot, frontID: frontID)
+    }
+
+    private func finishManualSwitchOnly() {
+        textConverter.clearState()
+        keyboardMonitor.markConverted()
+        LayoutSwitcher.switchToOpposite()
+        updateStatusIcon()
     }
 
     private func submitManualBufferedConversion(
         _ conversion: BufferedManualConversion,
         snapshot: ManualTokenSnapshot,
-        frontID: String?,
-        onFailure: (() -> Void)? = nil
+        frontID: String?
     ) {
         let hadCurrentToken = !keyboardMonitor.currentWordKeys.isEmpty
         let targetLayoutID = oppositeLayoutID(for: conversion.sourceLayoutID)
@@ -502,10 +518,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             expectedSequence: snapshot.sequence,
             expectedRevision: snapshot.editRevision,
             hadCurrentToken: hadCurrentToken
-        ) else {
-            onFailure?()
-            return
-        }
+        ) else { return }
         textConverter.replaceFocusedSuffix(
             expected: transaction.expectedOriginalSuffix,
             replacement: transaction.insertedText,
@@ -545,7 +558,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .failed:
                 self.textConverter.cancelPendingReconversion()
                 self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
-                onFailure?()
             }
         }
     }
@@ -553,8 +565,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func submitManualReconversion(
         _ reconversion: BufferedManualReconversion,
         snapshot: ManualTokenSnapshot,
-        frontID: String?,
-        onFailure: (() -> Void)? = nil
+        frontID: String?
     ) {
         let transaction = ConversionTransaction(
             original: reconversion.current,
@@ -574,7 +585,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             hadCurrentToken: false
         ) else {
             textConverter.cancelPendingReconversion()
-            onFailure?()
             return
         }
         textConverter.replaceFocusedSuffix(
@@ -618,7 +628,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .failed:
                 self.textConverter.cancelPendingReconversion()
                 self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
-                onFailure?()
             }
         }
     }
@@ -628,35 +637,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         snapshot: ManualTokenSnapshot,
         frontID: String?
     ) {
+        let trailing = String(conversion.expectedSuffix.dropFirst(conversion.original.count))
+        let boundary: InputBoundary = trailing.isEmpty
+            ? .punctuation("")
+            : .space(count: trailing.count)
+        let resolvedFocus = FocusedElementIdentity(
+            processID: snapshot.focus.processID,
+            bundleID: snapshot.focus.bundleID,
+            identifier: conversion.elementIdentifier
+        )
         let transaction = ConversionTransaction(
             original: conversion.original,
             replacement: conversion.replacement,
-            boundary: .punctuation(""),
-            focus: snapshot.focus,
-            sourceLayoutID: LayoutSwitcher.currentLayoutID(),
+            boundary: boundary,
+            focus: resolvedFocus,
+            sourceLayoutID: conversion.sourceLayoutID,
             targetLayoutID: conversion.targetLayoutID,
             sequence: snapshot.sequence,
             editRevision: snapshot.editRevision,
             expectedOriginalSuffix: conversion.expectedSuffix,
             automatic: false
         )
-        guard let stagedSequence = keyboardMonitor.stageManualConversion(
+        guard let stagedSequence = keyboardMonitor.stageVerifiedCaretConversion(
             expectedSequence: snapshot.sequence,
-            expectedRevision: snapshot.editRevision,
-            hadCurrentToken: false
+            expectedRevision: snapshot.editRevision
         ) else {
-            convertWordBeforeCaretOrSwitchLayoutFallbackLayoutOnly()
             return
         }
-        // Replacement is the converted word only; keep trailing whitespace after
-        // the caret-relative suffix by replacing the full expectedSuffix with
-        // replacement + trailing whitespace from expectedSuffix.
-        let trailing = String(conversion.expectedSuffix.dropFirst(conversion.original.count))
-        let inserted = conversion.replacement + trailing
         textConverter.replaceFocusedSuffix(
-            expected: conversion.expectedSuffix,
-            replacement: inserted,
-            focus: snapshot.focus,
+            expected: transaction.expectedOriginalSuffix,
+            replacement: transaction.insertedText,
+            focus: resolvedFocus,
+            expectedCaretLocation: conversion.caretLocation,
             isCurrent: { [weak self] in
                 self?.keyboardMonitor.isStagedCompletionCurrent(
                     expectedSequence: stagedSequence
@@ -695,16 +707,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             case .failed:
                 self.textConverter.cancelPendingReconversion()
                 self.keyboardMonitor.invalidateStagedCompletion(expectedSequence: stagedSequence)
-                self.convertWordBeforeCaretOrSwitchLayoutFallbackLayoutOnly()
             }
         }
-    }
-
-    private func convertWordBeforeCaretOrSwitchLayoutFallbackLayoutOnly() {
-        textConverter.clearState()
-        keyboardMonitor.markConverted()
-        LayoutSwitcher.switchToOpposite()
-        updateStatusIcon()
     }
 
     private func finishManualReconversion(
@@ -946,8 +950,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 transaction: transaction,
                 deliveredKeyCount: snapshot.deliveredKeyCount,
                 currentFocus: snapshot.focus,
-                currentRevision: snapshot.editRevision,
-                allowUnavailablePreflight: snapshot.integrity == .clean
+                currentRevision: snapshot.editRevision
             )
         ) { [weak self] outcome in
             self?.finishAutomaticReplacement(
@@ -1141,10 +1144,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func rebuildMenu() {
         let menu = NSMenu()
 
-        // Строка версии (с dev-меткой для непубликуемых сборок) — чтобы было видно, какой билд.
+        // Строка версии (с dev-меткой и build) — чтобы было видно, какой билд.
         let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         let devTag = Bundle.main.infoDictionary?["RSDevTag"] as? String ?? ""
-        let verItem = NSMenuItem(title: "RuSwitcher \(ver)\(devTag)", action: nil, keyEquivalent: "")
+        let tag = devTag.isEmpty ? "" : devTag
+        let verItem = NSMenuItem(
+            title: "\(ProductIdentity.displayName) \(ver)\(tag) (\(build))",
+            action: nil,
+            keyEquivalent: ""
+        )
         verItem.isEnabled = false
         menu.addItem(verItem)
         let healthItem = NSMenuItem(title: autoConversionHealthText(), action: nil, keyEquivalent: "")
@@ -1290,6 +1299,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func autoConversionHealthText() -> String {
+        if siblingInstanceDetected {
+            return L10n.statusSiblingInstance
+        }
         guard SettingsManager.shared.autoSwitchEnabled, SettingsManager.shared.autoConvert else {
             return L10n.statusDisabled
         }
