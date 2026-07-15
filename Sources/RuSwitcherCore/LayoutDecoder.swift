@@ -123,6 +123,21 @@ public enum LayoutDecoder {
         return evaluations.max { lhs, rhs in
             if lhs.decision.verdict == .switchToConverted, rhs.decision.verdict != .switchToConverted { return false }
             if lhs.decision.verdict != .switchToConverted, rhs.decision.verdict == .switchToConverted { return true }
+            // `[etvjt` must become `хуемое`, not `[уемое`. Preserving a leading
+            // punctuation key that is a letter in the target layout is only safe
+            // when that wrapping core itself is a real word (`[yt` → `[не`).
+            let lhsLayoutLetterPrefix = preservesLayoutLetterPrefix(lhs.decision.candidate)
+            let rhsLayoutLetterPrefix = preservesLayoutLetterPrefix(rhs.decision.candidate)
+            if lhsLayoutLetterPrefix != rhsLayoutLetterPrefix {
+                let lhsCoreLexical = hasLexicalTargetEvidence(lhs)
+                let rhsCoreLexical = hasLexicalTargetEvidence(rhs)
+                if lhsLayoutLetterPrefix, !rhsLayoutLetterPrefix, !lhsCoreLexical {
+                    return true
+                }
+                if rhsLayoutLetterPrefix, !lhsLayoutLetterPrefix, !rhsCoreLexical {
+                    return false
+                }
+            }
             let lhsHasPhraseEvidence = lhs.evidence.contains(.phraseContext)
             let rhsHasPhraseEvidence = rhs.evidence.contains(.phraseContext)
             if lhsHasPhraseEvidence != rhsHasPhraseEvidence {
@@ -171,6 +186,27 @@ public enum LayoutDecoder {
 
     private static func preservesTypedSuffix(_ candidate: AutoConvertCandidate) -> Bool {
         !candidate.suffix.isEmpty && candidate.typedRaw.hasSuffix(candidate.suffix)
+    }
+
+    /// True when a preserved prefix is punctuation in the typed layout but a letter
+    /// after physical-key conversion (`[` → `х`, `,` → `б`).
+    private static func preservesLayoutLetterPrefix(_ candidate: AutoConvertCandidate) -> Bool {
+        guard !candidate.prefix.isEmpty else { return false }
+        let convertedPrefix = KeyMapping.convert(candidate.prefix)
+        return convertedPrefix.contains(where: \.isLetter)
+    }
+
+    private static func hasLexicalTargetEvidence(_ evaluation: LayoutDecoderEvaluation) -> Bool {
+        evaluation.evidence.contains {
+            switch $0 {
+            case .frequent, .englishTargetDictionary, .russianTargetDictionary, .confirmedByUser:
+                return true
+            case .compound:
+                return true
+            default:
+                return false
+            }
+        }
     }
 
     /// When the same physical key is punctuation in both layouts, its target
@@ -396,7 +432,20 @@ public enum LayoutDecoder {
         if sourceHint.map({ LanguageCode.canonical($0) == currentCanonical }) == true { literalScore += 1.2 }
         if targetHint.map({ LanguageCode.canonical($0) == targetCanonical }) == true { convertedScore += 1.2 }
         if candidate.kind == .trailingPunctuation || candidate.kind == .wrappingPunctuation {
-            convertedScore += 0.35
+            let coreHasLexicalEvidence = targetKnown != nil
+                || strongExtendedEnglishTarget
+                || strongExtendedRussianTarget
+                || FrequentWordLexicon.contains(converted, language: targetCanonical)
+            if coreHasLexicalEvidence {
+                // Safe wrappers around real words: `[yt` → `[не`, `{gjnjv)` → `{потом)`.
+                convertedScore += 0.35
+            } else if Self.preservesLayoutLetterPrefix(candidate) {
+                // OOV cores must not keep a leading layout-letter key as punctuation:
+                // `[etvjt` → `хуемое`, not `[уемое`.
+                convertedScore -= 1.25
+            } else {
+                convertedScore += 0.35
+            }
             if !candidate.suffix.isEmpty,
                Self.preservesTypedSuffix(candidate),
                candidate.suffix.allSatisfy({ ".!?".contains($0) }) {

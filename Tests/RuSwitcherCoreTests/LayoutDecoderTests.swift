@@ -355,6 +355,18 @@ final class LayoutDecoderTests: XCTestCase {
         }
     }
 
+    func testLeadingBracketLayoutLetterConvertsFullyNotAsWrapper() {
+        // Physical `[` is Russian `х`. Keeping it as a wrapper produced `[уемое`
+        // for mistyped `хуемое` (`[etvjt`). Full physical conversion must win when
+        // the wrapping core is not itself a known word.
+        let typed = KeyMapping.convert("хуемое")
+        XCTAssertEqual(typed, "[etvjt")
+        let result = evaluate(typed, context: ["это"])
+        XCTAssertEqual(result.decision.verdict, .switchToConverted, "\(result.decision)")
+        XCTAssertEqual(result.decision.candidate.replacement, "хуемое")
+        XCTAssertEqual(result.decision.candidate.prefix, "")
+    }
+
     func testLayoutLetterBeforeDecorationStaysLetter() {
         let result = evaluate("gkfn`;-", context: ["это"])
         XCTAssertEqual(result.decision.candidate.replacement, "платёж-")

@@ -98,6 +98,18 @@ final class AutoConvertCandidateGeneratorTests: XCTestCase {
         XCTAssertEqual(candidate?.prefix, "")
     }
 
+    func testLeadingBracketCandidatesIncludeFullLayoutLetterWord() {
+        let typed = "[etvjt"
+        let candidates = AutoConvertCandidateGenerator.candidates(
+            typed: typed,
+            converted: KeyMapping.convert(typed)
+        )
+        XCTAssertTrue(candidates.contains { $0.replacement == "хуемое" && $0.prefix.isEmpty })
+        XCTAssertTrue(candidates.contains {
+            $0.prefix == "[" && $0.convertedWord == "уемое" && $0.replacement == "[уемое"
+        })
+    }
+
     func testThreeCharacterEllipsisCanStayPunctuation() {
         let typed = "штышву..."
         let candidates = AutoConvertCandidateGenerator.candidates(
