@@ -26,9 +26,12 @@ run_scenario() {
         pgrep -x "$APP_EXECUTABLE" >/dev/null || break
         sleep 0.1
     done
+    local force_flag="${3:-}"
     if [ "$force_fallback" -eq 1 ]; then
         open -n "$APP" --args --hid-probe "$name" --result "$result" \
             --force-synthetic-input-fallback
+    elif [ -n "$force_flag" ]; then
+        open -n "$APP" --args --hid-probe "$name" --result "$result" "$force_flag"
     else
         open -n "$APP" --args --hid-probe "$name" --result "$result"
     fi
@@ -50,6 +53,7 @@ run_scenario manual-russian-word-toggle-cycle 1
 run_scenario manual-caret-word-toggle-cycle
 run_scenario manual-selection-toggle-cycle
 run_scenario manual-auto-word-toggle-cycle
+run_scenario manual-ax-unavailable-toggle-cycle 0 --force-ax-unavailable-fallback
 
 python3 - "$WORK_DIR" <<'PY'
 import json
@@ -62,6 +66,7 @@ expected = {
     "manual-caret-word-toggle-cycle": ["руку  ", "here  "],
     "manual-selection-toggle-cycle": ["руку", "here", "руку", "here"],
     "manual-auto-word-toggle-cycle": ["ckj;yj ", "сложно "],
+    "manual-ax-unavailable-toggle-cycle": ["руку ", "here ", "руку ", "here "],
 }
 
 for name, trace in expected.items():
@@ -75,6 +80,12 @@ for name, trace in expected.items():
         and not result.get("layoutMismatchStrokes")
         and not result.get("boundaryDeliveryTimeouts")
     )
+    if name == "manual-ax-unavailable-toggle-cycle":
+        # Proves the conversion actually went through Backspace+Unicode (key
+        # code 51 = Backspace), not some AX path that happened to still work —
+        # this scenario forces every AX read to report .unavailable.
+        backspace_events = [e for e in result.get("syntheticKeyTrace", []) if e.startswith("51:")]
+        passed = passed and len(backspace_events) >= 4 * len(trace)
     configured_layouts = set(result.get("configuredLayoutIDs", []))
     observed_layouts = set(result.get("observedLayoutIDs", []))
     passed = passed and len(configured_layouts) == 2 and observed_layouts == configured_layouts

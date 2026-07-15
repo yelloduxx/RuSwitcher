@@ -33,6 +33,21 @@ installed build changes.
   build `35`). Never overwrite Lab or author from this branch.
 - Verify the installed binary hash and PID after every local replacement; do
   not infer the running build from `version.json` alone.
+- `claude/generic-ax-fallback` is a separate worktree
+  (`/Users/bezh/Documents/ruswitch-claude`) branched from build **108**
+  (`a4f72f4`), before `grok/ruswitcher-ax` continued past it into
+  Ghostty-specific System Events/Automation/Ctrl+W special-casing (commits
+  109-115). It replaces `ManualHostPolicy`'s hardcoded bundle-ID allowlist
+  (`com.mitchellh.ghostty`, `com.openai.codex`) with runtime capability
+  detection: any host whose `kAXSelectedTextAttribute` write is confirmed to
+  insert-instead-of-replace is learned (process-lifetime only) after
+  `recoverInsertedReplacement` proves it; any host where AX cannot be read at
+  all (`.unavailable` — most terminal emulators, unregistered in any list)
+  falls through to Backspace+Unicode on every attempt, gated by a fresh
+  `isCurrent()`/frontmost recheck immediately before posting instead of by
+  bundle identity. No app-specific code is required for a new broken host.
+  Builds locally only (`RuSwitcherAX.app` inside this worktree); never
+  installed to `/Applications` and never overwrites Lab/AX/author/Grok/Codex.
 
 ## User Requirements
 

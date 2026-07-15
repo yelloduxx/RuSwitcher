@@ -88,12 +88,16 @@ final class TextConverter {
         let identifier: String
         let range: CFRange
         let text: String
+        /// Only used to teach `ManualHostPolicy` when a replacement turns out
+        /// to insert instead of replace; not part of AX identity/matching.
+        let bundleID: String?
 
-        init(processID: pid_t, identifier: String, range: CFRange, text: String) {
+        init(processID: pid_t, identifier: String, range: CFRange, text: String, bundleID: String? = nil) {
             self.processID = processID
             self.identifier = identifier
             self.range = range
             self.text = text
+            self.bundleID = bundleID
         }
     }
 
@@ -160,15 +164,17 @@ final class TextConverter {
             return
         }
         isConverting = true
-        guard let processID = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication else {
             isConverting = false
             completion(.none)
             return
         }
+        let processID = frontmost.processIdentifier
+        let bundleID = frontmost.bundleIdentifier
         let completion = ManualCompletionBox(completion)
         manualQueue.async { [weak self] in
             guard let self else { return }
-            let result = self.readSelection(processID: processID)
+            let result = self.readSelection(processID: processID, bundleID: bundleID)
             Task { @MainActor [weak self] in
                 self?.handleSelectionRead(
                     result,
@@ -200,7 +206,7 @@ final class TextConverter {
         }
         isConverting = true
         let completion = SuffixCompletionBox(completion)
-        if ManualHostPolicy.prefersKeyboardDeletion(bundleID: focus.bundleID)
+        if ManualHostPolicy.shared.prefersKeyboardDeletion(bundleID: focus.bundleID)
             || CommandLine.arguments.contains("--force-keyboard-deletion-fallback")
         {
             replaceFocusedSuffixViaKeyboardDeletion(
@@ -216,6 +222,18 @@ final class TextConverter {
         if CommandLine.arguments.contains("--force-synthetic-input-fallback") {
             finishFocusedSuffixReplacement(
                 .unchanged,
+                expected: expected,
+                replacement: replacement,
+                focus: focus,
+                expectedCaretLocation: expectedCaretLocation,
+                isCurrent: isCurrent,
+                completion: completion
+            )
+            return
+        }
+        if CommandLine.arguments.contains("--force-ax-unavailable-fallback") {
+            finishFocusedSuffixReplacement(
+                .unavailable,
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
@@ -280,7 +298,7 @@ final class TextConverter {
         case .match:
             completion.callback(.verified)
         case .unchanged:
-            if ManualHostPolicy.prefersKeyboardDeletion(bundleID: focus.bundleID) {
+            if ManualHostPolicy.shared.prefersKeyboardDeletion(bundleID: focus.bundleID) {
                 replaceFocusedSuffixViaKeyboardDeletion(
                     expected: expected,
                     replacement: replacement,
@@ -299,7 +317,26 @@ final class TextConverter {
                     completion: completion
                 )
             }
-        case .mismatch, .unavailable:
+        case .unavailable:
+            // AX could not confirm the caret content at all — the common case
+            // for terminal emulators that expose little or no Accessibility
+            // text API. Do not give up: fall through to Backspace+Unicode for
+            // ANY host here, not only ones pre-listed by bundle ID. Safety
+            // comes from the isCurrent()/frontmost recheck immediately before
+            // posting inside replaceFocusedSuffixViaKeyboardDeletion, not from
+            // AX confirmation (which is exactly what is unavailable).
+            replaceFocusedSuffixViaKeyboardDeletion(
+                expected: expected,
+                replacement: replacement,
+                focus: focus,
+                expectedCaretLocation: expectedCaretLocation,
+                isCurrent: isCurrent,
+                completion: completion
+            )
+        case .mismatch:
+            // AX read successfully and confirmed the caret is NOT where
+            // expected — a real, positive signal that state drifted. Keep
+            // the text unchanged rather than guessing.
             isConverting = false
             completion.callback(.failed)
         }
@@ -335,6 +372,17 @@ final class TextConverter {
             return
         case .match, .unchanged, .unavailable:
             break
+        }
+        // Re-check freshness right before the destructive Backspace burst.
+        // The probe above is itself an AX round-trip (up to 50 ms); when it
+        // returns .unavailable there is no content confirmation at all, so
+        // this recheck — not AX — is the only thing standing between "safe"
+        // and "delete whatever is actually under the caret now".
+        guard isCurrent(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID else {
+            isConverting = false
+            completion.callback(.failed)
+            return
         }
 
         // Prefer grapheme count for Backspace keys; utf16 length can over-delete
@@ -601,6 +649,7 @@ final class TextConverter {
                 original: snapshot.text,
                 replacement: replacement,
                 originalRange: snapshot.range,
+                bundleID: snapshot.bundleID,
                 lease: lease
             ) {
                 return .match
@@ -624,6 +673,7 @@ final class TextConverter {
                     original: snapshot.text,
                     replacement: replacement,
                     originalRange: snapshot.range,
+                    bundleID: snapshot.bundleID,
                     lease: lease
                 ) {
                     return .match
@@ -641,6 +691,7 @@ final class TextConverter {
         original: String,
         replacement: String,
         originalRange: CFRange,
+        bundleID: String?,
         lease: NativeAXElementLease
     ) -> Bool {
         let combined = (replacement + original).precomposedStringWithCanonicalMapping
@@ -655,6 +706,11 @@ final class TextConverter {
         guard read.0 == .success,
               let actual = read.1 as? String,
               actual.precomposedStringWithCanonicalMapping == combined else { return false }
+        // Confirmed (not merely suspected): this host's kAXSelectedTextAttribute
+        // write inserted instead of replacing. Remember it so the next manual
+        // conversion for this app skips straight to Backspace+Unicode instead
+        // of duplicating text again first.
+        ManualHostPolicy.shared.learnPrefersKeyboardDeletion(bundleID: bundleID)
         guard lease.setAttribute(
             kAXSelectedTextRangeAttribute as CFString,
             value: probeValue
@@ -703,7 +759,7 @@ final class TextConverter {
         }
     }
 
-    nonisolated private func readSelection(processID: pid_t) -> SelectionReadResult {
+    nonisolated private func readSelection(processID: pid_t, bundleID: String?) -> SelectionReadResult {
         switch focusedElementResolver.withElement(
             processID: processID,
             timeoutMilliseconds: 250,
@@ -731,7 +787,8 @@ final class TextConverter {
                     processID: processID,
                     identifier: lease.identifier,
                     range: range,
-                    text: text
+                    text: text,
+                    bundleID: bundleID
                 ))
             }
         ) {
@@ -793,7 +850,8 @@ final class TextConverter {
                     processID: focus.processID,
                     identifier: lease.identifier,
                     range: suffixRange,
-                    text: expected
+                    text: expected,
+                    bundleID: focus.bundleID
                 )
                 // Never call kAXSelectedText unless the selection is confirmed.
                 // Setting it with an empty/wrong selection inserts and duplicates.
