@@ -1,4 +1,4 @@
-# RuSwitcher Engineering Notes
+# RuSwitcher Pro Engineering Notes
 
 This file is the repository-level operating context for future agents. Keep it
 updated when architecture, behavior, model artifacts, tests, signing, or the
@@ -6,7 +6,7 @@ installed build changes.
 
 ## Product
 
-- RuSwitcher is a local macOS menu-bar application for EN<->RU keyboard-layout
+- RuSwitcher Pro is a local macOS menu-bar application for EN<->RU keyboard-layout
   conversion. The quality target is Caramba/Punto-like behavior without cloud
   inference or telemetry containing user text.
 - Supported platform: macOS 13+; the release bundle is universal (`arm64` and
@@ -15,7 +15,7 @@ installed build changes.
 - Primary repository: `yelloduxx/RuSwitcher`; the production branch is `main`.
   `rashn/RuSwitcher` is the author's upstream repository, not a release source
   for this fork.
-- Production product on `main` is **RuSwitcher Pro** `4.0.0` build **119**:
+- Production product on `main` is **RuSwitcher Pro** `4.0.0` build **120**:
   - Bundle: `RuSwitcherPro.app` → `/Applications/RuSwitcherPro.app`
   - Bundle ID: `com.ruswitcher.pro` · Executable: `RuSwitcherPro` · Dev tag: `pro`
   - Logs: `~/Library/Logs/RuSwitcherPro/ruswitcher-pro.log` via
@@ -26,7 +26,7 @@ installed build changes.
   - Signed with the reusable `RuSwitcher Local Code Signing` identity (or
     Developer ID when available).
   - Installed executable SHA-256:
-    `71f848dd3e49ccf3c4ffcb5348d2d6fd92e5b6b8aee723baf63a51ce7a0f1933`.
+    `a97d07752242c8880cf83cc3404a1385182b17518a65baebb3d00b22666fb0e6`.
 - Verify the installed binary hash and PID after every local replacement; do
   not infer the running build from `version.json` alone.
 - Changing `ProductIdentity.bundleIdentifier` requires re-granting Accessibility
@@ -169,7 +169,7 @@ and synthetic events before mutating the token state.
 - Plain Backspace removes one physical key.
 - Option/Command+Backspace, forward Delete, Cut/Paste/Undo, arrows, mouse focus
   changes and tap recovery invalidate the token/revision as appropriate.
-- Synthetic RuSwitcher events carry `kRuSwitcherEventMarker` and must never feed
+- Synthetic RuSwitcher Pro events carry `kRuSwitcherEventMarker` and must never feed
   back into the state machine.
 - Active taps use `.headInsertEventTap`; listen-only taps may use tail placement.
 - Automatic replacement validates PID, bundle, focus identity, revision and the
@@ -364,7 +364,7 @@ a confirmation, buffered-token double Shift converts the unfinished word in the
 phrase `сегодня я ...`, and previous-token double Shift converts the last word
 after a Space. The probes assert a zero pasteboard `changeCount` delta for all
 three manual paths. The next physical-key input converts, and the conversion
-still works after restarting RuSwitcher. Each native probe runs alone so two
+still works after restarting RuSwitcher Pro. Each native probe runs alone so two
 global event taps cannot process the same trigger. The script restores the
 complete preferences domain afterward, so it does not pollute the user's
 dictionary.
@@ -422,7 +422,7 @@ swift test
 git diff --check
 SIGN_ID='RuSwitcher Local Code Signing' bash build_app.sh
 codesign --verify --deep --strict RuSwitcher.app
-lipo -archs RuSwitcher.app/Contents/MacOS/RuSwitcher
+lipo -archs RuSwitcher.app/Contents/MacOS/RuSwitcher Pro
 ```
 
 `build_app.sh` stamps `version.json`, builds universal, copies model/licence
@@ -433,11 +433,11 @@ Install atomically:
 
 1. Copy the built bundle to a unique staging path under `/Applications`.
 2. Verify the staged signature.
-3. Stop the running `RuSwitcher` process.
+3. Stop the running `RuSwitcher Pro` process.
 4. Move the current app to a timestamped backup.
 5. Move staging to `/Applications/RuSwitcherAX.app`; do not overwrite the
    author's `/Applications/RuSwitcher.app` or Codex
-   `/Applications/RuSwitcher Lab.app`.
+   `/Applications/RuSwitcher.app`.
 6. Open the app and verify version, architectures, signature, SHA-256 and process.
 
 Lab 105 footprint (Codex reference): ~10.84 MiB bundle, ~77.5 MiB idle RSS,
