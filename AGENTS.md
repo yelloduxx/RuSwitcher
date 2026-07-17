@@ -202,6 +202,14 @@ and synthetic events before mutating the token state.
   expected suffix before editing. An unavailable AX preflight blocks the post;
   a timed-out field is retried after a one-second cooldown rather than being
   ignored for 30 seconds.
+- Opt-in setting `axlessConversion` (default off) lets the automatic path post
+  its keystroke transaction when the AX preflight is `.unavailable` — hosts that
+  expose no AX text (Ghostty, Chromium/Electron). It is wired as
+  `ReplacementRequest.allowUnavailablePost`; the coordinator then relies on the
+  focus + revision freshness match as the only gate. A `.mismatch` (AX read and
+  disagreed) still blocks unconditionally, opt-in or not. The manual double-Shift
+  fallback already posts by keyboard in AX-unavailable hosts regardless of this
+  setting, because it is explicit user intent.
 - A posted conversion immediately publishes provisional phrase context for the
   next token. AX read-back confirms learning and Undo state without duplicating
   that context; stale verification never overrides newer input. An unavailable
@@ -238,11 +246,19 @@ selected-text replacement is preferred. Clipboard fallback is retained only
 when the selected text itself cannot be read; it preserves pasteboard types.
 Failure must leave selection and layout unchanged.
 
-Accessibility is the primary path for current-token, previous-token and selected
-text conversion. When AX cannot expose a known current/previous suffix, the
-fallback selects its grapheme count with targeted Shift+Left events and posts
-the replacement as targeted Unicode. This path does not touch the pasteboard,
-does not post Backspace and cannot delete the word if insertion is dropped.
+A real, user-made **selection** is converted through Accessibility
+(`readSelection` → `kAXSelectedText`), because that write replaces a genuine
+selection reliably. **Current-/previous-word** conversion (no selection) is
+different: in an **external** host it goes straight to the keyboard path
+(Backspace + Unicode to the target PID), the same mechanism the automatic
+converter uses. Programmatically selecting the suffix via `kAXSelectedTextRange`
+and then writing `kAXSelectedText` inserts instead of replacing in
+Chromium/Electron (Claude desktop, VS Code) and terminals — it leaves the
+original word and duplicates text, and `recoverInsertedReplacement` cannot heal
+it because the collapse write uses the same broken AX primitive. The keyboard
+path is gated by an AX suffix probe plus the `isCurrent()`/frontmost recheck
+before deleting. Only the in-process `NSTextView` host still uses the AX
+suffix write (tested, AppKit-main-thread-sensitive, and known-good there).
 
 Manual current/previous-word conversion is a forced physical-layout toggle; it
 does not ask the decoder whether either spelling is correct. It replaces the

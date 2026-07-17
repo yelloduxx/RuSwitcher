@@ -220,6 +220,18 @@ final class SettingsWindowController {
         view.addSubview(acHint)
         y -= 38
 
+        // Конвертация без Accessibility (терминалы/Electron): подпункт авто-конвертации.
+        let axless = NSButton(checkboxWithTitle: L10n.settingsAxlessConversion, target: self, action: #selector(axlessConversionChanged))
+        axless.frame = NSRect(x: 40, y: y - 22, width: 400, height: 22)
+        axless.state = SettingsManager.shared.axlessConversion ? .on : .off
+        view.addSubview(axless)
+        y -= 24
+        let axlessHint = NSTextField(wrappingLabelWithString: L10n.settingsAxlessConversionHint)
+        axlessHint.frame = NSRect(x: 60, y: y - 44, width: 380, height: 44)
+        axlessHint.font = .systemFont(ofSize: 11); axlessHint.textColor = .secondaryLabelColor
+        view.addSubview(axlessHint)
+        y -= 52
+
         // Флаг у курсора (issue #10)
         let caretFlag = NSButton(checkboxWithTitle: L10n.settingsCaretFlag, target: self, action: #selector(caretFlagChanged))
         caretFlag.frame = NSRect(x: 20, y: y - 22, width: 420, height: 22)
@@ -569,6 +581,10 @@ final class SettingsWindowController {
         let enabled = sender.state == .on
         SettingsManager.shared.autoConvert = enabled
         onAutoConvertChanged?(enabled)
+    }
+
+    @objc private func axlessConversionChanged(_ sender: NSButton) {
+        SettingsManager.shared.axlessConversion = sender.state == .on
     }
 
     @objc private func remoteDesktopChanged(_ sender: NSButton) {

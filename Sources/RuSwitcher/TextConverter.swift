@@ -262,27 +262,23 @@ final class TextConverter {
             )
             return
         }
-        manualQueue.async { [weak self] in
-            guard let self else { return }
-            let verification = self.setAndVerifyFocusedSuffix(
-                expected: expected,
-                replacement: replacement,
-                focus: focus,
-                expectedCaretLocation: expectedCaretLocation,
-                pollForDelayedCommit: true
-            )
-            Task { @MainActor [weak self] in
-                self?.finishFocusedSuffixReplacement(
-                    verification,
-                    expected: expected,
-                    replacement: replacement,
-                    focus: focus,
-                    expectedCaretLocation: expectedCaretLocation,
-                    isCurrent: isCurrent,
-                    completion: completion
-                )
-            }
-        }
+        // External hosts: convert the current/previous word by keyboard
+        // (Backspace + Unicode), not by an AX `kAXSelectedText` write. Setting
+        // that attribute over a *programmatically* created selection inserts
+        // instead of replacing in Chromium/Electron (Claude desktop, VS Code)
+        // and terminals, leaving the original word and duplicating text. The
+        // keystroke path is the same mechanism the automatic converter already
+        // uses successfully in those hosts, and it is gated by an AX suffix
+        // probe plus the isCurrent()/frontmost recheck before deleting. A real,
+        // user-made selection still takes the AX path in `readSelection`.
+        replaceFocusedSuffixViaKeyboardDeletion(
+            expected: expected,
+            replacement: replacement,
+            focus: focus,
+            expectedCaretLocation: expectedCaretLocation,
+            isCurrent: isCurrent,
+            completion: completion
+        )
     }
 
     private func finishFocusedSuffixReplacement(
@@ -1161,8 +1157,13 @@ final class TextConverter {
         var events: [CGEvent] = []
         events.reserveCapacity(plan.backspaceCount * 2 + 2)
         for _ in 0..<plan.backspaceCount {
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: KC.backspace, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: source, virtualKey: KC.backspace, keyDown: false) else {
+            // A genuinely separate source per Backspace pair, not just the
+            // suppression filter: GPU terminals (Ghostty) coalesce identical
+            // key events from one source posted back-to-back, eating the first
+            // deletion and leaving the word's first character behind.
+            guard let pairSource = makeSource(),
+                  let down = CGEvent(keyboardEventSource: pairSource, virtualKey: KC.backspace, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: pairSource, virtualKey: KC.backspace, keyDown: false) else {
                 return nil
             }
             events.append(down)

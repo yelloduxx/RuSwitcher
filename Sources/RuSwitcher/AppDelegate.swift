@@ -629,10 +629,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.keyboardMonitor.finishUnverifiedPostedConversion(
                     expectedSequence: stagedSequence
                 )
+                // Same reasoning as the buffered path: unverified here means AX
+                // could not read back, not that the post failed or was wrong.
                 self.finishManualReconversion(
                     reconversion,
                     transaction: transaction,
-                    allowLearning: false
+                    allowLearning: true
                 )
             case .failed:
                 self.textConverter.cancelPendingReconversion()
@@ -708,10 +710,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.keyboardMonitor.finishUnverifiedPostedConversion(
                     expectedSequence: stagedSequence
                 )
+                // Same reasoning as the buffered path: unverified here means AX
+                // could not read back, not that the post failed or was wrong.
                 self.finishManualConversion(
                     frontID: frontID,
                     targetLayoutID: conversion.targetLayoutID,
-                    allowLearning: false
+                    allowLearning: true
                 )
             case .failed:
                 self.textConverter.cancelPendingReconversion()
@@ -959,7 +963,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 transaction: transaction,
                 deliveredKeyCount: snapshot.deliveredKeyCount,
                 currentFocus: snapshot.focus,
-                currentRevision: snapshot.editRevision
+                currentRevision: snapshot.editRevision,
+                allowUnavailablePost: SettingsManager.shared.axlessConversion
             )
         ) { [weak self] outcome in
             self?.finishAutomaticReplacement(

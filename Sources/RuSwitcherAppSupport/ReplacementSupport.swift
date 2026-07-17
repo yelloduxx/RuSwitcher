@@ -42,17 +42,26 @@ public struct ReplacementRequest: Equatable, Sendable {
     public let deliveredKeyCount: Int
     public let currentFocus: FocusedElementIdentity
     public let currentRevision: UInt64
+    /// Opt-in: permit posting the keystroke transaction when the Accessibility
+    /// preflight is `.unavailable` (no readable caret/suffix — terminals such as
+    /// Ghostty, Chromium/Electron hosts). Safety then rests on the focus/revision
+    /// freshness match above, not on AX confirmation. A `.mismatch` (AX read
+    /// succeeded and disagreed) still blocks unconditionally. Default `false`
+    /// preserves the AX-required behavior for every existing caller.
+    public let allowUnavailablePost: Bool
 
     public init(
         transaction: ConversionTransaction,
         deliveredKeyCount: Int,
         currentFocus: FocusedElementIdentity,
-        currentRevision: UInt64
+        currentRevision: UInt64,
+        allowUnavailablePost: Bool = false
     ) {
         self.transaction = transaction
         self.deliveredKeyCount = deliveredKeyCount
         self.currentFocus = currentFocus
         self.currentRevision = currentRevision
+        self.allowUnavailablePost = allowUnavailablePost
     }
 }
 
@@ -137,9 +146,13 @@ public final class NativeReplacementCoordinator: ReplacementCoordinating {
         guard preflight != .mismatch else {
             return .blocked(.expectedSuffixMismatch)
         }
-        // Unavailable AX is always a hard block. Never post a destructive
-        // replacement without a successful preflight match.
-        guard preflight != .unavailable else {
+        // Unavailable AX normally hard-blocks: never post a destructive
+        // replacement without a successful preflight match. Hosts that cannot
+        // expose AX at all (terminals, some Electron apps) can opt in per
+        // request; the focus + revision match above is then the freshness gate.
+        // A `.mismatch` never reaches here — AX that reads and disagrees stays
+        // blocked regardless of the opt-in.
+        guard preflight != .unavailable || request.allowUnavailablePost else {
             return .blocked(.contextUnavailable)
         }
 

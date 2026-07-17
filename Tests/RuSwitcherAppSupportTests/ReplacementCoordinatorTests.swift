@@ -50,7 +50,7 @@ final class ReplacementCoordinatorTests: XCTestCase {
         XCTAssertTrue(poster.plans.isEmpty)
     }
 
-    func testUnavailablePreflightAlwaysBlocks() {
+    func testUnavailablePreflightBlocksWithoutOptIn() {
         let reader = Reader(preflight: .unavailable)
         let poster = Poster(result: true)
         let coordinator = NativeReplacementCoordinator(reader: reader, poster: poster)
@@ -58,6 +58,50 @@ final class ReplacementCoordinatorTests: XCTestCase {
         XCTAssertEqual(
             coordinator.submit(request()) { _ in XCTFail("must not verify") },
             .blocked(.contextUnavailable)
+        )
+        XCTAssertTrue(poster.plans.isEmpty)
+    }
+
+    func testUnavailablePreflightPostsWhenOptedIn() {
+        let reader = Reader(preflight: .unavailable)
+        let poster = Poster(result: true)
+        let coordinator = NativeReplacementCoordinator(reader: reader, poster: poster)
+        var completion: ReplacementOutcome?
+
+        let outcome = coordinator.submit(
+            request(allowUnavailablePost: true)
+        ) { completion = $0 }
+
+        XCTAssertEqual(outcome, .postedUnverified)
+        XCTAssertEqual(poster.plans.count, 1)
+        // Unavailable read-back keeps the edit unverified; it never "upgrades".
+        reader.complete(.unavailable)
+        XCTAssertEqual(completion, .postedUnverified)
+    }
+
+    func testMismatchStillBlocksEvenWhenOptedIn() {
+        let reader = Reader(preflight: .mismatch)
+        let poster = Poster(result: true)
+        let coordinator = NativeReplacementCoordinator(reader: reader, poster: poster)
+
+        XCTAssertEqual(
+            coordinator.submit(request(allowUnavailablePost: true)) { _ in XCTFail("must not verify") },
+            .blocked(.expectedSuffixMismatch)
+        )
+        XCTAssertTrue(poster.plans.isEmpty)
+    }
+
+    func testOptInStillHonorsFocusAndRevisionGates() {
+        let reader = Reader(preflight: .unavailable)
+        let poster = Poster(result: true)
+        let coordinator = NativeReplacementCoordinator(reader: reader, poster: poster)
+
+        // Revision drifted since the token was typed: freshness gate must win
+        // even with the opt-in, because that gate is the only safety left.
+        let stale = request(allowUnavailablePost: true, currentRevision: 4)
+        XCTAssertEqual(
+            coordinator.submit(stale) { _ in XCTFail("must not verify") },
+            .blocked(.staleRevision)
         )
         XCTAssertTrue(poster.plans.isEmpty)
     }
@@ -73,7 +117,10 @@ final class ReplacementCoordinatorTests: XCTestCase {
         XCTAssertEqual(poster.plans.count, 1)
     }
 
-    private func request() -> ReplacementRequest {
+    private func request(
+        allowUnavailablePost: Bool = false,
+        currentRevision: UInt64 = 3
+    ) -> ReplacementRequest {
         let focus = FocusedElementIdentity(processID: 42, bundleID: "test.host", identifier: "field")
         return ReplacementRequest(
             transaction: ConversionTransaction(
@@ -90,7 +137,8 @@ final class ReplacementCoordinatorTests: XCTestCase {
             ),
             deliveredKeyCount: 6,
             currentFocus: focus,
-            currentRevision: 3
+            currentRevision: currentRevision,
+            allowUnavailablePost: allowUnavailablePost
         )
     }
 }
