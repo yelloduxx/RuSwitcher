@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>RuSwitcherClaude</string>
+    <string>RuSwitcherPro</string>
     <key>CFBundleIdentifier</key>
-    <string>com.ruswitcher.claude</string>
+    <string>com.ruswitcher.pro</string>
     <key>CFBundleName</key>
-    <string>RuSwitcher Claude</string>
+    <string>RuSwitcher Pro</string>
     <key>CFBundleDisplayName</key>
-    <string>RuSwitcher Claude</string>
+    <string>RuSwitcher Pro</string>
     <key>CFBundleVersion</key>
     <string>11</string>
     <key>CFBundleShortVersionString</key>

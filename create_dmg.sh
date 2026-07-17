@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-APP_NAME="RuSwitcherClaude"
+APP_NAME="RuSwitcherPro"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Единый источник версии — version.json в корне репозитория.
 VERSION=$(/usr/bin/python3 -c "import json;print(json.load(open('version.json'))['version'])")

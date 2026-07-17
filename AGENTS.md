@@ -15,48 +15,22 @@ installed build changes.
 - Primary repository: `yelloduxx/RuSwitcher`; the production branch is `main`.
   `rashn/RuSwitcher` is the author's upstream repository, not a release source
   for this fork.
-- Codex Lab on `main` is `4.0.0` build `105` (`RuSwitcher Lab.app`,
-  `com.ruswitcher.lab`, SHA-256
-  `503e07d18caeb3bbaf722c52e6b7a85e0bd9bf086e42cdb5759d802d7ea6ac33`).
-  Do not overwrite Lab from this worktree.
-- This Grok branch (`grok/ruswitcher-ax`) adopts Lab **105 conversion logic**
-  and ships competitive **RuSwitcher AX** build **107**:
-  - Bundle: `RuSwitcherAX.app` → `/Applications/RuSwitcherAX.app`
-  - Bundle ID: `com.ruswitcher.ax` · Executable: `RuSwitcherAX` · Dev tag: `ax`
-  - Logs: `~/Library/Logs/RuSwitcherAX/ruswitcher-ax.log` via
+- Production product on `main` is **RuSwitcher Pro** `4.0.0` build **119**:
+  - Bundle: `RuSwitcherPro.app` → `/Applications/RuSwitcherPro.app`
+  - Bundle ID: `com.ruswitcher.pro` · Executable: `RuSwitcherPro` · Dev tag: `pro`
+  - Logs: `~/Library/Logs/RuSwitcherPro/ruswitcher-pro.log` via
     `ProductIdentity.logFilePath` (Settings and rslog must match)
-  - Beyond Lab: fixed Settings log path, ProductIdentity branding, caret-word
-    busy retry gated on focus/sequence/revision, live sibling health check,
-    no `allowUnavailablePreflight` (unavailable AX always blocks auto post),
-    AX-default test scripts
-- The author's original app remains `/Applications/RuSwitcher.app` (`2.7.0`
-  build `35`). Never overwrite Lab or author from this branch.
+  - Lineage: Lab 105 conversion core + AX 106–108 safety + runtime
+    `ManualHostPolicy` capability detection + keyboard-deletion manual path for
+    external hosts (build 118+) rebranded from the Claude comparison line.
+  - Signed with the reusable `RuSwitcher Local Code Signing` identity (or
+    Developer ID when available).
+  - Installed executable SHA-256:
+    `71f848dd3e49ccf3c4ffcb5348d2d6fd92e5b6b8aee723baf63a51ce7a0f1933`.
 - Verify the installed binary hash and PID after every local replacement; do
   not infer the running build from `version.json` alone.
-- `claude/generic-ax-fallback` is a separate worktree
-  (`/Users/bezh/Documents/ruswitch-claude`) branched from build **108**
-  (`a4f72f4`), before `grok/ruswitcher-ax` continued past it into
-  Ghostty-specific System Events/Automation/Ctrl+W special-casing (commits
-  109-115). It replaces `ManualHostPolicy`'s hardcoded bundle-ID allowlist
-  (`com.mitchellh.ghostty`, `com.openai.codex`) with runtime capability
-  detection: any host whose `kAXSelectedTextAttribute` write is confirmed to
-  insert-instead-of-replace is learned (process-lifetime only) after
-  `recoverInsertedReplacement` proves it; any host where AX cannot be read at
-  all (`.unavailable` — most terminal emulators, unregistered in any list)
-  falls through to Backspace+Unicode on every attempt, gated by a fresh
-  `isCurrent()`/frontmost recheck immediately before posting instead of by
-  bundle identity. No app-specific code is required for a new broken host.
-  Ships as its own parallel-comparison product, **RuSwitcher Claude**:
-  - Bundle: `RuSwitcherClaude.app` → `/Applications/RuSwitcherClaude.app`
-  - Bundle ID: `com.ruswitcher.claude` · Executable: `RuSwitcherClaude` ·
-    Dev tag: `claude` (shown as `4.0.0claude (108)` in menu/settings)
-  - Logs: `~/Library/Logs/RuSwitcherClaude/ruswitcher-claude.log`
-  - Signed with the reusable `RuSwitcher Local Code Signing` identity.
-  - Installed executable SHA-256:
-    `e514190342840ee8f4faa766de74c41b566e8499376628a44338ed398fa93c06`.
-  - Runs alongside Lab/AX/author/Codex without colliding (separate
-    Accessibility/Input Monitoring grant, separate defaults domain, separate
-    login item); never overwrites any of them.
+- Changing `ProductIdentity.bundleIdentifier` requires re-granting Accessibility
+  and Input Monitoring; defaults live in the app's standard domain for that ID.
 
 ## User Requirements
 
