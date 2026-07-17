@@ -11,5 +11,5 @@ MANIFEST="$ROOT/.build/hid-random-phrases-${COUNT}-seed-${SEED}.txt"
 python3 "$ROOT/scripts/generate_hid_phrase_fixture.py" \
     "$CORPUS" "$FIXTURE" --count "$COUNT" --seed "$SEED" --manifest "$MANIFEST"
 
-RUSWITCH_APP="${RUSWITCH_APP:-/Applications/RuSwitcher.app}" \
+RUSWITCH_APP="${RUSWITCH_APP:-/Applications/RuSwitcherAX.app}" \
     bash "$ROOT/scripts/run_hid_batch_tests.sh" "$FIXTURE"

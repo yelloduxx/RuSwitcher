@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-APP="${RUSWITCH_APP:-/Applications/RuSwitcher.app}"
+APP="${RUSWITCH_APP:-/Applications/RuSwitcherAX.app}"
 APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
 BIN="$APP/Contents/MacOS/$APP_EXECUTABLE"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

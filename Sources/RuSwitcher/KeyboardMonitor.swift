@@ -28,8 +28,8 @@ func rslog(_ msg: StaticString) {
 
     let line = "\(Date()): \(String(describing: msg))\n"
     rsLogQueue.async {
-        let logDir = NSHomeDirectory() + "/Library/Logs/\(ProductIdentity.logDirectoryName)"
-        let path = logDir + "/ruswitcher-ax.log"
+        let path = ProductIdentity.logFilePath
+        let logDir = (path as NSString).deletingLastPathComponent
 
         // Создаём директорию если нет
         if !FileManager.default.fileExists(atPath: logDir) {

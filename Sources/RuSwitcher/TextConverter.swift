@@ -88,12 +88,16 @@ final class TextConverter {
         let identifier: String
         let range: CFRange
         let text: String
+        /// Only used to teach `ManualHostPolicy` when a replacement turns out
+        /// to insert instead of replace; not part of AX identity/matching.
+        let bundleID: String?
 
-        init(processID: pid_t, identifier: String, range: CFRange, text: String) {
+        init(processID: pid_t, identifier: String, range: CFRange, text: String, bundleID: String? = nil) {
             self.processID = processID
             self.identifier = identifier
             self.range = range
             self.text = text
+            self.bundleID = bundleID
         }
     }
 
@@ -160,15 +164,17 @@ final class TextConverter {
             return
         }
         isConverting = true
-        guard let processID = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+        guard let frontmost = NSWorkspace.shared.frontmostApplication else {
             isConverting = false
             completion(.none)
             return
         }
+        let processID = frontmost.processIdentifier
+        let bundleID = frontmost.bundleIdentifier
         let completion = ManualCompletionBox(completion)
         manualQueue.async { [weak self] in
             guard let self else { return }
-            let result = self.readSelection(processID: processID)
+            let result = self.readSelection(processID: processID, bundleID: bundleID)
             Task { @MainActor [weak self] in
                 self?.handleSelectionRead(
                     result,
@@ -182,6 +188,10 @@ final class TextConverter {
     /// Replaces the exact text immediately before the caret through AX. Unlike
     /// Backspace + Unicode event posting, this cannot leave a half-deleted word
     /// when an application drops the insertion event.
+    ///
+    /// Hosts with unreliable AX selection (Ghostty, Codex, terminals) use
+    /// targeted Backspace+Unicode instead: setting `kAXSelectedText` without a
+    /// real selection inserts and duplicates (`converted` + original).
     func replaceFocusedSuffix(
         expected: String,
         replacement: String,
@@ -196,9 +206,34 @@ final class TextConverter {
         }
         isConverting = true
         let completion = SuffixCompletionBox(completion)
+        if ManualHostPolicy.shared.prefersKeyboardDeletion(bundleID: focus.bundleID)
+            || CommandLine.arguments.contains("--force-keyboard-deletion-fallback")
+        {
+            replaceFocusedSuffixViaKeyboardDeletion(
+                expected: expected,
+                replacement: replacement,
+                focus: focus,
+                expectedCaretLocation: expectedCaretLocation,
+                isCurrent: isCurrent,
+                completion: completion
+            )
+            return
+        }
         if CommandLine.arguments.contains("--force-synthetic-input-fallback") {
             finishFocusedSuffixReplacement(
                 .unchanged,
+                expected: expected,
+                replacement: replacement,
+                focus: focus,
+                expectedCaretLocation: expectedCaretLocation,
+                isCurrent: isCurrent,
+                completion: completion
+            )
+            return
+        }
+        if CommandLine.arguments.contains("--force-ax-unavailable-fallback") {
+            finishFocusedSuffixReplacement(
+                .unavailable,
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
@@ -227,27 +262,23 @@ final class TextConverter {
             )
             return
         }
-        manualQueue.async { [weak self] in
-            guard let self else { return }
-            let verification = self.setAndVerifyFocusedSuffix(
-                expected: expected,
-                replacement: replacement,
-                focus: focus,
-                expectedCaretLocation: expectedCaretLocation,
-                pollForDelayedCommit: true
-            )
-            Task { @MainActor [weak self] in
-                self?.finishFocusedSuffixReplacement(
-                    verification,
-                    expected: expected,
-                    replacement: replacement,
-                    focus: focus,
-                    expectedCaretLocation: expectedCaretLocation,
-                    isCurrent: isCurrent,
-                    completion: completion
-                )
-            }
-        }
+        // External hosts: convert the current/previous word by keyboard
+        // (Backspace + Unicode), not by an AX `kAXSelectedText` write. Setting
+        // that attribute over a *programmatically* created selection inserts
+        // instead of replacing in Chromium/Electron (Claude desktop, VS Code)
+        // and terminals, leaving the original word and duplicating text. The
+        // keystroke path is the same mechanism the automatic converter already
+        // uses successfully in those hosts, and it is gated by an AX suffix
+        // probe plus the isCurrent()/frontmost recheck before deleting. A real,
+        // user-made selection still takes the AX path in `readSelection`.
+        replaceFocusedSuffixViaKeyboardDeletion(
+            expected: expected,
+            replacement: replacement,
+            focus: focus,
+            expectedCaretLocation: expectedCaretLocation,
+            isCurrent: isCurrent,
+            completion: completion
+        )
     }
 
     private func finishFocusedSuffixReplacement(
@@ -263,7 +294,34 @@ final class TextConverter {
         case .match:
             completion.callback(.verified)
         case .unchanged:
-            replaceFocusedSuffixViaSyntheticInput(
+            if ManualHostPolicy.shared.prefersKeyboardDeletion(bundleID: focus.bundleID) {
+                replaceFocusedSuffixViaKeyboardDeletion(
+                    expected: expected,
+                    replacement: replacement,
+                    focus: focus,
+                    expectedCaretLocation: expectedCaretLocation,
+                    isCurrent: isCurrent,
+                    completion: completion
+                )
+            } else {
+                replaceFocusedSuffixViaSyntheticInput(
+                    expected: expected,
+                    replacement: replacement,
+                    focus: focus,
+                    expectedCaretLocation: expectedCaretLocation,
+                    isCurrent: isCurrent,
+                    completion: completion
+                )
+            }
+        case .unavailable:
+            // AX could not confirm the caret content at all — the common case
+            // for terminal emulators that expose little or no Accessibility
+            // text API. Do not give up: fall through to Backspace+Unicode for
+            // ANY host here, not only ones pre-listed by bundle ID. Safety
+            // comes from the isCurrent()/frontmost recheck immediately before
+            // posting inside replaceFocusedSuffixViaKeyboardDeletion, not from
+            // AX confirmation (which is exactly what is unavailable).
+            replaceFocusedSuffixViaKeyboardDeletion(
                 expected: expected,
                 replacement: replacement,
                 focus: focus,
@@ -271,9 +329,106 @@ final class TextConverter {
                 isCurrent: isCurrent,
                 completion: completion
             )
-        case .mismatch, .unavailable:
+        case .mismatch:
+            // AX read successfully and confirmed the caret is NOT where
+            // expected — a real, positive signal that state drifted. Keep
+            // the text unchanged rather than guessing.
             isConverting = false
             completion.callback(.failed)
+        }
+    }
+
+    /// Backspace + Unicode for hosts that cannot select-and-replace safely.
+    /// Only posts after the expected suffix is still under the caret when AX
+    /// can read it; pure TTY (AX unavailable) still posts using grapheme count.
+    private func replaceFocusedSuffixViaKeyboardDeletion(
+        expected: String,
+        replacement: String,
+        focus: FocusedElementIdentity,
+        expectedCaretLocation: Int?,
+        isCurrent: @escaping @MainActor @Sendable () -> Bool,
+        completion: SuffixCompletionBox
+    ) {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID,
+              isCurrent() else {
+            isConverting = false
+            completion.callback(.failed)
+            return
+        }
+        let probe = focusedSuffixProbe(
+            expected,
+            focus: focus,
+            expectedCaretLocation: expectedCaretLocation,
+            timeoutMilliseconds: 50
+        )
+        switch probe {
+        case .mismatch:
+            isConverting = false
+            completion.callback(.failed)
+            return
+        case .match, .unchanged, .unavailable:
+            break
+        }
+        // Re-check freshness right before the destructive Backspace burst.
+        // The probe above is itself an AX round-trip (up to 50 ms); when it
+        // returns .unavailable there is no content confirmation at all, so
+        // this recheck — not AX — is the only thing standing between "safe"
+        // and "delete whatever is actually under the caret now".
+        guard isCurrent(),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID else {
+            isConverting = false
+            completion.callback(.failed)
+            return
+        }
+
+        // Prefer grapheme count for Backspace keys; utf16 length can over-delete
+        // on some composed sequences, but EN/RU layout tokens are BMP.
+        let backspaceCount = max(expected.count, expected.utf16.count)
+        guard backspaceCount > 0,
+              let source = makeSource() else {
+            isConverting = false
+            completion.callback(.failed)
+            return
+        }
+        source.setLocalEventsFilterDuringSuppressionState(
+            [.permitLocalMouseEvents, .permitLocalKeyboardEvents, .permitSystemDefinedEvents],
+            state: .eventSuppressionStateSuppressionInterval
+        )
+        for _ in 0..<backspaceCount {
+            guard let down = CGEvent(keyboardEventSource: source, virtualKey: KC.backspace, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: source, virtualKey: KC.backspace, keyDown: false)
+            else {
+                isConverting = false
+                completion.callback(.failed)
+                return
+            }
+            down.postToPid(pid_t(focus.processID))
+            up.postToPid(pid_t(focus.processID))
+        }
+        guard postUnicodeText(replacement, to: focus.processID) else {
+            isConverting = false
+            completion.callback(.failed)
+            return
+        }
+        rslog("manual_keyboard_deletion_posted")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self else { return }
+            guard isCurrent(),
+                  NSWorkspace.shared.frontmostApplication?.processIdentifier == focus.processID else {
+                self.isConverting = false
+                completion.callback(.failed)
+                return
+            }
+            if self.focusedSuffixMatches(
+                replacement,
+                focus: focus,
+                timeoutMilliseconds: 40
+            ) {
+                completion.callback(.verified)
+            } else {
+                // Terminals often cannot read back; treat as posted, never learn.
+                completion.callback(.postedUnverified)
+            }
         }
     }
 
@@ -332,7 +487,9 @@ final class TextConverter {
             completion.callback(.failed)
             return
         }
-        if selectedTextMatches(expected, focus: focus, timeoutMilliseconds: 12) {
+        // Require a real non-empty selection range, not only SelectedText string.
+        // Some Electron hosts echo the caret word as "selected" without selecting.
+        if selectedRangeAndTextMatch(expected, focus: focus, timeoutMilliseconds: 12) {
             guard postUnicodeText(replacement, to: focus.processID) else {
                 isConverting = false
                 completion.callback(.failed)
@@ -477,12 +634,23 @@ final class TextConverter {
         )
         guard setResult == .success else { return .unchanged }
         if !pollForDelayedCommit {
-            return verifyReplacement(
+            let quick = verifyReplacement(
                 replacement,
                 original: snapshot.text,
                 originalRange: snapshot.range,
                 lease: lease
             )
+            if quick == .match { return .match }
+            if recoverInsertedReplacement(
+                original: snapshot.text,
+                replacement: replacement,
+                originalRange: snapshot.range,
+                bundleID: snapshot.bundleID,
+                lease: lease
+            ) {
+                return .match
+            }
+            return quick
         }
 
         let deadline = Date().addingTimeInterval(0.25)
@@ -494,10 +662,70 @@ final class TextConverter {
                 originalRange: snapshot.range,
                 lease: lease
             )
-            if verification == .match || verification == .mismatch { break }
+            if verification == .match { return .match }
+            if verification == .mismatch {
+                // Host inserted instead of replacing → converted+original at caret.
+                if recoverInsertedReplacement(
+                    original: snapshot.text,
+                    replacement: replacement,
+                    originalRange: snapshot.range,
+                    bundleID: snapshot.bundleID,
+                    lease: lease
+                ) {
+                    return .match
+                }
+                break
+            }
             if Date() < deadline { usleep(5_000) }
         } while Date() < deadline
         return verification
+    }
+
+    /// When `kAXSelectedText` inserts at the selection start instead of replacing,
+    /// the buffer becomes `replacement + original`. Collapse it back to `replacement`.
+    nonisolated private func recoverInsertedReplacement(
+        original: String,
+        replacement: String,
+        originalRange: CFRange,
+        bundleID: String?,
+        lease: NativeAXElementLease
+    ) -> Bool {
+        let combined = (replacement + original).precomposedStringWithCanonicalMapping
+        let combinedLength = combined.utf16.count
+        guard combinedLength > original.utf16.count else { return false }
+        var probe = CFRange(location: originalRange.location, length: combinedLength)
+        guard let probeValue = AXValueCreate(.cfRange, &probe) else { return false }
+        let read = lease.copyParameterizedAttribute(
+            kAXStringForRangeParameterizedAttribute as CFString,
+            parameter: probeValue
+        )
+        guard read.0 == .success,
+              let actual = read.1 as? String,
+              actual.precomposedStringWithCanonicalMapping == combined else { return false }
+        // Confirmed (not merely suspected): this host's kAXSelectedTextAttribute
+        // write inserted instead of replacing. Remember it so the next manual
+        // conversion for this app skips straight to Backspace+Unicode instead
+        // of duplicating text again first.
+        ManualHostPolicy.shared.learnPrefersKeyboardDeletion(bundleID: bundleID)
+        guard lease.setAttribute(
+            kAXSelectedTextRangeAttribute as CFString,
+            value: probeValue
+        ) == .success else { return false }
+        guard lease.setAttribute(
+            kAXSelectedTextAttribute as CFString,
+            value: replacement as CFString
+        ) == .success else { return false }
+        let verified = verifyReplacement(
+            replacement,
+            original: original,
+            originalRange: originalRange,
+            lease: lease
+        )
+        if verified == .match {
+            rslog("manual_ax_insert_recovered")
+            return true
+        }
+        return false
     }
 
     private func finishSelectedTextReplacement(
@@ -527,7 +755,7 @@ final class TextConverter {
         }
     }
 
-    nonisolated private func readSelection(processID: pid_t) -> SelectionReadResult {
+    nonisolated private func readSelection(processID: pid_t, bundleID: String?) -> SelectionReadResult {
         switch focusedElementResolver.withElement(
             processID: processID,
             timeoutMilliseconds: 250,
@@ -555,7 +783,8 @@ final class TextConverter {
                     processID: processID,
                     identifier: lease.identifier,
                     range: range,
-                    text: text
+                    text: text,
+                    bundleID: bundleID
                 ))
             }
         ) {
@@ -617,7 +846,8 @@ final class TextConverter {
                     processID: focus.processID,
                     identifier: lease.identifier,
                     range: suffixRange,
-                    text: expected
+                    text: expected,
+                    bundleID: focus.bundleID
                 )
                 // Never call kAXSelectedText unless the selection is confirmed.
                 // Setting it with an empty/wrong selection inserts and duplicates.
@@ -782,12 +1012,31 @@ final class TextConverter {
         focus: FocusedElementIdentity,
         timeoutMilliseconds: Int
     ) -> Bool {
+        selectedRangeAndTextMatch(expected, focus: focus, timeoutMilliseconds: timeoutMilliseconds)
+    }
+
+    /// True only when AX reports a selection whose length and text both match.
+    nonisolated private func selectedRangeAndTextMatch(
+        _ expected: String,
+        focus: FocusedElementIdentity,
+        timeoutMilliseconds: Int
+    ) -> Bool {
+        let expectedLength = expected.utf16.count
+        guard expectedLength > 0 else { return false }
         switch focusedElementResolver.withElement(
             processID: focus.processID,
             expectedIdentifier: focus.identifier,
             timeoutMilliseconds: timeoutMilliseconds,
             allowTreeSearch: true,
             operation: { lease in
+                let rangeRead = lease.copyAttribute(kAXSelectedTextRangeAttribute as CFString)
+                guard rangeRead.0 == .success, let rangeRaw = rangeRead.1,
+                      CFGetTypeID(rangeRaw) == AXValueGetTypeID() else { return false }
+                let rangeValue = unsafeDowncast(rangeRaw, to: AXValue.self)
+                var range = CFRange()
+                guard AXValueGetType(rangeValue) == .cfRange,
+                      AXValueGetValue(rangeValue, .cfRange, &range),
+                      range.length == expectedLength else { return false }
                 let textRead = lease.copyAttribute(kAXSelectedTextAttribute as CFString)
                 guard textRead.0 == .success, let text = textRead.1 as? String else { return false }
                 return text.precomposedStringWithCanonicalMapping
@@ -908,8 +1157,13 @@ final class TextConverter {
         var events: [CGEvent] = []
         events.reserveCapacity(plan.backspaceCount * 2 + 2)
         for _ in 0..<plan.backspaceCount {
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: KC.backspace, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: source, virtualKey: KC.backspace, keyDown: false) else {
+            // A genuinely separate source per Backspace pair, not just the
+            // suppression filter: GPU terminals (Ghostty) coalesce identical
+            // key events from one source posted back-to-back, eating the first
+            // deletion and leaving the word's first character behind.
+            guard let pairSource = makeSource(),
+                  let down = CGEvent(keyboardEventSource: pairSource, virtualKey: KC.backspace, keyDown: true),
+                  let up = CGEvent(keyboardEventSource: pairSource, virtualKey: KC.backspace, keyDown: false) else {
                 return nil
             }
             events.append(down)

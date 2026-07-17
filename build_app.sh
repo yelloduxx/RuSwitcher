@@ -2,11 +2,12 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Claude comparison line: AX build 108 base, distinct install next to Lab/AX/Codex.
 SPM_PRODUCT_NAME="RuSwitcher"
-APP_NAME="RuSwitcher Lab"
-APP_EXECUTABLE="RuSwitcherLab"
-APP_DISPLAY_NAME="RuSwitcher Lab"
-BUNDLE_ID="com.ruswitcher.lab"
+APP_NAME="RuSwitcherClaude"
+APP_EXECUTABLE="RuSwitcherClaude"
+APP_DISPLAY_NAME="RuSwitcher Claude"
+BUNDLE_ID="com.ruswitcher.claude"
 APP_BUNDLE="$PROJECT_DIR/$APP_NAME.app"
 # Universal-сборка кладёт продукт сюда (а не в .build/release)
 BUILD_DIR="$PROJECT_DIR/.build/apple/Products/Release"

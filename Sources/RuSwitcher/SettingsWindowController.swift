@@ -220,6 +220,18 @@ final class SettingsWindowController {
         view.addSubview(acHint)
         y -= 38
 
+        // Конвертация без Accessibility (терминалы/Electron): подпункт авто-конвертации.
+        let axless = NSButton(checkboxWithTitle: L10n.settingsAxlessConversion, target: self, action: #selector(axlessConversionChanged))
+        axless.frame = NSRect(x: 40, y: y - 22, width: 400, height: 22)
+        axless.state = SettingsManager.shared.axlessConversion ? .on : .off
+        view.addSubview(axless)
+        y -= 24
+        let axlessHint = NSTextField(wrappingLabelWithString: L10n.settingsAxlessConversionHint)
+        axlessHint.frame = NSRect(x: 60, y: y - 44, width: 380, height: 44)
+        axlessHint.font = .systemFont(ofSize: 11); axlessHint.textColor = .secondaryLabelColor
+        view.addSubview(axlessHint)
+        y -= 52
+
         // Флаг у курсора (issue #10)
         let caretFlag = NSButton(checkboxWithTitle: L10n.settingsCaretFlag, target: self, action: #selector(caretFlagChanged))
         caretFlag.frame = NSRect(x: 20, y: y - 22, width: 420, height: 22)
@@ -294,15 +306,17 @@ final class SettingsWindowController {
         var y: CGFloat = 310
 
         // Название и версия
-        let titleLabel = NSTextField(labelWithString: "RuSwitcher")
+        let titleLabel = NSTextField(labelWithString: ProductIdentity.displayName)
         titleLabel.font = .boldSystemFont(ofSize: 20)
         titleLabel.frame = NSRect(x: 20, y: y, width: 420, height: 28)
         view.addSubview(titleLabel)
         y -= 25
 
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         let devTag = Bundle.main.infoDictionary?["RSDevTag"] as? String ?? ""
-        let versionLabel = NSTextField(labelWithString: "v\(version)\(devTag) — \(L10n.settingsVersion)")
+        let tagSuffix = devTag.isEmpty ? "" : devTag
+        let versionLabel = NSTextField(labelWithString: "v\(version)\(tagSuffix) (\(build)) — \(L10n.settingsVersion)")
         versionLabel.frame = NSRect(x: 20, y: y, width: 420, height: 20)
         versionLabel.font = .systemFont(ofSize: 12)
         versionLabel.textColor = .secondaryLabelColor
@@ -369,8 +383,8 @@ final class SettingsWindowController {
         view.addSubview(sendLogBtn)
         y -= 50
 
-        // Путь к логу
-        let logPath = logFilePath()
+        // Путь к логу (тот же, куда пишет rslog)
+        let logPath = ProductIdentity.logFilePath
         let pathLabel = NSTextField(wrappingLabelWithString: logPath)
         pathLabel.frame = NSRect(x: 20, y: y - 20, width: 420, height: 40)
         pathLabel.font = .systemFont(ofSize: 10)
@@ -569,6 +583,10 @@ final class SettingsWindowController {
         onAutoConvertChanged?(enabled)
     }
 
+    @objc private func axlessConversionChanged(_ sender: NSButton) {
+        SettingsManager.shared.axlessConversion = sender.state == .on
+    }
+
     @objc private func remoteDesktopChanged(_ sender: NSButton) {
         let enabled = sender.state == .on
         SettingsManager.shared.remoteDesktopMode = enabled
@@ -599,7 +617,7 @@ final class SettingsWindowController {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = "RuSwitcher-Learned-Corrections-\(Self.exportDateString()).json"
+        panel.nameFieldStringValue = "\(ProductIdentity.shortName)-Learned-Corrections-\(Self.exportDateString()).json"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let data = try SettingsManager.shared.exportLearnedCorrections()
@@ -666,7 +684,7 @@ final class SettingsWindowController {
 
     @objc private func openContact() {
         let email = SettingsManager.shared.contactEmail
-        let subject = "RuSwitcher Feedback"
+        let subject = "\(ProductIdentity.displayName) Feedback"
         if let url = URL(string: "mailto:\(email)?subject=\(subject.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? subject)") {
             NSWorkspace.shared.open(url)
         }
@@ -677,19 +695,19 @@ final class SettingsWindowController {
     }
 
     @objc private func showLogFile() {
-        let path = logFilePath()
+        let path = ProductIdentity.logFilePath
         if FileManager.default.fileExists(atPath: path) {
             NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
         } else {
             let alert = NSAlert()
-            alert.messageText = "Log file not found"
-            alert.informativeText = "Enable debug logging first."
+            alert.messageText = L10n.logFileNotFound
+            alert.informativeText = L10n.logFileEnableDebugFirst
             alert.runModal()
         }
     }
 
     @objc private func sendLogFile() {
-        let path = logFilePath()
+        let path = ProductIdentity.logFilePath
         guard FileManager.default.fileExists(atPath: path) else {
             showLogFile() // покажет алерт
             return
@@ -698,17 +716,12 @@ final class SettingsWindowController {
         let url = URL(fileURLWithPath: path)
         if let service = NSSharingService(named: .composeEmail) {
             service.perform(withItems: [
-                "RuSwitcher debug log" as NSString,
+                "\(ProductIdentity.displayName) debug log" as NSString,
                 url
             ])
         } else {
             // Fallback: показать в Finder
             NSWorkspace.shared.selectFile(path, inFileViewerRootedAtPath: "")
         }
-    }
-
-    private func logFilePath() -> String {
-        let logDir = NSHomeDirectory() + "/Library/Logs/RuSwitcher"
-        return logDir + "/ruswitcher.log"
     }
 }

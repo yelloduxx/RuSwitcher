@@ -135,6 +135,16 @@ private struct HIDProbeScenario {
                 phases: [Phase(sourceLanguage: "en", typedText: "ckj;yj ")],
                 trailingTriggerCount: 2
             )
+        case "manual-ax-unavailable-toggle-cycle":
+            // Run with --force-ax-unavailable-fallback: proves the generic
+            // Backspace+Unicode fallthrough for AX-blind hosts (terminals)
+            // works without ANY bundle-ID allowlist entry for this probe app.
+            return HIDProbeScenario(
+                name: name,
+                phases: [Phase(sourceLanguage: "en", typedText: "here ")],
+                trailingTriggerCount: 4,
+                autoConvertEnabled: false
+            )
         case "manual-selection-toggle-cycle":
             return HIDProbeScenario(
                 name: name,

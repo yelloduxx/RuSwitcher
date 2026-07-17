@@ -19,6 +19,47 @@ enum Dict {
     }
 }
 
+/// Hosts where Accessibility selection/`kAXSelectedText` is unreliable are
+/// discovered at runtime, never by a hardcoded bundle-ID list. Two distinct
+/// AX failure modes route here, from `TextConverter.finishFocusedSuffixReplacement`:
+///
+/// - AX reads fine but writing `kAXSelectedTextAttribute` **inserts** instead
+///   of replacing (duplicate: converted + original). `recoverInsertedReplacement`
+///   detects and self-heals this in place; once confirmed for a bundle ID, it is
+///   remembered here so later conversions skip straight to Backspace+Unicode.
+/// - AX cannot be read at all (`.unavailable`) — common for terminal emulators
+///   that render their own glyph grid and expose little or no Accessibility
+///   text API. There is nothing to learn or cache here: every attempt falls
+///   through to Backspace+Unicode generically, and safety comes from the
+///   caller's `isCurrent()` revision-freshness check, not from recognizing
+///   the app in advance.
+///
+/// The learned set is process-lifetime only (not persisted): if a host's AX
+/// implementation improves in a later version, RuSwitcher re-discovers that
+/// after restart instead of being stuck with a stale preference.
+final class ManualHostPolicy: @unchecked Sendable {
+    static let shared = ManualHostPolicy()
+
+    private let lock = NSLock()
+    private var learnedKeyboardDeletionBundleIDs: Set<String> = []
+
+    func prefersKeyboardDeletion(bundleID: String?) -> Bool {
+        guard let id = bundleID, !id.isEmpty else { return false }
+        lock.lock(); defer { lock.unlock() }
+        return learnedKeyboardDeletionBundleIDs.contains(id)
+    }
+
+    /// Call only after confirming (not merely suspecting) that `bundleID`'s
+    /// `kAXSelectedTextAttribute` write inserted rather than replaced.
+    func learnPrefersKeyboardDeletion(bundleID: String?) {
+        guard let id = bundleID, !id.isEmpty else { return }
+        lock.lock()
+        let isNew = learnedKeyboardDeletionBundleIDs.insert(id).inserted
+        lock.unlock()
+        if isNew { rslog("manual_host_learned_keyboard_deletion") }
+    }
+}
+
 /// Политика безопасности авто-конвертации.
 enum AutoSwitchPolicy {
     /// Активен ли защищённый ввод (поле пароля, Secure Keyboard Entry в терминале) —

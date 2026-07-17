@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURE="${1:-$ROOT/Tests/Fixtures/HID/headless-native-parity-trap.json}"
-APP="${RUSWITCH_APP:-/Applications/RuSwitcher.app}"
+APP="${RUSWITCH_APP:-/Applications/RuSwitcherAX.app}"
 APP_EXECUTABLE="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")"
 HEADLESS="$ROOT/.build/headless-native-parity-headless.json"
 NATIVE="$ROOT/.build/headless-native-parity-native.json"

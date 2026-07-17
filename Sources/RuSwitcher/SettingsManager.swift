@@ -43,6 +43,7 @@ final class SettingsManager: @unchecked Sendable {
         static let triggerRightOnly = "com.ruswitcher.triggerRightOnly"
         static let triggerDoubleTap = "com.ruswitcher.triggerDoubleTap"
         static let autoConvert = "com.ruswitcher.autoConvert"
+        static let axlessConversion = "com.ruswitcher.axlessConversion"
         static let remoteDesktopMode = "com.ruswitcher.remoteDesktopMode"
         static let showRemoteDesktopBeta = "com.ruswitcher.showRemoteDesktopBeta"
         static let autoConvertOffered = "com.ruswitcher.autoConvertOffered"
@@ -187,6 +188,17 @@ final class SettingsManager: @unchecked Sendable {
     var autoConvert: Bool {
         get { defaults.bool(forKey: Keys.autoConvert) }
         set { defaults.set(newValue, forKey: Keys.autoConvert) }
+    }
+
+    /// Разрешить конвертацию в приложениях без доступного Accessibility
+    /// (терминалы вроде Ghostty, Electron/Chromium-хосты). Без AX-подтверждения
+    /// замена постится клавишами (Backspace+Unicode), а безопасность держится
+    /// на свежести токена (совпадение фокуса/ревизии), а не на чтении текста.
+    /// По умолчанию ВЫКЛ: это менее безопасно (в голом shell может задеть
+    /// команду), включается пользователем осознанно.
+    var axlessConversion: Bool {
+        get { defaults.bool(forKey: Keys.axlessConversion) }
+        set { defaults.set(newValue, forKey: Keys.axlessConversion) }
     }
 
     /// issue #10: показывать флаг раскладки у текстовой каретки (бета). По умолчанию ВЫКЛ.

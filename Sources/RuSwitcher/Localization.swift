@@ -58,6 +58,8 @@ enum L10n {
     static var settingsCaretFlagHint: String { s("settings.caretFlag.hint") }
     static var settingsAutoConvert: String { s("settings.autoConvert") }
     static var settingsAutoConvertHint: String { s("settings.autoConvert.hint") }
+    static var settingsAxlessConversion: String { s("settings.axlessConversion") }
+    static var settingsAxlessConversionHint: String { s("settings.axlessConversion.hint") }
     static var settingsTabExceptions: String { s("settings.tab.exceptions") }
     static var settingsRemoteDesktopHint: String { s("settings.remoteDesktop.hint") }
     static var settingsExceptionsApps: String { s("settings.exceptions.apps") }
@@ -77,6 +79,9 @@ enum L10n {
     static var statusSecureInput: String { s("status.secureInput") }
     static var statusDeniedApp: String { s("status.deniedApp") }
     static var statusPermissions: String { s("status.permissions") }
+    static var statusSiblingInstance: String { s("status.siblingInstance") }
+    static var logFileNotFound: String { s("log.fileNotFound") }
+    static var logFileEnableDebugFirst: String { s("log.enableDebugFirst") }
     static var statusModelUnavailable: String { s("status.modelUnavailable") }
     static var statusUnsupportedPair: String { s("status.unsupportedPair") }
     static var commonAdd: String { s("common.add") }
@@ -197,8 +202,10 @@ enum L10n {
             "menu.remoteDesktop": "Remote Desktop mode (beta)",
             "settings.autoConvert": "Automatic conversion",
             "settings.autoConvert.hint": "Detects wrong-layout words, including common short words and trailing punctuation. Off by default.",
+            "settings.axlessConversion": "Also in apps without Accessibility (terminals, Electron)",
+            "settings.axlessConversion.hint": "Lets auto-conversion work in hosts that expose no Accessibility text, such as Ghostty and Chromium/Electron apps, by typing the fix with the keyboard. Less safe: without a text read-back it relies only on token freshness, so in a bare shell prompt it may touch a command. Off by default.",
             "onboard.autoConvert.title": "Automatic layout conversion",
-            "onboard.autoConvert.text": "RuSwitcher can fix the keyboard layout automatically as you type, including common short words and punctuation. It's off by default. The manual trigger (Option) always works and undoes a fix. Enable automatic conversion now?",
+            "onboard.autoConvert.text": "RuSwitcher can fix the keyboard layout automatically as you type, including common short words and punctuation. It's off by default. The manual trigger (double Shift by default) always works and undoes a fix. Enable automatic conversion now?",
             "settings.tab.exceptions": "Auto-conversion",
             "settings.remoteDesktop.hint": "For Apple Screen Sharing: run RuSwitcher on the remote Mac too and enable this on both.",
             "settings.exceptions.apps": "Don’t auto-convert in these apps",
@@ -220,6 +227,9 @@ enum L10n {
             "status.permissions": "Paused: permissions are missing",
             "status.modelUnavailable": "Paused: the language model is unavailable",
             "status.unsupportedPair": "Paused: automatic conversion supports EN/RU only",
+            "status.siblingInstance": "Warning: another RuSwitcher is running — use only one",
+            "log.fileNotFound": "Log file not found",
+            "log.enableDebugFirst": "Enable debug logging first.",
             "common.add": "Add",
             "common.cancel": "Cancel",
             "learn.question": "Always leave “%@” unchanged?",
@@ -301,8 +311,10 @@ enum L10n {
             "menu.remoteDesktop": "Режим удалённого стола (бета)",
             "settings.autoConvert": "Автоматическая конверсия",
             "settings.autoConvert.hint": "Исправляет слова в неправильной раскладке, включая частые короткие слова и пунктуацию в конце. По умолчанию выкл.",
+            "settings.axlessConversion": "Также в приложениях без Accessibility (терминалы, Electron)",
+            "settings.axlessConversion.hint": "Позволяет авто-конверсии работать там, где нет доступного AX-текста — Ghostty, приложения на Chromium/Electron — впечатывая исправление с клавиатуры. Менее безопасно: без чтения текста опора только на свежесть токена, поэтому в голой строке shell может задеть команду. По умолчанию выкл.",
             "onboard.autoConvert.title": "Автоматическая конверсия раскладки",
-            "onboard.autoConvert.text": "RuSwitcher может исправлять раскладку автоматически по ходу набора, включая частые короткие слова и пунктуацию. По умолчанию выключено. Ручной триггер (Option) всегда работает — им же отменяется замена. Включить автозамену сейчас?",
+            "onboard.autoConvert.text": "RuSwitcher может исправлять раскладку автоматически по ходу набора, включая частые короткие слова и пунктуацию. По умолчанию выключено. Ручной триггер (по умолчанию double Shift) всегда работает — им же отменяется замена. Включить автозамену сейчас?",
             "settings.tab.exceptions": "Автоконверсия",
             "settings.remoteDesktop.hint": "Для Apple Screen Sharing: запустите RuSwitcher и на удалённом Mac, включив этот режим на обоих.",
             "settings.exceptions.apps": "Не конвертировать в этих приложениях",
@@ -324,6 +336,9 @@ enum L10n {
             "status.permissions": "Приостановлено: не выданы разрешения",
             "status.modelUnavailable": "Приостановлено: языковая модель недоступна",
             "status.unsupportedPair": "Приостановлено: автоконверсия поддерживает только EN/RU",
+            "status.siblingInstance": "Внимание: запущен другой RuSwitcher — оставьте один",
+            "log.fileNotFound": "Файл лога не найден",
+            "log.enableDebugFirst": "Сначала включите режим отладки.",
             "common.add": "Добавить",
             "common.cancel": "Отмена",
             "learn.question": "Всегда оставлять «%@» без замены?",

@@ -15,21 +15,48 @@ installed build changes.
 - Primary repository: `yelloduxx/RuSwitcher`; the production branch is `main`.
   `rashn/RuSwitcher` is the author's upstream repository, not a release source
   for this fork.
-- The current fork release is `4.0.0` build `105`, built from
-  `codex/release-105` and installed with the Lab identity:
-  - Bundle: `RuSwitcher Lab.app` at `/Applications/RuSwitcher Lab.app`
-  - Bundle ID: `com.ruswitcher.lab`
-  - Executable: `RuSwitcherLab`
-  - Signing identity: `RuSwitcher Local Code Signing`
-  - Executable SHA-256:
-    `503e07d18caeb3bbaf722c52e6b7a85e0bd9bf086e42cdb5759d692d7ea6ac33`
+- Codex Lab on `main` is `4.0.0` build `105` (`RuSwitcher Lab.app`,
+  `com.ruswitcher.lab`, SHA-256
+  `503e07d18caeb3bbaf722c52e6b7a85e0bd9bf086e42cdb5759d802d7ea6ac33`).
+  Do not overwrite Lab from this worktree.
+- This Grok branch (`grok/ruswitcher-ax`) adopts Lab **105 conversion logic**
+  and ships competitive **RuSwitcher AX** build **107**:
+  - Bundle: `RuSwitcherAX.app` → `/Applications/RuSwitcherAX.app`
+  - Bundle ID: `com.ruswitcher.ax` · Executable: `RuSwitcherAX` · Dev tag: `ax`
+  - Logs: `~/Library/Logs/RuSwitcherAX/ruswitcher-ax.log` via
+    `ProductIdentity.logFilePath` (Settings and rslog must match)
+  - Beyond Lab: fixed Settings log path, ProductIdentity branding, caret-word
+    busy retry gated on focus/sequence/revision, live sibling health check,
+    no `allowUnavailablePreflight` (unavailable AX always blocks auto post),
+    AX-default test scripts
 - The author's original app remains `/Applications/RuSwitcher.app` (`2.7.0`
-  build `35`). Codex/Lab installs remain `/Applications/RuSwitcher Lab.app`,
-  bundle ID `com.ruswitcher.lab`. Grok's separate comparison build remains
-  `/Applications/RuSwitcherAX.app`, bundle ID `com.ruswitcher.ax`. Never
-  overwrite either comparison app from the Lab release path.
+  build `35`). Never overwrite Lab or author from this branch.
 - Verify the installed binary hash and PID after every local replacement; do
   not infer the running build from `version.json` alone.
+- `claude/generic-ax-fallback` is a separate worktree
+  (`/Users/bezh/Documents/ruswitch-claude`) branched from build **108**
+  (`a4f72f4`), before `grok/ruswitcher-ax` continued past it into
+  Ghostty-specific System Events/Automation/Ctrl+W special-casing (commits
+  109-115). It replaces `ManualHostPolicy`'s hardcoded bundle-ID allowlist
+  (`com.mitchellh.ghostty`, `com.openai.codex`) with runtime capability
+  detection: any host whose `kAXSelectedTextAttribute` write is confirmed to
+  insert-instead-of-replace is learned (process-lifetime only) after
+  `recoverInsertedReplacement` proves it; any host where AX cannot be read at
+  all (`.unavailable` — most terminal emulators, unregistered in any list)
+  falls through to Backspace+Unicode on every attempt, gated by a fresh
+  `isCurrent()`/frontmost recheck immediately before posting instead of by
+  bundle identity. No app-specific code is required for a new broken host.
+  Ships as its own parallel-comparison product, **RuSwitcher Claude**:
+  - Bundle: `RuSwitcherClaude.app` → `/Applications/RuSwitcherClaude.app`
+  - Bundle ID: `com.ruswitcher.claude` · Executable: `RuSwitcherClaude` ·
+    Dev tag: `claude` (shown as `4.0.0claude (108)` in menu/settings)
+  - Logs: `~/Library/Logs/RuSwitcherClaude/ruswitcher-claude.log`
+  - Signed with the reusable `RuSwitcher Local Code Signing` identity.
+  - Installed executable SHA-256:
+    `e514190342840ee8f4faa766de74c41b566e8499376628a44338ed398fa93c06`.
+  - Runs alongside Lab/AX/author/Codex without colliding (separate
+    Accessibility/Input Monitoring grant, separate defaults domain, separate
+    login item); never overwrites any of them.
 
 ## User Requirements
 
@@ -175,6 +202,14 @@ and synthetic events before mutating the token state.
   expected suffix before editing. An unavailable AX preflight blocks the post;
   a timed-out field is retried after a one-second cooldown rather than being
   ignored for 30 seconds.
+- Opt-in setting `axlessConversion` (default off) lets the automatic path post
+  its keystroke transaction when the AX preflight is `.unavailable` — hosts that
+  expose no AX text (Ghostty, Chromium/Electron). It is wired as
+  `ReplacementRequest.allowUnavailablePost`; the coordinator then relies on the
+  focus + revision freshness match as the only gate. A `.mismatch` (AX read and
+  disagreed) still blocks unconditionally, opt-in or not. The manual double-Shift
+  fallback already posts by keyboard in AX-unavailable hosts regardless of this
+  setting, because it is explicit user intent.
 - A posted conversion immediately publishes provisional phrase context for the
   next token. AX read-back confirms learning and Undo state without duplicating
   that context; stale verification never overrides newer input. An unavailable
@@ -211,11 +246,19 @@ selected-text replacement is preferred. Clipboard fallback is retained only
 when the selected text itself cannot be read; it preserves pasteboard types.
 Failure must leave selection and layout unchanged.
 
-Accessibility is the primary path for current-token, previous-token and selected
-text conversion. When AX cannot expose a known current/previous suffix, the
-fallback selects its grapheme count with targeted Shift+Left events and posts
-the replacement as targeted Unicode. This path does not touch the pasteboard,
-does not post Backspace and cannot delete the word if insertion is dropped.
+A real, user-made **selection** is converted through Accessibility
+(`readSelection` → `kAXSelectedText`), because that write replaces a genuine
+selection reliably. **Current-/previous-word** conversion (no selection) is
+different: in an **external** host it goes straight to the keyboard path
+(Backspace + Unicode to the target PID), the same mechanism the automatic
+converter uses. Programmatically selecting the suffix via `kAXSelectedTextRange`
+and then writing `kAXSelectedText` inserts instead of replacing in
+Chromium/Electron (Claude desktop, VS Code) and terminals — it leaves the
+original word and duplicates text, and `recoverInsertedReplacement` cannot heal
+it because the collapse write uses the same broken AX primitive. The keyboard
+path is gated by an AX suffix probe plus the `isCurrent()`/frontmost recheck
+before deleting. Only the in-process `NSTextView` host still uses the AX
+suffix write (tested, AppKit-main-thread-sensitive, and known-good there).
 
 Manual current/previous-word conversion is a forced physical-layout toggle; it
 does not ask the decoder whether either spelling is correct. It replaces the
@@ -418,20 +461,12 @@ Install atomically:
 2. Verify the staged signature.
 3. Stop the running `RuSwitcher` process.
 4. Move the current app to a timestamped backup.
-5. Move staging to `/Applications/RuSwitcher Lab.app`; do not overwrite the
-   author's `/Applications/RuSwitcher.app` or Grok's
-   `/Applications/RuSwitcherAX.app` comparison copies.
+5. Move staging to `/Applications/RuSwitcherAX.app`; do not overwrite the
+   author's `/Applications/RuSwitcher.app` or Codex
+   `/Applications/RuSwitcher Lab.app`.
 6. Open the app and verify version, architectures, signature, SHA-256 and process.
 
-Current observed footprint for installed Lab build 105:
-
-- App bundle: about 10.84 MiB on disk.
-- V3 language model: 7,296,305 bytes.
-- Idle process after 90 seconds: 0.0% CPU and about 77.5 MiB RSS on the
-  development Mac.
-- Decoder inference in the simulator: under roughly 4 ms p99 per completed token.
-
-The installed Lab binary SHA-256 after build 105 is
-`503e07d18caeb3bbaf722c52e6b7a85e0bd9bf086e42cdb5759d692d7ea6ac33`.
+Lab 105 footprint (Codex reference): ~10.84 MiB bundle, ~77.5 MiB idle RSS,
+model 7,296,305 bytes. AX build 106 hash is recorded after install.
 Always compare installed and freshly built hashes rather than trusting the build
 number alone.

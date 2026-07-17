@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DESCRIPTION="$ROOT/.build/v3-only-package-description.json"
 REPORT="$ROOT/.build/v3-only-simulator-report.json"
-APP="${1:-$ROOT/RuSwitcher.app}"
+APP="${1:-$ROOT/RuSwitcherAX.app}"
 
 cd "$ROOT"
 mkdir -p "$ROOT/.build"
